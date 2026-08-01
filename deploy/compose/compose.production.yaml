@@ -1,0 +1,109 @@
+x-runtime-hardening: &runtime-hardening
+  read_only: true
+  cap_drop: ['ALL']
+  security_opt: ['no-new-privileges:true']
+  restart: unless-stopped
+
+services:
+  postgres:
+    ports: !reset []
+    environment:
+      POSTGRES_USER: engrove_migration
+      POSTGRES_PASSWORD: ${POSTGRES_MIGRATION_PASSWORD:?set POSTGRES_MIGRATION_PASSWORD}
+      POSTGRES_RUNTIME_PASSWORD: ${POSTGRES_RUNTIME_PASSWORD:?set POSTGRES_RUNTIME_PASSWORD}
+      POSTGRES_WORKER_PASSWORD: ${POSTGRES_WORKER_PASSWORD:?set POSTGRES_WORKER_PASSWORD}
+      POSTGRES_BACKUP_PASSWORD: ${POSTGRES_BACKUP_PASSWORD:?set POSTGRES_BACKUP_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ../postgres/init-production-roles.sh:/docker-entrypoint-initdb.d/10-engrove-roles.sh:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U engrove_migration -d engrove']
+    restart: unless-stopped
+
+  redis:
+    ports: !reset []
+    restart: unless-stopped
+
+  minio:
+    ports: !reset []
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+    restart: unless-stopped
+
+  storage-init:
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+      S3_BUCKET: engrove-production
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?set S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?set S3_SECRET_ACCESS_KEY}
+    volumes:
+      - ../minio/engrove-app-policy.json:/policy/engrove-app-policy.json:ro
+    command:
+      - >-
+        mc alias set root http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" &&
+        mc mb --ignore-existing "root/$${S3_BUCKET}" &&
+        mc version enable "root/$${S3_BUCKET}" &&
+        (mc admin user info root "$${S3_ACCESS_KEY_ID}" >/dev/null 2>&1 || mc admin user add root "$${S3_ACCESS_KEY_ID}" "$${S3_SECRET_ACCESS_KEY}") &&
+        mc admin policy create root engrove-app /policy/engrove-app-policy.json &&
+        mc admin policy attach root engrove-app --user "$${S3_ACCESS_KEY_ID}"
+
+  migrate:
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://engrove_runtime:${POSTGRES_RUNTIME_PASSWORD:?set POSTGRES_RUNTIME_PASSWORD}@postgres:5432/engrove
+      DATABASE_MIGRATION_URL: postgresql://engrove_migration:${POSTGRES_MIGRATION_PASSWORD:?set POSTGRES_MIGRATION_PASSWORD}@postgres:5432/engrove
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?set S3_SECRET_ACCESS_KEY}
+      S3_BUCKET: engrove-production
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET:?set INTERNAL_SERVICE_SECRET}
+
+  api:
+    <<: *runtime-hardening
+    ports: !reset []
+    tmpfs: ['/tmp:rw,noexec,nosuid,size=32m']
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://engrove_runtime:${POSTGRES_RUNTIME_PASSWORD:?set POSTGRES_RUNTIME_PASSWORD}@postgres:5432/engrove
+      DATABASE_MIGRATION_URL: postgresql://engrove_migration:${POSTGRES_MIGRATION_PASSWORD:?set POSTGRES_MIGRATION_PASSWORD}@postgres:5432/engrove
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?set S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?set S3_SECRET_ACCESS_KEY}
+      S3_BUCKET: engrove-production
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET:?set INTERNAL_SERVICE_SECRET}
+      ENGROVE_SETUP_TOKEN: ${ENGROVE_SETUP_TOKEN:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+
+  worker-node:
+    <<: *runtime-hardening
+    tmpfs: ['/tmp:rw,noexec,nosuid,size=32m']
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://engrove_worker:${POSTGRES_WORKER_PASSWORD:?set POSTGRES_WORKER_PASSWORD}@postgres:5432/engrove
+      DATABASE_MIGRATION_URL: postgresql://engrove_migration:${POSTGRES_MIGRATION_PASSWORD:?set POSTGRES_MIGRATION_PASSWORD}@postgres:5432/engrove
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?set S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?set S3_SECRET_ACCESS_KEY}
+      S3_BUCKET: engrove-production
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET:?set INTERNAL_SERVICE_SECRET}
+
+  worker-python:
+    <<: *runtime-hardening
+    tmpfs: ['/tmp:rw,noexec,nosuid,size=64m']
+    environment:
+      NODE_ENV: production
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET:?set INTERNAL_SERVICE_SECRET}
+
+  web:
+    <<: *runtime-hardening
+    ports: !reset []
+    tmpfs: ['/tmp:rw,noexec,nosuid,size=16m']
+
+  admin:
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://engrove_backup:${POSTGRES_BACKUP_PASSWORD:?set POSTGRES_BACKUP_PASSWORD}@postgres:5432/engrove
+      BACKUP_DATABASE_URL: postgresql://engrove_backup:${POSTGRES_BACKUP_PASSWORD:?set POSTGRES_BACKUP_PASSWORD}@postgres:5432/engrove
+      RESTORE_DATABASE_URL: postgresql://engrove_migration:${POSTGRES_MIGRATION_PASSWORD:?set POSTGRES_MIGRATION_PASSWORD}@postgres:5432/engrove
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?set S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?set S3_SECRET_ACCESS_KEY}
+      S3_BUCKET: engrove-production
+      BACKUP_RECIPIENT: ${BACKUP_RECIPIENT:-}

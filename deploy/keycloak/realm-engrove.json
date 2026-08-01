@@ -1,0 +1,46 @@
+{
+  "realm": "engrove",
+  "enabled": true,
+  "displayName": "Engrove Community",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "clients": [
+    {
+      "clientId": "engrove-community",
+      "name": "Engrove Community reference client",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "engrove-keycloak-development-only",
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://localhost:3000/api/v1/auth/oidc/callback"],
+      "webOrigins": ["http://localhost:4173"],
+      "attributes": {
+        "post.logout.redirect.uris": "http://localhost:4173/*",
+        "pkce.code.challenge.method": "S256"
+      },
+      "defaultClientScopes": ["web-origins", "acr", "profile", "roles", "email"]
+    }
+  ],
+  "users": [
+    {
+      "username": "engineer",
+      "email": "engineer@example.com",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Reference",
+      "lastName": "Engineer",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "engrove-keycloak-development-only",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}

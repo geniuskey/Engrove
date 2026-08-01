@@ -1,0 +1,58 @@
+[
+  {
+    "value": "1",
+    "unit": "mm",
+    "dimension": "length",
+    "canonicalValue": "0.001",
+    "canonicalUnit": "m"
+  },
+  {
+    "value": "0.001",
+    "unit": "m",
+    "dimension": "length",
+    "canonicalValue": "0.001",
+    "canonicalUnit": "m"
+  },
+  {
+    "value": "1000",
+    "unit": "um",
+    "dimension": "length",
+    "canonicalValue": "0.001",
+    "canonicalUnit": "m"
+  },
+  {
+    "value": "0",
+    "unit": "degC",
+    "dimension": "temperature",
+    "canonicalValue": "273.15",
+    "canonicalUnit": "K"
+  },
+  {
+    "value": "32",
+    "unit": "degF",
+    "dimension": "temperature",
+    "canonicalValue": "273.15",
+    "canonicalUnit": "K"
+  },
+  {
+    "value": "-40",
+    "unit": "degC",
+    "dimension": "temperature",
+    "canonicalValue": "233.15",
+    "canonicalUnit": "K"
+  },
+  {
+    "value": "2.5000",
+    "unit": "kg",
+    "dimension": "mass",
+    "canonicalValue": "2.5",
+    "canonicalUnit": "kg"
+  },
+  {
+    "value": "0.000000001",
+    "unit": "s",
+    "dimension": "time",
+    "canonicalValue": "0.000000001",
+    "canonicalUnit": "s"
+  }
+]

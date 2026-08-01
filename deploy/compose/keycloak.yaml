@@ -1,0 +1,23 @@
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.6.3
+    command: ['start-dev', '--import-realm']
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: engrove-keycloak-development-only
+      KC_HOSTNAME: http://keycloak.localhost:8080
+      KC_HTTP_ENABLED: 'true'
+    ports: ['8080:8080']
+    volumes:
+      - ../keycloak/realm-engrove.json:/opt/keycloak/data/import/realm-engrove.json:ro
+
+  api:
+    environment:
+      OIDC_ISSUER: http://keycloak.localhost:8080/realms/engrove
+      OIDC_CLIENT_ID: engrove-community
+      OIDC_CLIENT_SECRET: engrove-keycloak-development-only
+      OIDC_REDIRECT_URI: http://localhost:3000/api/v1/auth/oidc/callback
+      OIDC_ALLOWED_DOMAINS: example.com
+      OIDC_AUTO_PROVISION: 'true'
+      OIDC_DEFAULT_ROLE: engineer
+    extra_hosts: ['keycloak.localhost:host-gateway']

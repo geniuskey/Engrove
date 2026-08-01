@@ -1,0 +1,30 @@
+{
+  "name": "@engrove/database",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint src drizzle.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run test",
+    "db:generate": "drizzle-kit generate --config drizzle.config.ts",
+    "db:migrate": "tsx src/migrate.ts"
+  },
+  "dependencies": {
+    "@engrove/units": "workspace:*",
+    "drizzle-orm": "0.45.2",
+    "pg": "8.22.0",
+    "uuid": "14.0.1"
+  },
+  "devDependencies": {
+    "@types/pg": "8.20.3",
+    "drizzle-kit": "0.31.10",
+    "tsx": "4.23.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  }
+}

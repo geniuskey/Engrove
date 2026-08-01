@@ -1,0 +1,372 @@
+import { Body, Controller, Get, Headers, Param, Patch, Post, Req, Res } from '@nestjs/common';
+import {
+  configurableFieldTypes,
+  ScopedProjectRepository,
+  type JsonValue,
+  type RecordQuery,
+} from '@engrove/database';
+import type { Request, Response } from 'express';
+import { z } from 'zod';
+import { appRuntime, requestId, requireActor } from './community.controller.js';
+
+const id = z.string().uuid();
+const key = z
+  .string()
+  .trim()
+  .regex(/^[a-z][a-z0-9-]{1,63}$/);
+const jsonObject = z.record(z.string(), z.unknown());
+const relationMap = z.record(z.string().uuid(), z.array(z.string().uuid()).max(100));
+const fieldType = z.enum(configurableFieldTypes);
+
+async function repository(
+  request: Request,
+  workspaceId: string,
+  projectId: string,
+  action:
+    | 'schema.read'
+    | 'schema.manage'
+    | 'record.read'
+    | 'record.create'
+    | 'record.update'
+    | 'record.archive'
+    | 'record.restore'
+    | 'export.execute',
+  csrf = false,
+): Promise<ScopedProjectRepository> {
+  const actor = await requireActor(request, action, csrf);
+  return ScopedProjectRepository.open(
+    appRuntime().pool,
+    actor,
+    id.parse(workspaceId),
+    id.parse(projectId),
+  );
+}
+
+@Controller('api/v1/workspaces/:workspaceId/projects/:projectId')
+export class ConfigurableDataController {
+  @Get('object-types')
+  async objectTypes(
+    @Req() request: Request,
+    @Param('workspaceId') workspaceId: string,
+    @Param('projectId') projectId: string,
+  ) {
+    return {
+      items: await (
+        await repository(request, workspaceId, projectId, 'schema.read')
+      ).listObjectTypes(),
+    };
+  }
+
+  @Post('object-types')
+  async createObjectType(
+    @Req() request: Request,
+    @Param('workspaceId') workspaceId: string,
+    @Param('projectId') projectId: string,
+    @Body() unparsed: unknown,
+  ) {
+    const body = z
+      .object({
+        name: z.string().trim().min(1).max(120),
+        pluralName: z.string().trim().min(1).max(120),
+        key,
+        icon: z.string().trim().min(1).max(64).optional(),
+        description: z.string().max(2000).optional(),
+      })
+      .parse(unparsed);
+    return (
+      await repository(request, workspaceId, projectId, 'schema.manage', true)
+    ).createObjectType({
+      name: body.name,
+      pluralName: body.pluralName,
+      key: body.key,
+      icon: body.icon ?? 'table',
+      description: body.description ?? '',
+      requestId: requestId(request),
+    });
+  }
+
+  @Get('object-types/:objectTypeId/fields')
+  async fields(
+    @Req() request: Request,
+    @Param('workspaceId') workspaceId: string,
+    @Param('projectId') projectId: string,
+    @Param('objectTypeId') objectTypeId: string,
+  ) {
+    return {
+      items: await (
+        await repository(request, workspaceId, projectId, 'schema.read')
+      ).listFields(id.parse(objectTypeId)),
+    };
+  }
+
+  @Post('object-types/:objectTypeId/fields')
+  async createField(
+    @Req() request: Request,
+    @Param('workspaceId') workspaceId: string,
+    @Param('projectId') projectId: string,
+    @Param('objectTypeId') objectTypeId: string,
+    @Body() unparsed: unknown,
+  ) {
+    const body = z
+      .object({
+        name: z.string().trim().min(1).max(120),
+        key,
+        description: z.string().max(2000).optional(),
+        fieldType,
+        required: z.boolean().optional(),
+        unique: z.boolean().optional(),
+        position: z.number().int().min(0).max(10_000).optional(),
+        config: jsonObject.optional(),
+        defaultValue: z.unknown().optional(),
+      })
+      .parse(unparsed);
+    return (await repository(request, workspaceId, projectId, 'schema.manage', true)).createField({
+      objectTypeId: id.parse(objectTypeId),
+      name: body.name,
+      key: body.key,
+      description: body.description ?? '',
+      fieldType: body.fieldType,
+      required: body.required ?? false,
+      unique: body.unique ?? false,
+      position: body.position ?? 0,
+      config: (body.config ?? {}) as Record<string, JsonValue>,
+      ...(body.defaultValue === undefined ? {} : { defaultValue: body.defaultValue as JsonValue }),
+      requestId: requestId(request),
+    });
+  }
+
+  @Patch('object-types/:objectTypeId/fields/:fieldId')
+  async updateField(
+    @Req() request: Request,
+    @Param('workspaceId') workspaceId: string,
+    @Param('projectId') projectId: string,
+    @Param('objectTypeId') objectTypeId: string,
+    @Param('fieldId') fieldId: string,
+    @Body() unparsed: unknown,
+  ) {
+    const body = z
+      .object({
+        name: z.string().trim().min(1).max(120),
+        description: z.string().max(2000),
+        required: z.boolean(),
+        unique: z.boolean(),
+        position: z.number().int().min(0).max(10_000),
+        config: jsonObject,
+      })
+      .parse(unparsed);
+    return (await repository(request, workspaceId, projectId, 'schema.manage', true)).updateField({
+      objectTypeId: id.parse(objectTypeId),
+      fieldId: id.parse(fieldId),
+      ...body,
+      config: body.config as Record<string, JsonValue>,
+      requestId: requestId(request),
+    });
+  }
+
+  @Post('templates/test-characterization/install')
+  async installTemplate(
+    @Req() request: Request,
+    @Param('workspaceId') workspaceId: string,
+    @Param('projectId') projectId: string,
+  ) {
+    return (
+      await repository(request, workspaceId, projectId, 'schema.manage', true)
+    ).installTestCharacterizationTemplate(requestId(request));
+  }
+
+  @Post('object-types/:objectTypeId/records/query')
+  async queryRecords(
+    @Req() request: Request,
+    @Param('workspaceId') workspaceId: string,
+    @Param('projectId') projectId: string,
+    @Param('objectTypeId') objectTypeId: string,
+    @Body() unparsed: unknown,
+  ) {
+    const body = z
+      .object({
+        filters: z
+          .array(
+            z.object({
+              fieldId: id,
+              operator: z.enum(['eq', 'ne', 'contains', 'gt', 'gte', 'lt', 'lte', 'in', 'is_null']),
+              value: z.unknown().optional(),
+            }),
+          )
+          .max(20)
+          .optional(),
+        sorts: z
+          .array(
+            z
+              .object({
+                fieldId: id.optional(),
+                systemField: z.enum(['displayName', 'createdAt', 'updatedAt']).optional(),
+                direction: z.enum(['asc', 'desc']),
+              })
+              .refine(
+                (sort) => Number(Boolean(sort.fieldId)) + Number(Boolean(sort.systemField)) === 1,
+              ),
+          )
+          .max(5)
+          .optional(),
+        groupByFieldId: id.optional(),
+        page: z.number().int().min(1).optional(),
+        pageSize: z.number().int().min(1).max(100).optional(),
+        includeArchived: z.boolean().optional(),
+      })
+      .parse(unparsed);
+    return (await repository(request, workspaceId, projectId, 'record.read')).queryRecords(
+      id.parse(objectTypeId),
+      body as RecordQuery,
+    );
+  }
+
+  @Get('object-types/:objectTypeId/records/:recordId')
+  async record(
+    @Req() request: Request,
+    @Param('workspaceId') workspaceId: string,
+    @Param('projectId') projectId: string,
+    @Param('objectTypeId') objectTypeId: string,
+    @Param('recordId') recordId: string,
+  ) {
+    return (await repository(request, workspaceId, projectId, 'record.read')).getRecord(
+      id.parse(objectTypeId),
+      id.parse(recordId),
+    );
+  }
+
+  @Post('object-types/:objectTypeId/records')
+  async createRecord(
+    @Req() request: Request,
+    @Param('workspaceId') workspaceId: string,
+    @Param('projectId') projectId: string,
+    @Param('objectTypeId') objectTypeId: string,
+    @Body() unparsed: unknown,
+  ) {
+    const body = z
+      .object({
+        displayName: z.string().trim().min(1).max(240),
+        values: jsonObject,
+        relations: relationMap.optional(),
+        fileReferences: relationMap.optional(),
+        datasetReferences: relationMap.optional(),
+      })
+      .parse(unparsed);
+    return (await repository(request, workspaceId, projectId, 'record.create', true)).createRecord({
+      objectTypeId: id.parse(objectTypeId),
+      displayName: body.displayName,
+      values: body.values as Record<string, JsonValue>,
+      relations: body.relations ?? {},
+      fileReferences: body.fileReferences ?? {},
+      datasetReferences: body.datasetReferences ?? {},
+      requestId: requestId(request),
+    });
+  }
+
+  @Patch('object-types/:objectTypeId/records/:recordId')
+  async updateRecord(
+    @Req() request: Request,
+    @Param('workspaceId') workspaceId: string,
+    @Param('projectId') projectId: string,
+    @Param('objectTypeId') objectTypeId: string,
+    @Param('recordId') recordId: string,
+    @Body() unparsed: unknown,
+  ) {
+    const body = z
+      .object({
+        displayName: z.string().trim().min(1).max(240),
+        values: jsonObject,
+        relations: relationMap.optional(),
+        fileReferences: relationMap.optional(),
+        datasetReferences: relationMap.optional(),
+        rowVersion: z.number().int().positive(),
+      })
+      .parse(unparsed);
+    return (await repository(request, workspaceId, projectId, 'record.update', true)).updateRecord({
+      objectTypeId: id.parse(objectTypeId),
+      recordId: id.parse(recordId),
+      displayName: body.displayName,
+      values: body.values as Record<string, JsonValue>,
+      relations: body.relations ?? {},
+      fileReferences: body.fileReferences ?? {},
+      datasetReferences: body.datasetReferences ?? {},
+      rowVersion: body.rowVersion,
+      requestId: requestId(request),
+    });
+  }
+
+  @Post('object-types/:objectTypeId/records/:recordId/archive')
+  async archiveRecord(
+    @Req() request: Request,
+    @Param('workspaceId') workspaceId: string,
+    @Param('projectId') projectId: string,
+    @Param('objectTypeId') objectTypeId: string,
+    @Param('recordId') recordId: string,
+    @Body() unparsed: unknown,
+  ) {
+    const body = z.object({ reason: z.string().trim().min(1).max(500) }).parse(unparsed);
+    return (
+      await repository(request, workspaceId, projectId, 'record.archive', true)
+    ).setRecordArchived({
+      objectTypeId: id.parse(objectTypeId),
+      recordId: id.parse(recordId),
+      archived: true,
+      reason: body.reason,
+      requestId: requestId(request),
+    });
+  }
+
+  @Post('object-types/:objectTypeId/records/:recordId/restore')
+  async restoreRecord(
+    @Req() request: Request,
+    @Param('workspaceId') workspaceId: string,
+    @Param('projectId') projectId: string,
+    @Param('objectTypeId') objectTypeId: string,
+    @Param('recordId') recordId: string,
+  ) {
+    return (
+      await repository(request, workspaceId, projectId, 'record.restore', true)
+    ).setRecordArchived({
+      objectTypeId: id.parse(objectTypeId),
+      recordId: id.parse(recordId),
+      archived: false,
+      requestId: requestId(request),
+    });
+  }
+
+  @Post('object-types/:objectTypeId/records/import-csv')
+  async importCsv(
+    @Req() request: Request,
+    @Param('workspaceId') workspaceId: string,
+    @Param('projectId') projectId: string,
+    @Param('objectTypeId') objectTypeId: string,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Body() unparsed: unknown,
+  ) {
+    const body = z.object({ csv: z.string().min(1) }).parse(unparsed);
+    return (
+      await repository(request, workspaceId, projectId, 'record.create', true)
+    ).importRecordsCsv({
+      objectTypeId: id.parse(objectTypeId),
+      csv: body.csv,
+      idempotencyKey: z.string().min(8).max(200).parse(idempotencyKey),
+      requestId: requestId(request),
+    });
+  }
+
+  @Get('object-types/:objectTypeId/export.csv')
+  async exportCsv(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+    @Param('workspaceId') workspaceId: string,
+    @Param('projectId') projectId: string,
+    @Param('objectTypeId') objectTypeId: string,
+  ) {
+    const csv = await (
+      await repository(request, workspaceId, projectId, 'export.execute')
+    ).exportRecordsCsv(id.parse(objectTypeId), requestId(request));
+    response
+      .type('text/csv')
+      .setHeader('content-disposition', 'attachment; filename="engrove-records.csv"');
+    return csv;
+  }
+}

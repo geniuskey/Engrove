@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+mode="${1:-}"
+shift || true
+default_database_url="${DATABASE_URL:?DATABASE_URL is required}"
+if [[ "$mode" == restore ]]; then
+  database_url="${RESTORE_DATABASE_URL:-$default_database_url}"
+else
+  database_url="${BACKUP_DATABASE_URL:-$default_database_url}"
+fi
+bucket="${S3_BUCKET:?S3_BUCKET is required}"
+mc alias set source "${S3_ENDPOINT:?}" "${S3_ACCESS_KEY_ID:?}" "${S3_SECRET_ACCESS_KEY:?}" >/dev/null
+command_started="$(date +%s)"
+report_dir="${ENGROVE_ADMIN_REPORT_DIR:-/backups/reports}"
+
+write_report() {
+  local operation="$1" result="$2" bytes="${3:-0}" objects="${4:-0}" details="${5:-}"
+  [[ -n "$details" ]] || details='{}'
+  local completed duration report
+  completed="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  duration="$(( $(date +%s) - command_started ))"
+  mkdir -p "$report_dir"
+  report="$report_dir/$(date -u +%Y%m%dT%H%M%SZ)-$operation.json"
+  jq -n --arg operation "$operation" --arg result "$result" --arg completed "$completed" \
+    --argjson duration "$duration" --argjson bytes "$bytes" --argjson objects "$objects" \
+    --argjson details "$details" \
+    '{operation:$operation,result:$result,completedAt:$completed,durationSeconds:$duration,bytes:$bytes,objects:$objects,details:$details}' > "$report"
+  cat > "$report_dir/engrove-admin.prom" <<METRICS
+# TYPE engrove_admin_operation_duration_seconds gauge
+engrove_admin_operation_duration_seconds{operation="$operation",result="$result"} $duration
+# TYPE engrove_admin_operation_bytes gauge
+engrove_admin_operation_bytes{operation="$operation"} $bytes
+# TYPE engrove_admin_operation_objects gauge
+engrove_admin_operation_objects{operation="$operation"} $objects
+METRICS
+}
+
+plain_path() {
+  case "$1" in
+    *.age) printf '%s' "${1%.age}.tar" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+decrypt_bundle() {
+  local input="$1" output="$2"
+  if [[ -f "$input.sha256" ]]; then
+    (cd "$(dirname "$input")" && sha256sum -c "$(basename "$input").sha256") >/dev/null
+  fi
+  if [[ "$input" == *.age ]]; then
+    [[ -n "${BACKUP_IDENTITY:-}" ]] || { echo 'BACKUP_IDENTITY is required' >&2; exit 2; }
+    age --decrypt -i "$BACKUP_IDENTITY" -o "$output" "$input"
+  else
+    [[ "${NODE_ENV:-development}" != production ]] || { echo 'plaintext backup rejected in production' >&2; exit 2; }
+    cp "$input" "$output"
+  fi
+}
+
+verify_directory() {
+  local directory="$1"
+  jq -e '.formatVersion == 1 and (.objects|type == "array")' "$directory/manifest.json" >/dev/null
+  local expected
+  expected="$(jq -r '.database.checksum' "$directory/manifest.json")"
+  [[ "$(sha256sum "$directory/database.dump" | awk '{print $1}')" == "$expected" ]]
+  pg_restore --list "$directory/database.dump" >/dev/null
+  while IFS=$'\t' read -r path checksum size; do
+    [[ -f "$directory/$path" ]]
+    [[ "$(sha256sum "$directory/$path" | awk '{print $1}')" == "$checksum" ]]
+    [[ "$(stat -c %s "$directory/$path")" == "$size" ]]
+  done < <(jq -r '.objects[] | [.bundlePath,.checksum,(.sizeBytes|tostring)] | @tsv' "$directory/manifest.json")
+}
+
+object_checksum() {
+  local key="$1" version="$2" output="$3"
+  mc cat --version-id "$version" "source/$bucket/$key" > "$output"
+  sha256sum "$output" | awk '{print $1}'
+}
+
+if [[ "$mode" == create ]]; then
+  output="${1:?output path is required}"
+  plaintext=false
+  [[ "${2:-}" == --development-plaintext ]] && plaintext=true
+  if [[ "$plaintext" == true && "${NODE_ENV:-development}" == production ]]; then
+    echo 'plaintext backup rejected in production' >&2; exit 2
+  fi
+  if [[ "$plaintext" == false && -z "${BACKUP_RECIPIENT:-}" ]]; then
+    echo 'BACKUP_RECIPIENT is required for encrypted backup' >&2; exit 2
+  fi
+  work="$(mktemp -d)"
+  lock_pid=''
+  cleanup() {
+    psql "$database_url" -v ON_ERROR_STOP=1 -c "delete from maintenance_state where singleton=true and lease_owner='backup-cli'" >/dev/null 2>&1 || true
+    [[ -z "$lock_pid" ]] || kill "$lock_pid" >/dev/null 2>&1 || true
+    rm -rf "$work"
+  }
+  trap cleanup EXIT
+  psql "$database_url" -v ON_ERROR_STOP=1 -c "select pg_advisory_lock(57381723); select pg_sleep(1800)" >/dev/null & lock_pid=$!
+  psql "$database_url" -v ON_ERROR_STOP=1 -c "insert into maintenance_state(singleton,mode,lease_owner,lease_expires_at) values(true,'backup','backup-cli',now()+interval '30 minutes') on conflict(singleton) do update set mode='backup',lease_owner='backup-cli',lease_expires_at=excluded.lease_expires_at,updated_at=now()" >/dev/null
+  for _ in $(seq 1 "${BACKUP_DRAIN_SECONDS:-60}"); do
+    active="$(psql "$database_url" -Atc "select (select count(*) from background_jobs where status='running')+(select count(*) from file_upload_sessions where status='verifying')")"
+    [[ "$active" == 0 ]] && break
+    sleep 1
+  done
+  [[ "${active:-1}" == 0 ]] || { echo 'drain timeout' >&2; exit 3; }
+  mkdir -p "$work/objects"
+  pg_dump --format=custom --no-owner --file="$work/database.dump" "$database_url"
+  psql "$database_url" -Atc "select coalesce(json_agg(x),'[]'::json) from (select 'file_object' kind,id,final_object_key \"objectKey\",storage_version_id \"storageVersionId\",size_bytes \"sizeBytes\",checksum from file_objects where status='available' union all select 'dataset_artifact',id,object_key,storage_version_id,size_bytes,checksum from dataset_artifacts) x" > "$work/inventory.json"
+  jq -c '.[]' "$work/inventory.json" | while read -r item; do
+    id="$(jq -r '.id' <<<"$item")"; key="$(jq -r '.objectKey' <<<"$item")"; version="$(jq -r '.storageVersionId' <<<"$item")"
+    [[ "$version" != null && -n "$version" ]] || { echo "missing object version: $key" >&2; exit 5; }
+    mc cp --quiet --version-id "$version" "source/$bucket/$key" "$work/objects/$id"
+  done
+  database_checksum="$(sha256sum "$work/database.dump" | awk '{print $1}')"
+  migration_version="$(psql "$database_url" -Atc "select coalesce(max(created_at)::text,'none') from drizzle.__drizzle_migrations")"
+  template_versions="$(psql "$database_url" -Atc "select coalesce(json_object_agg(template_key,version),'{}'::json) from (select template_key,max(version) version from template_installations group by template_key) x")"
+  jq --arg created "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg app "${ENGROVE_VERSION:-unknown}" --arg pg "$(pg_dump --version | awk '{print $3}')" --arg migration "$migration_version" --arg units "${UNIT_REGISTRY_VERSION:-2026.1+sha256:6e8fe3d77e8e8820884d3ae3db20ca5c7804cf73964ba36b814ebd447bd251e4}" --argjson templates "$template_versions" --arg db "$database_checksum" '
+    {formatVersion:1,createdAt:$created,applicationVersion:$app,schemaMigrationVersion:$migration,postgresVersion:$pg,unitRegistryVersion:$units,templateVersions:$templates,database:{path:"database.dump",checksum:$db},objects:[.[]|.bundlePath=("objects/"+.id)]}' "$work/inventory.json" > "$work/manifest.json"
+  verify_directory "$work"
+  tar -C "$work" -cf "$work/bundle.tar" manifest.json database.dump objects
+  mkdir -p "$(dirname "$output")"
+  if [[ "$plaintext" == true ]]; then cp "$work/bundle.tar" "$output"; echo 'WARNING: plaintext development backup created' >&2
+  else
+    age -r "$BACKUP_RECIPIENT" -o "$output" "$work/bundle.tar"
+    head -c 21 "$output" | grep -q '^age-encryption.org/v1'
+  fi
+  sha256sum "$output" > "$output.sha256"
+  output_bytes="$(stat -c %s "$output")"
+  object_count="$(jq '.objects|length' "$work/manifest.json")"
+  report_details="$(jq -c '{formatVersion,applicationVersion,schemaMigrationVersion,databaseChecksum:.database.checksum}' "$work/manifest.json")"
+  write_report create success "$output_bytes" "$object_count" "$report_details"
+  echo "$output"
+elif [[ "$mode" == verify ]]; then
+  input="${1:?backup path is required}"; work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+  decrypt_bundle "$input" "$work/bundle.tar"; tar -C "$work" -xf "$work/bundle.tar"; verify_directory "$work"
+  input_bytes="$(stat -c %s "$input")"
+  object_count="$(jq '.objects|length' "$work/manifest.json")"
+  report_details="$(jq -c '{formatVersion,applicationVersion,schemaMigrationVersion,databaseChecksum:.database.checksum}' "$work/manifest.json")"
+  write_report verify success "$input_bytes" "$object_count" "$report_details"
+  echo 'backup verified'
+elif [[ "$mode" == restore ]]; then
+  input="${1:?backup path is required}"; work="$(mktemp -d)"; restore_finished=false
+  restore_cleanup() {
+    status=$?
+    if [[ "$status" != 0 && "$restore_finished" == false ]]; then
+      if [[ "$(psql "$database_url" -Atc "select to_regclass('public.maintenance_state') is not null" 2>/dev/null || true)" == t ]]; then
+        psql "$database_url" -c "insert into maintenance_state(singleton,mode,lease_owner,lease_expires_at) values(true,'restore','failed-restore',now()+interval '24 hours') on conflict(singleton) do update set mode='restore',lease_owner='failed-restore',lease_expires_at=excluded.lease_expires_at" >/dev/null 2>&1 || true
+      fi
+      failure_bytes="$(stat -c %s "$input" 2>/dev/null || echo 0)"
+      failure_details="$(jq -nc --arg code "RESTORE_FAILED_$status" '{errorCode:$code}')"
+      write_report restore failure "$failure_bytes" 0 "$failure_details" || true
+    fi
+    rm -rf "$work"
+  }
+  trap restore_cleanup EXIT
+  decrypt_bundle "$input" "$work/bundle.tar"; tar -C "$work" -xf "$work/bundle.tar"; verify_directory "$work"
+  manifest_app="$(jq -r '.applicationVersion' "$work/manifest.json")"
+  [[ "${ENGROVE_VERSION:-$manifest_app}" == "$manifest_app" ]] || { echo 'backup application version is incompatible' >&2; exit 7; }
+  manifest_pg="$(jq -r '.postgresVersion|split(".")[0]' "$work/manifest.json")"
+  [[ "$(pg_restore --version | awk '{print $3}' | cut -d. -f1)" == "$manifest_pg" ]] || { echo 'backup PostgreSQL major version is incompatible' >&2; exit 7; }
+  if [[ "$(psql "$database_url" -Atc "select to_regclass('public.users') is not null")" == t ]]; then
+    populated="$(psql "$database_url" -Atc "select (select count(*) from users)+(select count(*) from projects)+(select count(*) from workspaces)")"
+  else
+    populated=0
+  fi
+  [[ "$populated" == 0 ]] || { echo 'restore target must be a fresh installation without users, workspaces, or projects' >&2; exit 4; }
+  psql "$database_url" -v ON_ERROR_STOP=1 -c "drop schema if exists public cascade; create schema public" >/dev/null
+  pg_restore --exit-on-error --no-owner --dbname="$database_url" "$work/database.dump"
+  psql "$database_url" -v ON_ERROR_STOP=1 -c "insert into maintenance_state(singleton,mode,lease_owner,lease_expires_at) values(true,'restore','backup-cli',now()+interval '30 minutes') on conflict(singleton) do update set mode='restore',lease_owner='backup-cli',lease_expires_at=excluded.lease_expires_at" >/dev/null
+  sessions_to_revoke="$(psql "$database_url" -Atc "select count(*) from sessions where revoked_at is null")"
+  tokens_to_revoke="$(psql "$database_url" -Atc "select count(*) from security_tokens where used_at is null and revoked_at is null")"
+  interrupted_jobs="$(psql "$database_url" -Atc "select count(*) from background_jobs where status='running'")"
+  jq -c '.objects[]' "$work/manifest.json" | while read -r item; do
+    id="$(jq -r '.id' <<<"$item")"; key="$(jq -r '.objectKey' <<<"$item")"; kind="$(jq -r '.kind' <<<"$item")"
+    bundle_path="$(jq -r '.bundlePath' <<<"$item")"; checksum="$(jq -r '.checksum' <<<"$item")"; size="$(jq -r '.sizeBytes' <<<"$item")"
+    result="$(mc cp --json "$work/$bundle_path" "source/$bucket/$key")"
+    version="$(jq -r '.versionId // .versionID // empty' <<<"$result" | tail -1)"
+    [[ -n "$version" ]] || version="$(mc stat --json "source/$bucket/$key" | jq -r '.versionID // .versionId')"
+    restored="$work/restored-$id"
+    [[ "$(object_checksum "$key" "$version" "$restored")" == "$checksum" ]]
+    [[ "$(stat -c %s "$restored")" == "$size" ]]
+    if [[ "$kind" == file_object ]]; then table=file_objects; else table=dataset_artifacts; fi
+    remap_sql="begin; alter table $table disable trigger user; update $table set storage_version_id=:'object_version' where id=:'item_id' and checksum=:'item_checksum' returning 1; alter table $table enable trigger user; commit;"
+    updated="$(printf '%s\n' "$remap_sql" | psql "$database_url" -v ON_ERROR_STOP=1 -v item_id="$id" -v item_checksum="$checksum" -v object_version="$version" -At)"
+    [[ "$updated" == *1* ]] || { echo "restored metadata did not match: $id" >&2; exit 6; }
+  done
+  psql "$database_url" -v ON_ERROR_STOP=1 -c "update sessions set revoked_at=coalesce(revoked_at,now()),revoked_reason=coalesce(revoked_reason,'restore'); update security_tokens set revoked_at=coalesce(revoked_at,now()) where used_at is null; update installation_setup set setup_token_hash=null; update background_job_attempts set status='failed',completed_at=now(),error_code='RESTORE_INTERRUPTED' where status='running'; with interrupted as (update background_jobs set status='queued',lease_owner=null,lease_expires_at=null,scheduled_at=now(),updated_at=now() where status='running' returning id,project_id,entity_type,entity_id) insert into outbox_events(id,project_id,event_type,entity_type,entity_id,payload) select md5(random()::text||clock_timestamp()::text)::uuid,project_id,'job.restore_reconciled',entity_type,entity_id,jsonb_build_object('jobId',id) from interrupted; delete from maintenance_state where singleton=true" >/dev/null
+  restore_finished=true
+  input_bytes="$(stat -c %s "$input")"
+  object_count="$(jq '.objects|length' "$work/manifest.json")"
+  report_details="$(jq -nc --argjson sessions "$sessions_to_revoke" --argjson tokens "$tokens_to_revoke" --argjson jobs "$interrupted_jobs" '{sessionsRevoked:$sessions,securityTokensRevoked:$tokens,interruptedJobsRequeued:$jobs}')"
+  write_report restore success "$input_bytes" "$object_count" "$report_details"
+  echo 'restore completed; sessions revoked and jobs reconciled'
+else
+  echo 'usage: engrove-backup create|verify|restore PATH [--development-plaintext]' >&2; exit 2
+fi

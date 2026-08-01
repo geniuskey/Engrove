@@ -1,0 +1,42 @@
+{
+  "name": "engrove",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "packageManager": "pnpm@10.29.2",
+  "engines": {
+    "node": ">=24 <25",
+    "pnpm": "10.29.2"
+  },
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "lint": "turbo lint && pnpm python:lint",
+    "typecheck": "turbo typecheck && pnpm python:typecheck",
+    "test": "turbo test && pnpm python:test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "db:generate": "pnpm --filter @engrove/database db:generate",
+    "db:migrate": "pnpm --filter @engrove/database db:migrate",
+    "setup:rotate": "pnpm --filter @engrove/api setup:rotate",
+    "projection:rebuild": "pnpm --filter @engrove/api projection:rebuild",
+    "units:generate": "pnpm --filter @engrove/units generate",
+    "units:check": "pnpm --filter @engrove/units check",
+    "python:lint": "uv run --project apps/worker-python --locked ruff check apps/worker-python",
+    "python:typecheck": "uv run --project apps/worker-python --locked mypy apps/worker-python/src",
+    "python:test": "uv run --project apps/worker-python --locked pytest apps/worker-python/tests --cov=engrove_worker --cov-report=term-missing",
+    "compose:up": "docker compose --env-file .env -f deploy/compose/compose.yaml up -d --build",
+    "compose:down": "docker compose --env-file .env -f deploy/compose/compose.yaml down",
+    "verify:community": "node scripts/verify-community-boundary.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.13.3",
+    "eslint": "10.8.0",
+    "globals": "17.8.0",
+    "prettier": "3.9.6",
+    "turbo": "2.10.8",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.65.0"
+  }
+}

@@ -1,0 +1,12 @@
+node_modules
+dist
+coverage
+.turbo
+pnpm-lock.yaml
+apps/worker-python/uv.lock
+docs/verification/*.log
+packages/units/generated/
+packages/units/src/generated.ts
+apps/worker-python/src/engrove_worker/generated_units.py
+packages/database/drizzle/meta/
+deploy/compose/production.env.example
