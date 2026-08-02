@@ -10,8 +10,8 @@
     "build": "tsc -p tsconfig.json",
     "lint": "eslint src drizzle.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
-    "test": "vitest run test",
-    "test:integration": "vitest run integration",
+    "test": "vitest run --dir test",
+    "test:integration": "vitest run --dir integration",
     "db:generate": "drizzle-kit generate --config drizzle.config.ts",
     "db:migrate": "tsx src/migrate.ts"
   },
