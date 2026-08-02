@@ -40,6 +40,18 @@ docker compose -f deploy/compose/compose.yaml down
 
 ## Repository checks
 
+Run the complete review and verification gate with the Node version pinned by the repository:
+
+```bash
+bash scripts/project-loop.sh
+```
+
+The loop bootstraps the pinned Node release when the current shell is on another version and fails
+if engine or oversized-bundle warnings remain. See the
+[project-loop guide](docs/development/project-loop.md) for review priorities and completion criteria.
+
+Individual checks remain available:
+
 ```bash
 pnpm format:check
 pnpm lint

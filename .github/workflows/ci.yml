@@ -29,13 +29,10 @@ jobs:
         run: node --version && pnpm --version && uv --version
       - run: pnpm install --frozen-lockfile
       - run: uv sync --project apps/worker-python --locked
-      - run: pnpm format:check
-      - run: pnpm units:check
-      - run: pnpm lint
-      - run: pnpm typecheck
-      - run: pnpm test
-      - run: pnpm build
-      - run: pnpm verify:community
+      - name: Install Chromium for browser tests
+        run: pnpm --filter @engrove/web exec playwright install --with-deps chromium
+      - name: Run project review and verification loop
+        run: bash scripts/project-loop.sh
       - name: Verify migration generation is clean
         env:
           DATABASE_MIGRATION_URL: postgresql://unused:unused@localhost:5432/unused
