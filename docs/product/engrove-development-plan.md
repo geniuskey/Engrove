@@ -1,6 +1,6 @@
 # Engrove Development Plan
 
-> **Status:** Draft v0.6  
+> **Status:** Draft v0.8
 > **Product:** Engrove  
 > **Category:** Self-hosted Engineering Data & Operations Workspace  
 > **Primary audience:** Manufacturing R&D, test, validation, reliability, and engineering teams  
@@ -61,6 +61,8 @@ The following decisions are fixed for the MVP:
 25. Charts and dashboards use immutable, versioned configurations. Sources are exact dataset and chart revision IDs, and user configuration is validated safe data rather than executable ECharts, SQL, or JavaScript content.
 26. Backups use a write-quiesced, manifest-driven bundle with PostgreSQL custom-format dump, exact referenced object versions, SHA-256 verification, and `age` recipient encryption by default.
 27. Community is developed and delivered first. No Enterprise repository, module, database schema, license gate, feature flag, runtime plugin loader, or speculative extension hook is implemented during the MVP.
+28. The object-type data grid provides spreadsheet-style direct editing for mutable records. Each cell save uses optimistic concurrency and the normal validated, audited record mutation transaction. Measurement observations and ready dataset contents remain immutable and are read-only in the grid.
+29. The MVP record grid uses a data-workbench layout: table and view context remain visible, Fields/Filter/Sort controls are compact and contextual, rows support selection and authorized bulk archive, and a record may be created or edited in a side panel without losing grid context. Persisted named-view definitions and view-level permissions require an explicit later data model and are not simulated only in browser state.
 
 ---
 
@@ -1877,6 +1879,13 @@ Main
 ## 16. UX Requirements
 
 - keyboard-friendly data grid,
+- direct cell editing for mutable record names, properties, relations, and exact file or dataset references,
+- persistent table/view context beside the grid and a compact contextual toolbar,
+- field visibility, row density, ascending or descending sort, and typed filter controls,
+- page-scoped row selection with permission-aware bulk archive,
+- new and existing record side panels that preserve the underlying grid context,
+- Enter or focus exit saves a cell, Escape cancels editing, and validation or concurrency errors remain attached to the edited cell,
+- measurement projections are read-only in the grid and link to the append-only measurement workflow,
 - inline validation,
 - clear unit display,
 - no silent unit conversion,
@@ -2213,6 +2222,12 @@ All commands work from a clean checkout.
 - user can install the Phase 2 Test & Characterization template without creating duplicate object types,
 - user can add fields,
 - user can create and edit records,
+- user can edit a mutable record cell directly from the spreadsheet view without opening record detail,
+- user can hide fields, change row density, filter, and sort ascending or descending without leaving the grid,
+- user can select visible rows and archive them in bulk when authorized,
+- user can create or edit a record in a side panel while retaining grid context,
+- direct cell edits validate the field type, update JSONB and typed projections atomically, create an audit event, and reject stale `rowVersion` values,
+- measurement cells remain read-only and ready datasets are never mutated by the spreadsheet view,
 - user can archive and restore a record without losing relations or history,
 - record JSONB and typed projection update atomically,
 - typed filters and sorts produce correct numeric, date, and text ordering,

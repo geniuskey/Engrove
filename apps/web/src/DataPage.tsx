@@ -1,7 +1,16 @@
 import { Button } from '@engrove/ui';
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  type FocusEvent,
+  type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { allowed, api, ErrorText, inputClass, type User } from './App.js';
+import { allowed, api, ApiError, ErrorText, inputClass, NoticeText, type User } from './App.js';
 
 interface ObjectType {
   id: string;
@@ -192,6 +201,277 @@ function fieldValue(field: FieldDefinition, form: FormData): unknown {
       .map((value) => value.trim())
       .filter(Boolean);
   return raw;
+}
+
+interface GridEditorDraft {
+  primary: string;
+  secondary: string;
+  unit: string;
+}
+
+function gridEditorDraft(field: FieldDefinition | undefined, value: unknown): GridEditorDraft {
+  if (!field) return { primary: value === undefined ? '' : String(value), secondary: '', unit: '' };
+  if (field.fieldType === 'quantity' || field.fieldType === 'range') {
+    const engineering = (value ?? {}) as {
+      value?: string;
+      unit?: string;
+      lower?: { value: string; unit: string };
+      upper?: { value: string; unit: string };
+    };
+    return {
+      primary:
+        field.fieldType === 'quantity'
+          ? (engineering.value ?? '')
+          : (engineering.lower?.value ?? ''),
+      secondary: field.fieldType === 'range' ? (engineering.upper?.value ?? '') : '',
+      unit:
+        engineering.unit ??
+        engineering.lower?.unit ??
+        engineering.upper?.unit ??
+        field.config.allowedUnits?.[0] ??
+        '',
+    };
+  }
+  return {
+    primary: Array.isArray(value)
+      ? value.join(field.fieldType === 'relation' ? '; ' : ', ')
+      : value === undefined || value === null
+        ? ''
+        : field.fieldType === 'datetime'
+          ? String(value).slice(0, 16)
+          : String(value),
+    secondary: '',
+    unit: '',
+  };
+}
+
+function gridValue(field: FieldDefinition | undefined, draft: GridEditorDraft): unknown {
+  const primary = draft.primary.trim();
+  if (!field) {
+    if (!primary) throw new Error('Display name is required.');
+    return primary;
+  }
+  if (!primary && !draft.secondary.trim()) {
+    if (field.required) throw new Error(`${field.name} is required.`);
+    return undefined;
+  }
+  if (field.fieldType === 'quantity') return { value: primary, unit: draft.unit };
+  if (field.fieldType === 'range') {
+    const secondary = draft.secondary.trim();
+    return {
+      ...(primary ? { lower: { value: primary, unit: draft.unit } } : {}),
+      ...(secondary ? { upper: { value: secondary, unit: draft.unit } } : {}),
+    };
+  }
+  if (field.fieldType === 'boolean') return primary ? primary === 'true' : undefined;
+  if (field.fieldType === 'multi_select')
+    return primary
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+  if (field.fieldType === 'relation')
+    return primary
+      .split(';')
+      .map((item) => item.trim())
+      .filter(Boolean);
+  if (field.fieldType === 'file' || field.fieldType === 'dataset') return primary ? [primary] : [];
+  return primary || undefined;
+}
+
+function GridCell({
+  comfortable = false,
+  field,
+  label,
+  recordName,
+  value,
+  onSave,
+}: {
+  comfortable?: boolean;
+  field?: FieldDefinition;
+  label: string;
+  recordName: string;
+  value: unknown;
+  onSave: (value: unknown) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(() => gridEditorDraft(field, value));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const committing = useRef(false);
+
+  useEffect(() => {
+    if (!editing) setDraft(gridEditorDraft(field, value));
+  }, [editing, field, value]);
+
+  function beginEditing() {
+    setDraft(gridEditorDraft(field, value));
+    setError('');
+    setEditing(true);
+  }
+
+  function cancelEditing() {
+    setDraft(gridEditorDraft(field, value));
+    setError('');
+    setEditing(false);
+  }
+
+  async function commit() {
+    if (committing.current) return;
+    committing.current = true;
+    setSaving(true);
+    try {
+      await onSave(gridValue(field, draft));
+      setError('');
+      setEditing(false);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Cell could not be saved.');
+    } finally {
+      committing.current = false;
+      setSaving(false);
+    }
+  }
+
+  function handleKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      cancelEditing();
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      void commit();
+    }
+  }
+
+  function handleBlur(event: FocusEvent<HTMLDivElement>) {
+    if (!event.currentTarget.contains(event.relatedTarget)) void commit();
+  }
+
+  if (!editing) {
+    return (
+      <button
+        aria-label={`Edit ${label} for ${recordName}`}
+        className={`group flex w-full items-center justify-between gap-2 px-3 text-left outline-none hover:bg-sky-500/10 focus:bg-sky-500/10 focus:ring-1 focus:ring-inset focus:ring-sky-400 ${comfortable ? 'min-h-14 py-3' : 'min-h-10 py-1.5'}`}
+        onDoubleClick={beginEditing}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === 'F2') {
+            event.preventDefault();
+            beginEditing();
+          }
+        }}
+        title="Double-click or press Enter to edit"
+        type="button"
+      >
+        <span className="block max-w-64 truncate text-slate-300">{displayValue(value)}</span>
+        <span className="invisible text-xs text-sky-400 group-hover:visible group-focus:visible">
+          Edit
+        </span>
+      </button>
+    );
+  }
+
+  const common = {
+    autoFocus: true,
+    className:
+      'min-h-9 w-full min-w-28 rounded border border-sky-500 bg-slate-950 px-2 py-1 text-sm text-slate-100 outline-none',
+    disabled: saving,
+  };
+  return (
+    <div className="min-w-44 p-1" onBlur={handleBlur} onKeyDown={handleKeyDown}>
+      <div className="flex items-center gap-1">
+        {field?.fieldType === 'boolean' ? (
+          <select
+            {...common}
+            aria-label={`${label} value`}
+            value={draft.primary}
+            onChange={(event) => setDraft({ ...draft, primary: event.target.value })}
+          >
+            <option value="">Unset</option>
+            <option value="true">Yes</option>
+            <option value="false">No</option>
+          </select>
+        ) : field?.fieldType === 'single_select' ? (
+          <select
+            {...common}
+            aria-label={`${label} value`}
+            value={draft.primary}
+            onChange={(event) => setDraft({ ...draft, primary: event.target.value })}
+          >
+            <option value="">Unset</option>
+            {(field.config.options ?? []).map((option) => (
+              <option key={option.key} value={option.key}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input
+            {...common}
+            aria-label={`${label} value`}
+            inputMode={
+              field?.fieldType === 'integer' || field?.fieldType === 'decimal'
+                ? 'decimal'
+                : undefined
+            }
+            type={
+              field?.fieldType === 'date'
+                ? 'date'
+                : field?.fieldType === 'datetime'
+                  ? 'datetime-local'
+                  : 'text'
+            }
+            value={draft.primary}
+            onChange={(event) => setDraft({ ...draft, primary: event.target.value })}
+          />
+        )}
+        {field?.fieldType === 'range' && (
+          <input
+            {...common}
+            aria-label={`${label} upper value`}
+            placeholder="Upper"
+            value={draft.secondary}
+            onChange={(event) => setDraft({ ...draft, secondary: event.target.value })}
+          />
+        )}
+        {(field?.fieldType === 'quantity' || field?.fieldType === 'range') && (
+          <select
+            {...common}
+            aria-label={`${label} unit`}
+            className={`${common.className} min-w-20`}
+            value={draft.unit}
+            onChange={(event) => setDraft({ ...draft, unit: event.target.value })}
+          >
+            {(field.config.allowedUnits ?? []).map((unit) => (
+              <option key={unit}>{unit}</option>
+            ))}
+          </select>
+        )}
+        <button
+          aria-label={`Save ${label}`}
+          className="rounded px-2 py-1 text-xs text-emerald-300 hover:bg-emerald-500/10"
+          disabled={saving}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => void commit()}
+          type="button"
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        <button
+          aria-label={`Cancel editing ${label}`}
+          className="rounded px-2 py-1 text-xs text-slate-400 hover:bg-slate-800"
+          disabled={saving}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={cancelEditing}
+          type="button"
+        >
+          Cancel
+        </button>
+      </div>
+      {error && (
+        <p aria-live="polite" className="px-1 pt-1 text-xs text-rose-300">
+          {error}
+        </p>
+      )}
+    </div>
+  );
 }
 
 function recordPayload(fields: FieldDefinition[], form: FormData) {
@@ -732,6 +1012,13 @@ function LinkedTasksPanel({ base, recordId }: { base: string; recordId: string }
   );
 }
 
+function recordGridValue(record: DynamicRecord, field: FieldDefinition): unknown {
+  if (field.fieldType === 'relation') return record.relations?.[field.id] ?? [];
+  if (field.fieldType === 'file') return record.fileReferences?.[field.id] ?? [];
+  if (field.fieldType === 'dataset') return record.datasetReferences?.[field.id] ?? [];
+  return record.values[field.key];
+}
+
 export function DataPage({ user }: { user: User }) {
   const { workspaceId = '', projectId = '' } = useParams();
   const [search, setSearch] = useSearchParams();
@@ -745,18 +1032,32 @@ export function DataPage({ user }: { user: User }) {
     total: 0,
   });
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
   const [sortField, setSortField] = useState('displayName');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [filterField, setFilterField] = useState('');
   const [filterOperator, setFilterOperator] = useState('eq');
   const [filterValue, setFilterValue] = useState('');
+  const [debouncedFilterValue, setDebouncedFilterValue] = useState('');
+  const [activeTool, setActiveTool] = useState<'fields' | 'filter' | 'sort' | null>(null);
+  const [hiddenFieldIds, setHiddenFieldIds] = useState<Set<string>>(() => new Set());
+  const [rowDensity, setRowDensity] = useState<'compact' | 'comfortable'>('compact');
+  const [selectedRows, setSelectedRows] = useState<Set<string>>(() => new Set());
+  const [selectedRecord, setSelectedRecord] = useState<DynamicRecord>();
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [showSchema, setShowSchema] = useState(false);
   const [showNewRecord, setShowNewRecord] = useState(false);
   const [typesLoading, setTypesLoading] = useState(true);
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [message, setMessage] = useState('');
+  const [messageTone, setMessageTone] = useState<'info' | 'success' | 'error'>('info');
   const [csvResult, setCsvResult] = useState<CsvResult>();
   const selectedId = search.get('type') ?? objectTypes[0]?.id ?? '';
   const selected = objectTypes.find((objectType) => objectType.id === selectedId);
+  const visibleFields = useMemo(
+    () => fields.filter((field) => !hiddenFieldIds.has(field.id)),
+    [fields, hiddenFieldIds],
+  );
 
   const loadTypes = useCallback(async () => {
     setTypesLoading(true);
@@ -767,6 +1068,7 @@ export function DataPage({ user }: { user: User }) {
         setSearch({ type: result.items[0].id }, { replace: true });
       setMessage('');
     } catch (cause) {
+      setMessageTone('error');
       setMessage(cause instanceof Error ? cause.message : 'Object types could not be loaded.');
     } finally {
       setTypesLoading(false);
@@ -775,23 +1077,52 @@ export function DataPage({ user }: { user: User }) {
 
   useEffect(() => void loadTypes(), [loadTypes]);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedFilterValue(filterValue), 250);
+    return () => window.clearTimeout(timer);
+  }, [filterValue]);
+
+  useEffect(() => {
+    setHiddenFieldIds(new Set());
+    setSelectedRows(new Set());
+    setSelectedRecord(undefined);
+    setActiveTool(null);
+  }, [selectedId]);
+
+  useEffect(() => {
+    setSelectedRows(new Set());
+    setSelectedRecord(undefined);
+  }, [debouncedFilterValue, filterField, page, pageSize, sortDirection, sortField]);
+
+  useEffect(() => {
+    if (!selectedRecord && !showNewRecord) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setSelectedRecord(undefined);
+        setShowNewRecord(false);
+      }
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [selectedRecord, showNewRecord]);
+
   const queryBody = useMemo(() => {
     const filters =
-      filterField && (filterOperator === 'is_null' || filterValue)
+      filterField && (filterOperator === 'is_null' || debouncedFilterValue)
         ? [
             {
               fieldId: filterField,
               operator: filterOperator,
-              ...(filterOperator === 'is_null' ? {} : { value: filterValue }),
+              ...(filterOperator === 'is_null' ? {} : { value: debouncedFilterValue }),
             },
           ]
         : [];
     const sorts =
       sortField === 'displayName'
-        ? [{ systemField: 'displayName', direction: 'asc' }]
-        : [{ fieldId: sortField, direction: 'asc' }];
-    return { filters, sorts, page, pageSize: 25 };
-  }, [filterField, filterOperator, filterValue, page, sortField]);
+        ? [{ systemField: 'displayName', direction: sortDirection }]
+        : [{ fieldId: sortField, direction: sortDirection }];
+    return { filters, sorts, page, pageSize };
+  }, [debouncedFilterValue, filterField, filterOperator, page, pageSize, sortDirection, sortField]);
 
   const loadRecords = useCallback(async () => {
     if (!selectedId) return;
@@ -808,6 +1139,7 @@ export function DataPage({ user }: { user: User }) {
       setRecords(recordResult);
       setMessage('');
     } catch (cause) {
+      setMessageTone('error');
       setMessage(cause instanceof Error ? cause.message : 'Records could not be loaded.');
     } finally {
       setRecordsLoading(false);
@@ -825,9 +1157,11 @@ export function DataPage({ user }: { user: User }) {
           body: '{}',
         },
       );
-      setMessage(result.changed ? 'Template installed.' : 'Template is already current.');
       await loadTypes();
+      setMessageTone('success');
+      setMessage(result.changed ? 'Template installed.' : 'Template is already current.');
     } catch (cause) {
+      setMessageTone('error');
       setMessage(cause instanceof Error ? cause.message : 'Template installation failed.');
     }
   }
@@ -850,6 +1184,7 @@ export function DataPage({ user }: { user: User }) {
       await loadTypes();
       setSearch({ type: created.id });
     } catch (cause) {
+      setMessageTone('error');
       setMessage(cause instanceof Error ? cause.message : 'Object type creation failed.');
     }
   }
@@ -896,6 +1231,7 @@ export function DataPage({ user }: { user: User }) {
       form.reset();
       await loadRecords();
     } catch (cause) {
+      setMessageTone('error');
       setMessage(cause instanceof Error ? cause.message : 'Field creation failed.');
     }
   }
@@ -913,6 +1249,7 @@ export function DataPage({ user }: { user: User }) {
       setCsvResult(result);
       await loadRecords();
     } catch (cause) {
+      setMessageTone('error');
       setMessage(cause instanceof Error ? cause.message : 'CSV import failed.');
     }
   }
@@ -936,19 +1273,123 @@ export function DataPage({ user }: { user: User }) {
       link.click();
       URL.revokeObjectURL(url);
     } catch (cause) {
+      setMessageTone('error');
       setMessage(cause instanceof Error ? cause.message : 'CSV export failed.');
+    }
+  }
+
+  async function saveGridCell(
+    record: DynamicRecord,
+    target: 'displayName' | FieldDefinition,
+    value: unknown,
+  ) {
+    const values = { ...record.values };
+    const relations = { ...(record.relations ?? {}) };
+    const fileReferences = { ...(record.fileReferences ?? {}) };
+    const datasetReferences = { ...(record.datasetReferences ?? {}) };
+    let displayName = record.displayName;
+
+    if (target === 'displayName') {
+      displayName = String(value);
+    } else if (target.fieldType === 'relation') {
+      const targets = value as string[];
+      if (targets.length) relations[target.id] = targets;
+      else delete relations[target.id];
+    } else if (target.fieldType === 'file' || target.fieldType === 'dataset') {
+      const references = value as string[];
+      const map = target.fieldType === 'file' ? fileReferences : datasetReferences;
+      if (references.length) map[target.id] = references;
+      else delete map[target.id];
+    } else {
+      if (value === undefined) delete values[target.key];
+      else values[target.key] = value;
+    }
+
+    try {
+      const updated = await api<DynamicRecord>(
+        `${base}/object-types/${record.objectTypeId}/records/${record.id}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
+            displayName,
+            values,
+            relations,
+            fileReferences,
+            datasetReferences,
+            rowVersion: record.rowVersion,
+          }),
+        },
+      );
+      setRecords((current) => ({
+        ...current,
+        items: current.items.map((item) => (item.id === updated.id ? updated : item)),
+      }));
+      setSelectedRecord((current) => (current?.id === updated.id ? updated : current));
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.code === 'VERSION_CONFLICT') await loadRecords();
+      throw cause;
+    }
+  }
+
+  async function saveRecordPanel(record: DynamicRecord, form: FormData) {
+    const updated = await api<DynamicRecord>(
+      `${base}/object-types/${record.objectTypeId}/records/${record.id}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({
+          ...recordPayload(fields, form),
+          rowVersion: record.rowVersion,
+        }),
+      },
+    );
+    setRecords((current) => ({
+      ...current,
+      items: current.items.map((item) => (item.id === updated.id ? updated : item)),
+    }));
+    setSelectedRecord(updated);
+    setMessageTone('success');
+    setMessage(`${updated.displayName} saved.`);
+  }
+
+  async function archiveSelectedRows() {
+    if (!selectedRows.size) return;
+    if (!window.confirm(`Archive ${selectedRows.size} selected record(s)? History is preserved.`))
+      return;
+    setBulkBusy(true);
+    try {
+      await Promise.all(
+        [...selectedRows].map((recordId) => {
+          const record = records.items.find((candidate) => candidate.id === recordId);
+          if (!record) return Promise.resolve();
+          return api(`${base}/object-types/${record.objectTypeId}/records/${record.id}/archive`, {
+            method: 'POST',
+            body: JSON.stringify({ reason: 'Archived from grid bulk action' }),
+          });
+        }),
+      );
+      setSelectedRows(new Set());
+      setMessageTone('success');
+      setMessage('Selected records archived.');
+      await loadRecords();
+    } catch (cause) {
+      setMessageTone('error');
+      setMessage(
+        cause instanceof Error ? cause.message : 'Selected records could not be archived.',
+      );
+    } finally {
+      setBulkBusy(false);
     }
   }
 
   return (
     <>
-      <div className="flex flex-wrap items-center justify-between gap-4">
+      <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <Link className="text-sm text-sky-400" to={base}>
+          <Link className="text-sm text-slate-400 hover:text-sky-300" to={base}>
             ← Project overview
           </Link>
-          <h1 className="mt-3 text-4xl font-semibold">Project data</h1>
-          <p className="mt-2 text-slate-400">Typed, configurable engineering records.</p>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Data workspace</h1>
+          <p className="mt-1 text-sm text-slate-500">Typed, configurable engineering records.</p>
         </div>
         {allowed(user, 'schema.manage') && (
           <Button variant="quiet" onClick={() => void installTemplate()}>
@@ -956,12 +1397,12 @@ export function DataPage({ user }: { user: User }) {
           </Button>
         )}
       </div>
-      <ErrorText>{message}</ErrorText>
+      <NoticeText tone={messageTone}>{message}</NoticeText>
 
-      <div className="mt-8 grid min-w-0 gap-6 lg:grid-cols-[220px_minmax(0,1fr)]">
-        <aside className="min-w-0 rounded-2xl border border-slate-800 bg-slate-900/60 p-3">
+      <div className="mt-5 grid min-h-[38rem] min-w-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/35 shadow-2xl shadow-slate-950/15 lg:grid-cols-[240px_minmax(0,1fr)]">
+        <aside className="min-w-0 border-b border-slate-800 bg-slate-900/60 p-3 lg:border-b-0 lg:border-r">
           <p className="px-3 py-2 font-mono text-xs uppercase tracking-widest text-slate-500">
-            Object types
+            Tables
           </p>
           {typesLoading && (
             <div className="space-y-2 px-3 py-4" aria-label="Loading object types">
@@ -976,35 +1417,62 @@ export function DataPage({ user }: { user: User }) {
           )}
           {objectTypes.map((objectType) => (
             <button
-              className={`mb-1 w-full rounded-lg px-3 py-2 text-left text-sm ${selectedId === objectType.id ? 'bg-sky-500/15 text-sky-300' : 'text-slate-300 hover:bg-slate-800'}`}
+              className={`mb-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm ${selectedId === objectType.id ? 'bg-sky-500/15 font-medium text-sky-300' : 'text-slate-300 hover:bg-slate-800'}`}
               key={objectType.id}
               onClick={() => {
                 setPage(1);
                 setSortField('displayName');
+                setSortDirection('asc');
                 setFilterField('');
                 setFilterValue('');
                 setSearch({ type: objectType.id });
               }}
             >
-              {objectType.pluralName}
+              <span className="text-slate-500">▦</span>
+              <span className="truncate">{objectType.pluralName}</span>
             </button>
           ))}
+          {selected && (
+            <div className="mt-4 border-t border-slate-800 pt-3">
+              <p className="px-3 py-2 font-mono text-xs uppercase tracking-widest text-slate-500">
+                Views
+              </p>
+              <button
+                className="flex w-full items-center justify-between rounded-lg bg-slate-800/80 px-3 py-2 text-left text-sm text-slate-200"
+                type="button"
+              >
+                <span className="flex items-center gap-2">
+                  <span className="text-sky-400">▦</span> All records
+                </span>
+                <span className="rounded bg-slate-700 px-1.5 py-0.5 text-[10px] uppercase text-slate-400">
+                  Grid
+                </span>
+              </button>
+            </div>
+          )}
           {allowed(user, 'schema.manage') && (
-            <form
-              className="mt-5 space-y-2 border-t border-slate-800 px-2 pt-4"
-              onSubmit={(event) => void createObjectType(event)}
-            >
-              <input className={inputClass} name="name" placeholder="Type name" required />
-              <input className={inputClass} name="pluralName" placeholder="Plural name" required />
-              <input className={inputClass} name="key" placeholder="stable-key" required />
-              <Button className="w-full" variant="quiet" type="submit">
-                Add object type
-              </Button>
-            </form>
+            <details className="group mt-4 border-t border-slate-800 px-2 pt-3">
+              <summary className="cursor-pointer list-none rounded-lg px-2 py-2 text-sm text-slate-400 hover:bg-slate-800 hover:text-slate-200">
+                + New table
+              </summary>
+              <form className="mt-2 space-y-2" onSubmit={(event) => void createObjectType(event)}>
+                <input className={inputClass} name="name" placeholder="Type name" required />
+                <input
+                  className={inputClass}
+                  name="pluralName"
+                  placeholder="Plural name"
+                  required
+                />
+                <input className={inputClass} name="key" placeholder="stable-key" required />
+                <Button className="w-full" variant="quiet" type="submit">
+                  Add table
+                </Button>
+              </form>
+            </details>
           )}
         </aside>
 
-        <section className="min-w-0">
+        <section className="min-w-0 bg-slate-950/20 p-4 sm:p-5">
           {!selected ? (
             <div className="rounded-2xl border border-dashed border-slate-700 p-10 text-center text-slate-400">
               Choose or create an object type.
@@ -1112,102 +1580,245 @@ export function DataPage({ user }: { user: User }) {
                 </div>
               )}
 
-              {showNewRecord && allowed(user, 'record.create') && (
-                <div className="mt-6 rounded-2xl border border-sky-900/80 bg-sky-950/20 p-5">
-                  <h3 className="mb-5 text-lg font-semibold">New {selected.name}</h3>
-                  <RecordForm
-                    fields={fields}
-                    submitLabel="Create record"
-                    onSubmit={async (form) => {
-                      await api(`${base}/object-types/${selected.id}/records`, {
-                        method: 'POST',
-                        body: JSON.stringify(recordPayload(fields, form)),
-                      });
-                      setShowNewRecord(false);
-                      await loadRecords();
+              <div className="mt-5 overflow-hidden rounded-xl border border-slate-800 bg-slate-900/45 shadow-lg shadow-slate-950/10">
+                <div className="flex min-h-12 flex-wrap items-center gap-1 p-2">
+                  {(['fields', 'filter', 'sort'] as const).map((tool) => {
+                    const active = activeTool === tool;
+                    const label = tool[0]!.toUpperCase() + tool.slice(1);
+                    const count =
+                      tool === 'fields'
+                        ? `${visibleFields.length}/${fields.length}`
+                        : tool === 'filter' && filterField
+                          ? '1'
+                          : tool === 'sort'
+                            ? '1'
+                            : '';
+                    return (
+                      <button
+                        aria-expanded={active}
+                        className={`rounded-lg px-3 py-2 text-sm ${active ? 'bg-sky-500/15 text-sky-300' : 'text-slate-300 hover:bg-slate-800'}`}
+                        key={tool}
+                        onClick={() => setActiveTool(active ? null : tool)}
+                        type="button"
+                      >
+                        {label}
+                        {count && (
+                          <span className="ml-2 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">
+                            {count}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                  <select
+                    aria-label="Row density"
+                    className="rounded-lg border border-transparent bg-transparent px-3 py-2 text-sm text-slate-300 outline-none hover:bg-slate-800 focus:border-sky-500"
+                    value={rowDensity}
+                    onChange={(event) =>
+                      setRowDensity(event.target.value as 'compact' | 'comfortable')
+                    }
+                  >
+                    <option value="compact">Compact rows</option>
+                    <option value="comfortable">Comfortable rows</option>
+                  </select>
+                  <select
+                    aria-label="Rows per page"
+                    className="rounded-lg border border-transparent bg-transparent px-3 py-2 text-sm text-slate-300 outline-none hover:bg-slate-800 focus:border-sky-500"
+                    value={pageSize}
+                    onChange={(event) => {
+                      setPageSize(Number(event.target.value));
+                      setPage(1);
                     }}
-                  />
+                  >
+                    {[25, 50, 100].map((size) => (
+                      <option key={size} value={size}>
+                        {size} rows
+                      </option>
+                    ))}
+                  </select>
+                  <span className="min-w-3 flex-1" />
+                  {selectedRows.size > 0 && (
+                    <div className="flex items-center gap-2 pl-2">
+                      <span className="text-xs font-medium text-sky-300">
+                        {selectedRows.size} selected
+                      </span>
+                      {allowed(user, 'record.archive') && (
+                        <button
+                          className="rounded-lg px-3 py-2 text-sm text-rose-300 hover:bg-rose-500/10"
+                          disabled={bulkBusy}
+                          onClick={() => void archiveSelectedRows()}
+                          type="button"
+                        >
+                          {bulkBusy ? 'Archiving…' : 'Archive'}
+                        </button>
+                      )}
+                      <button
+                        className="rounded-lg px-2 py-2 text-sm text-slate-400 hover:bg-slate-800"
+                        onClick={() => setSelectedRows(new Set())}
+                        type="button"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  )}
+                  <span className="px-2 text-xs text-slate-500">{records.total} records</span>
                 </div>
-              )}
 
-              <div className="mt-6 flex flex-wrap items-end gap-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
-                <label className="text-xs text-slate-400">
-                  Sort
-                  <select
-                    className={inputClass}
-                    value={sortField}
-                    onChange={(event) => {
-                      setSortField(event.target.value);
-                      setPage(1);
-                    }}
-                  >
-                    <option value="displayName">Display name</option>
-                    {fields
-                      .filter(
-                        (field) =>
-                          !['relation', 'multi_select', 'measurement', 'range'].includes(
-                            field.fieldType,
+                {activeTool === 'fields' && (
+                  <div className="border-t border-slate-800 p-3">
+                    <div className="flex flex-wrap gap-2">
+                      {fields.map((field) => {
+                        const visible = !hiddenFieldIds.has(field.id);
+                        return (
+                          <label
+                            className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs ${visible ? 'border-sky-500/30 bg-sky-500/10 text-sky-200' : 'border-slate-800 text-slate-500'}`}
+                            key={field.id}
+                          >
+                            <input
+                              checked={visible}
+                              type="checkbox"
+                              onChange={() =>
+                                setHiddenFieldIds((current) => {
+                                  const next = new Set(current);
+                                  if (next.has(field.id)) next.delete(field.id);
+                                  else next.add(field.id);
+                                  return next;
+                                })
+                              }
+                            />
+                            {field.name}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {activeTool === 'filter' && (
+                  <div className="flex flex-wrap items-end gap-3 border-t border-slate-800 p-3">
+                    <label className="min-w-44 text-xs text-slate-400">
+                      Field
+                      <select
+                        className={inputClass}
+                        value={filterField}
+                        onChange={(event) => {
+                          setFilterField(event.target.value);
+                          setPage(1);
+                        }}
+                      >
+                        <option value="">No filter</option>
+                        {fields
+                          .filter(
+                            (field) =>
+                              field.fieldType !== 'measurement' && field.fieldType !== 'range',
+                          )
+                          .map((field) => (
+                            <option key={field.id} value={field.id}>
+                              {field.name}
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                    <label className="min-w-32 text-xs text-slate-400">
+                      Operator
+                      <select
+                        className={inputClass}
+                        value={filterOperator}
+                        onChange={(event) => setFilterOperator(event.target.value)}
+                      >
+                        {['eq', 'ne', 'contains', 'gt', 'gte', 'lt', 'lte', 'is_null'].map(
+                          (operator) => (
+                            <option key={operator}>{operator}</option>
                           ),
-                      )
-                      .map((field) => (
-                        <option key={field.id} value={field.id}>
-                          {field.name}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-                <label className="text-xs text-slate-400">
-                  Filter field
-                  <select
-                    className={inputClass}
-                    value={filterField}
-                    onChange={(event) => {
-                      setFilterField(event.target.value);
-                      setPage(1);
-                    }}
-                  >
-                    <option value="">No filter</option>
-                    {fields
-                      .filter(
-                        (field) => field.fieldType !== 'measurement' && field.fieldType !== 'range',
-                      )
-                      .map((field) => (
-                        <option key={field.id} value={field.id}>
-                          {field.name}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-                <label className="text-xs text-slate-400">
-                  Operator
-                  <select
-                    className={inputClass}
-                    value={filterOperator}
-                    onChange={(event) => setFilterOperator(event.target.value)}
-                  >
-                    {['eq', 'ne', 'contains', 'gt', 'gte', 'lt', 'lte', 'is_null'].map(
-                      (operator) => (
-                        <option key={operator}>{operator}</option>
-                      ),
+                        )}
+                      </select>
+                    </label>
+                    {filterOperator !== 'is_null' && (
+                      <label className="min-w-44 text-xs text-slate-400">
+                        Value
+                        <input
+                          className={inputClass}
+                          value={filterValue}
+                          onChange={(event) => {
+                            setFilterValue(event.target.value);
+                            setPage(1);
+                          }}
+                        />
+                      </label>
                     )}
-                  </select>
-                </label>
-                {filterOperator !== 'is_null' && (
-                  <label className="text-xs text-slate-400">
-                    Value
-                    <input
-                      className={inputClass}
-                      value={filterValue}
-                      onChange={(event) => {
-                        setFilterValue(event.target.value);
-                        setPage(1);
-                      }}
-                    />
-                  </label>
+                    {filterField && (
+                      <button
+                        className="rounded-lg px-3 py-2 text-sm text-slate-400 hover:bg-slate-800"
+                        onClick={() => {
+                          setFilterField('');
+                          setFilterValue('');
+                          setDebouncedFilterValue('');
+                          setFilterOperator('eq');
+                          setPage(1);
+                        }}
+                        type="button"
+                      >
+                        Clear filter
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {activeTool === 'sort' && (
+                  <div className="flex flex-wrap items-end gap-3 border-t border-slate-800 p-3">
+                    <label className="min-w-52 text-xs text-slate-400">
+                      Sort records by
+                      <select
+                        className={inputClass}
+                        value={sortField}
+                        onChange={(event) => {
+                          setSortField(event.target.value);
+                          setPage(1);
+                        }}
+                      >
+                        <option value="displayName">Display name</option>
+                        {fields
+                          .filter(
+                            (field) =>
+                              !['relation', 'multi_select', 'measurement', 'range'].includes(
+                                field.fieldType,
+                              ),
+                          )
+                          .map((field) => (
+                            <option key={field.id} value={field.id}>
+                              {field.name}
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                    <label className="min-w-40 text-xs text-slate-400">
+                      Direction
+                      <select
+                        className={inputClass}
+                        value={sortDirection}
+                        onChange={(event) => {
+                          setSortDirection(event.target.value as 'asc' | 'desc');
+                          setPage(1);
+                        }}
+                      >
+                        <option value="asc">Ascending</option>
+                        <option value="desc">Descending</option>
+                      </select>
+                    </label>
+                  </div>
                 )}
               </div>
 
-              <div className="mt-4 max-w-full overflow-x-auto rounded-2xl border border-slate-800">
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+                <p>
+                  Spreadsheet view
+                  {allowed(user, 'record.update') &&
+                    ' · double-click a cell or focus it and press Enter. Save with Enter or by leaving the cell; cancel with Escape.'}
+                </p>
+                <p>Measurements are read-only here to preserve observation history.</p>
+              </div>
+
+              <div className="mt-2 max-w-full overflow-x-auto rounded-2xl border border-slate-800">
                 {recordsLoading && (
                   <div className="space-y-3 p-5" aria-label="Loading records">
                     <div className="h-10 animate-pulse rounded bg-slate-900" />
@@ -1216,45 +1827,162 @@ export function DataPage({ user }: { user: User }) {
                   </div>
                 )}
                 {!recordsLoading && (
-                  <table className="w-full min-w-[720px] border-collapse text-left text-sm">
-                    <thead className="bg-slate-900 text-xs uppercase tracking-wider text-slate-500">
+                  <table className="w-full min-w-[880px] border-separate border-spacing-0 text-left text-sm">
+                    <caption className="sr-only">
+                      Editable spreadsheet view for {selected.pluralName}
+                    </caption>
+                    <thead className="sticky top-0 z-20 bg-slate-900 text-xs uppercase tracking-wider text-slate-500">
                       <tr>
-                        <th className="p-4">Name</th>
-                        {fields.slice(0, 6).map((field) => (
-                          <th className="p-4" key={field.id}>
+                        <th className="w-20 border-b border-r border-slate-800 px-3 py-3">
+                          <span className="flex items-center gap-2">
+                            <input
+                              aria-label="Select all visible records"
+                              checked={
+                                records.items.length > 0 &&
+                                records.items.every((record) => selectedRows.has(record.id))
+                              }
+                              type="checkbox"
+                              onChange={(event) =>
+                                setSelectedRows((current) => {
+                                  const next = new Set(current);
+                                  for (const record of records.items) {
+                                    if (event.target.checked) next.add(record.id);
+                                    else next.delete(record.id);
+                                  }
+                                  return next;
+                                })
+                              }
+                            />
+                            #
+                          </span>
+                        </th>
+                        <th className="sticky left-0 z-30 min-w-52 border-b border-r border-slate-800 bg-slate-900 px-3 py-3">
+                          Name
+                        </th>
+                        {visibleFields.map((field) => (
+                          <th
+                            className="min-w-44 border-b border-r border-slate-800 px-3 py-3"
+                            key={field.id}
+                          >
                             {field.name}
+                            <span className="ml-2 font-normal normal-case text-slate-600">
+                              {field.fieldType}
+                            </span>
                           </th>
                         ))}
-                        <th className="p-4">Updated</th>
+                        <th className="min-w-28 border-b border-r border-slate-800 px-3 py-3">
+                          Updated
+                        </th>
+                        <th className="w-20 border-b border-slate-800 px-3 py-3">Detail</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-800">
-                      {records.items.map((record) => (
-                        <tr className="bg-slate-950/30 hover:bg-slate-900/70" key={record.id}>
-                          <td className="p-4">
-                            <Link
-                              className="font-medium text-sky-300"
-                              to={`${base}/data/${record.objectTypeId}/records/${record.id}`}
-                            >
-                              {record.displayName}
-                            </Link>
+                    <tbody>
+                      {records.items.map((record, index) => (
+                        <tr
+                          className={`${selectedRows.has(record.id) ? 'bg-sky-500/5' : 'bg-slate-950/30'} hover:bg-slate-900/40`}
+                          key={record.id}
+                        >
+                          <td className="border-b border-r border-slate-800 px-3 text-xs text-slate-600">
+                            <span className="flex items-center gap-2">
+                              <input
+                                aria-label={`Select ${record.displayName}`}
+                                checked={selectedRows.has(record.id)}
+                                type="checkbox"
+                                onChange={(event) =>
+                                  setSelectedRows((current) => {
+                                    const next = new Set(current);
+                                    if (event.target.checked) next.add(record.id);
+                                    else next.delete(record.id);
+                                    return next;
+                                  })
+                                }
+                              />
+                              <button
+                                aria-label={`Quick view ${record.displayName}`}
+                                className="rounded px-1 py-2 font-mono hover:bg-slate-800 hover:text-sky-300"
+                                onClick={() => setSelectedRecord(record)}
+                                title="Open quick view"
+                                type="button"
+                              >
+                                {(records.page - 1) * records.pageSize + index + 1}
+                              </button>
+                            </span>
                           </td>
-                          {fields.slice(0, 6).map((field) => (
-                            <td className="max-w-56 truncate p-4 text-slate-300" key={field.id}>
-                              {field.fieldType === 'relation'
-                                ? displayValue(record.relations[field.id])
-                                : field.fieldType === 'measurement'
-                                  ? record.measurements?.[field.id]?.resultId
+                          <td className="sticky left-0 z-10 border-b border-r border-slate-800 bg-slate-950">
+                            {allowed(user, 'record.update') ? (
+                              <GridCell
+                                comfortable={rowDensity === 'comfortable'}
+                                label="Name"
+                                recordName={record.displayName}
+                                value={record.displayName}
+                                onSave={(value) => saveGridCell(record, 'displayName', value)}
+                              />
+                            ) : (
+                              <span className="block px-3 py-3 font-medium text-slate-200">
+                                {record.displayName}
+                              </span>
+                            )}
+                          </td>
+                          {visibleFields.map((field) => (
+                            <td className="border-b border-r border-slate-800" key={field.id}>
+                              {field.fieldType === 'measurement' ? (
+                                <span className="block max-w-64 truncate px-3 py-3 text-slate-400">
+                                  {record.measurements?.[field.id]?.resultId
                                     ? `${record.measurements[field.id]?.value} ${record.measurements[field.id]?.unit} · ${record.measurements[field.id]?.status ?? 'pending'}`
-                                    : (record.measurements?.[field.id]?.status ?? '—')
-                                  : displayValue(record.values[field.key])}
+                                    : (record.measurements?.[field.id]?.status ?? '—')}
+                                </span>
+                              ) : allowed(user, 'record.update') ? (
+                                <GridCell
+                                  comfortable={rowDensity === 'comfortable'}
+                                  field={field}
+                                  label={field.name}
+                                  recordName={record.displayName}
+                                  value={recordGridValue(record, field)}
+                                  onSave={(value) => saveGridCell(record, field, value)}
+                                />
+                              ) : (
+                                <span
+                                  className={`block max-w-64 truncate px-3 text-slate-300 ${rowDensity === 'comfortable' ? 'py-4' : 'py-2.5'}`}
+                                >
+                                  {displayValue(recordGridValue(record, field))}
+                                </span>
+                              )}
                             </td>
                           ))}
-                          <td className="p-4 text-slate-500">
+                          <td
+                            className={`border-b border-r border-slate-800 px-3 text-slate-500 ${rowDensity === 'comfortable' ? 'py-4' : 'py-2.5'}`}
+                          >
                             {new Date(record.updatedAt).toLocaleDateString()}
+                          </td>
+                          <td className="border-b border-slate-800 px-3 py-2">
+                            <button
+                              aria-label={`Expand ${record.displayName}`}
+                              className="rounded-lg px-2 py-1 text-sky-400 hover:bg-sky-500/10 hover:text-sky-300"
+                              onClick={() => setSelectedRecord(record)}
+                              title={`Quick view ${record.displayName}`}
+                              type="button"
+                            >
+                              ↗
+                            </button>
                           </td>
                         </tr>
                       ))}
+                      {allowed(user, 'record.create') && (
+                        <tr>
+                          <td
+                            className="border-r border-slate-800 p-1"
+                            colSpan={visibleFields.length + 4}
+                          >
+                            <button
+                              className="w-full rounded-lg px-3 py-2 text-left text-sm text-slate-500 hover:bg-slate-900 hover:text-sky-300"
+                              onClick={() => setShowNewRecord(true)}
+                              type="button"
+                            >
+                              + Add record
+                            </button>
+                          </td>
+                        </tr>
+                      )}
                     </tbody>
                   </table>
                 )}
@@ -1266,7 +1994,8 @@ export function DataPage({ user }: { user: User }) {
               </div>
               <div className="mt-4 flex items-center justify-between text-sm text-slate-400">
                 <span>
-                  {records.total} records · page {records.page}
+                  {records.total} records · page {records.page} of{' '}
+                  {Math.max(1, Math.ceil(records.total / records.pageSize))}
                 </span>
                 <div className="flex gap-2">
                   <Button
@@ -1287,38 +2016,169 @@ export function DataPage({ user }: { user: User }) {
               </div>
 
               {allowed(user, 'record.create') && (
-                <form
-                  className="mt-8 rounded-xl border border-dashed border-slate-700 p-4"
-                  onSubmit={(event) => void importCsv(event)}
-                >
-                  <p className="font-medium">Import CSV</p>
-                  <p className="mt-1 text-xs text-slate-500">
-                    Use displayName and stable field keys as headers. Relations use
-                    semicolon-separated record UUIDs.
-                  </p>
-                  <div className="mt-3 flex flex-wrap items-center gap-3">
-                    <input accept=".csv,text/csv" name="csv" required type="file" />
-                    <Button variant="quiet" type="submit">
-                      Import
-                    </Button>
-                  </div>
-                  {csvResult && (
-                    <p className="mt-3 text-sm text-slate-300">
-                      Imported {csvResult.imported}; {csvResult.failed} failed.
+                <details className="mt-6 rounded-xl border border-slate-800 bg-slate-900/25">
+                  <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium text-slate-300 hover:text-sky-300">
+                    Import records from CSV
+                  </summary>
+                  <form
+                    className="border-t border-slate-800 p-4"
+                    onSubmit={(event) => void importCsv(event)}
+                  >
+                    <p className="text-xs text-slate-500">
+                      Use displayName and stable field keys as headers. Relations use
+                      semicolon-separated record UUIDs.
                     </p>
-                  )}
-                  {csvResult?.errors.map((error) => (
-                    <p className="mt-1 text-xs text-rose-300" key={`${error.row}:${error.reason}`}>
-                      Row {error.row}: {error.reason}
-                    </p>
-                  ))}
-                </form>
+                    <div className="mt-3 flex flex-wrap items-center gap-3">
+                      <input accept=".csv,text/csv" name="csv" required type="file" />
+                      <Button variant="quiet" type="submit">
+                        Import
+                      </Button>
+                    </div>
+                    {csvResult && (
+                      <p className="mt-3 text-sm text-slate-300">
+                        Imported {csvResult.imported}; {csvResult.failed} failed.
+                      </p>
+                    )}
+                    {csvResult?.errors.map((error) => (
+                      <p
+                        className="mt-1 text-xs text-rose-300"
+                        key={`${error.row}:${error.reason}`}
+                      >
+                        Row {error.row}: {error.reason}
+                      </p>
+                    ))}
+                  </form>
+                </details>
               )}
               <SpecificationsPanel base={base} fields={fields} user={user} />
             </>
           )}
         </section>
       </div>
+      {showNewRecord && selected && allowed(user, 'record.create') && (
+        <div className="fixed inset-0 z-[70] flex justify-end" role="presentation">
+          <button
+            aria-label="Close new record panel"
+            className="absolute inset-0 cursor-default bg-slate-950/65 backdrop-blur-sm"
+            onClick={() => setShowNewRecord(false)}
+            type="button"
+          />
+          <aside
+            aria-labelledby="new-record-title"
+            aria-modal="true"
+            className="relative h-full w-full max-w-2xl overflow-y-auto border-l border-slate-700 bg-slate-950 shadow-2xl shadow-black/50"
+            role="dialog"
+          >
+            <header className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-slate-800 bg-slate-950/90 px-5 py-4 backdrop-blur-xl sm:px-7">
+              <div>
+                <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-sky-400">
+                  {selected.name}
+                </p>
+                <h2 className="mt-1 text-2xl font-semibold" id="new-record-title">
+                  New record
+                </h2>
+              </div>
+              <button
+                aria-label="Close new record panel"
+                autoFocus
+                className="grid size-9 place-items-center rounded-lg border border-slate-700 text-xl text-slate-400 hover:bg-slate-800 hover:text-white"
+                onClick={() => setShowNewRecord(false)}
+                type="button"
+              >
+                ×
+              </button>
+            </header>
+            <div className="p-5 sm:p-7">
+              <RecordForm
+                fields={fields}
+                submitLabel="Create record"
+                onSubmit={async (form) => {
+                  await api(`${base}/object-types/${selected.id}/records`, {
+                    method: 'POST',
+                    body: JSON.stringify(recordPayload(fields, form)),
+                  });
+                  setShowNewRecord(false);
+                  await loadRecords();
+                }}
+              />
+            </div>
+          </aside>
+        </div>
+      )}
+      {selectedRecord && (
+        <div className="fixed inset-0 z-[70] flex justify-end" role="presentation">
+          <button
+            aria-label="Close quick record view"
+            className="absolute inset-0 cursor-default bg-slate-950/65 backdrop-blur-sm"
+            onClick={() => setSelectedRecord(undefined)}
+            type="button"
+          />
+          <aside
+            aria-labelledby="quick-record-title"
+            aria-modal="true"
+            className="relative h-full w-full max-w-2xl overflow-y-auto border-l border-slate-700 bg-slate-950 shadow-2xl shadow-black/50"
+            role="dialog"
+          >
+            <header className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-slate-800 bg-slate-950/90 px-5 py-4 backdrop-blur-xl sm:px-7">
+              <div className="min-w-0">
+                <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-sky-400">
+                  {selected?.name ?? 'Record'} · quick view
+                </p>
+                <h2 className="mt-1 truncate text-2xl font-semibold" id="quick-record-title">
+                  {selectedRecord.displayName}
+                </h2>
+                <p className="mt-1 font-mono text-[10px] text-slate-600">
+                  v{selectedRecord.rowVersion} · {selectedRecord.id}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <Link
+                  className="rounded-lg px-3 py-2 text-sm text-sky-300 hover:bg-sky-500/10"
+                  to={`${base}/data/${selectedRecord.objectTypeId}/records/${selectedRecord.id}`}
+                >
+                  Full record
+                </Link>
+                <button
+                  aria-label="Close quick record view"
+                  autoFocus
+                  className="grid size-9 place-items-center rounded-lg border border-slate-700 text-xl text-slate-400 hover:bg-slate-800 hover:text-white"
+                  onClick={() => setSelectedRecord(undefined)}
+                  type="button"
+                >
+                  ×
+                </button>
+              </div>
+            </header>
+            <div className="p-5 sm:p-7">
+              <div className="mb-6 rounded-xl border border-slate-800 bg-slate-900/45 px-4 py-3 text-xs text-slate-400">
+                Mutable properties can be edited here without leaving the grid. Measurements and
+                evaluation history remain available in the full record view.
+              </div>
+              {allowed(user, 'record.update') ? (
+                <RecordForm
+                  fields={fields}
+                  record={selectedRecord}
+                  submitLabel="Save record"
+                  onSubmit={(form) => saveRecordPanel(selectedRecord, form)}
+                />
+              ) : (
+                <dl className="divide-y divide-slate-800 rounded-xl border border-slate-800">
+                  {visibleFields.map((field) => (
+                    <div className="grid gap-1 px-4 py-3 sm:grid-cols-[12rem_1fr]" key={field.id}>
+                      <dt className="text-sm text-slate-500">{field.name}</dt>
+                      <dd className="text-sm text-slate-200">
+                        {field.fieldType === 'measurement'
+                          ? displayValue(selectedRecord.measurements?.[field.id]?.value)
+                          : displayValue(recordGridValue(selectedRecord, field))}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
+            </div>
+          </aside>
+        </div>
+      )}
     </>
   );
 }

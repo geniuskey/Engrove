@@ -164,10 +164,12 @@ export function FilesDatasetsPage({ user }: { user: User }) {
 
   return (
     <>
-      <Link className="text-sm text-sky-400" to={base}>
+      <Link className="text-sm text-slate-400 hover:text-sky-300" to={base}>
         ← Project
       </Link>
-      <h1 className="mt-4 text-4xl font-semibold">Files &amp; datasets</h1>
+      <h1 className="mt-4 text-4xl font-semibold tracking-tight sm:text-5xl">
+        Files &amp; datasets
+      </h1>
       <p className="mt-3 text-slate-400">
         Immutable file versions, processing lineage, and previews.
       </p>
@@ -175,7 +177,7 @@ export function FilesDatasetsPage({ user }: { user: User }) {
 
       {allowed(user, 'file.upload') && (
         <form
-          className="mt-8 grid gap-3 rounded-2xl border border-slate-800 p-5 md:grid-cols-4"
+          className="mt-8 grid gap-3 rounded-2xl border border-slate-800 bg-slate-900/45 p-5 shadow-xl shadow-slate-950/10 md:grid-cols-4"
           onSubmit={(event) => void upload(event)}
         >
           <input className={inputClass} name="file" type="file" required />
@@ -196,7 +198,7 @@ export function FilesDatasetsPage({ user }: { user: User }) {
 
       <section className="mt-10">
         <h2 className="text-2xl font-semibold">Exact file versions</h2>
-        <div className="mt-4 overflow-x-auto rounded-xl border border-slate-800">
+        <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/35 shadow-xl shadow-slate-950/10">
           <table className="w-full text-left text-sm">
             <thead className="bg-slate-900 text-slate-400">
               <tr>
@@ -268,7 +270,7 @@ export function FilesDatasetsPage({ user }: { user: User }) {
       {allowed(user, 'dataset.upload') && (
         <section className="mt-10 grid gap-6 lg:grid-cols-2">
           <form
-            className="rounded-2xl border border-slate-800 p-5 space-y-3"
+            className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-5 shadow-lg shadow-slate-950/10"
             onSubmit={(event) => void createTabular(event)}
           >
             <h2 className="text-xl font-semibold">Parse CSV</h2>
@@ -295,7 +297,7 @@ export function FilesDatasetsPage({ user }: { user: User }) {
             </Button>
           </form>
           <form
-            className="rounded-2xl border border-slate-800 p-5 space-y-3"
+            className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-5 shadow-lg shadow-slate-950/10"
             onSubmit={(event) => void createXy(event)}
           >
             <h2 className="text-xl font-semibold">Derive XY</h2>
@@ -355,7 +357,7 @@ export function FilesDatasetsPage({ user }: { user: User }) {
         <div className="mt-4 grid gap-3">
           {datasets.map((dataset) => (
             <article
-              className="rounded-xl border border-slate-800 bg-slate-900/60 p-4"
+              className="rounded-2xl border border-slate-800 bg-slate-900/55 p-5 shadow-lg shadow-slate-950/10 transition hover:border-slate-700"
               key={dataset.id}
             >
               <div className="flex flex-wrap items-start justify-between gap-4">

@@ -13,8 +13,10 @@ import {
 import {
   Link,
   Navigate,
+  NavLink,
   Route,
   Routes,
+  useLocation,
   useNavigate,
   useParams,
   useSearchParams,
@@ -168,13 +170,26 @@ export function ApiStatus() {
 
 function AuthCard({ title, children }: PropsWithChildren<{ title: string }>) {
   return (
-    <main className="min-h-screen bg-slate-950 px-6 py-16 text-slate-100">
-      <div className="mx-auto max-w-md">
-        <Link to="/" className="font-mono text-sm uppercase tracking-[0.22em] text-sky-400">
-          Engrove Community
+    <main className="relative isolate flex min-h-screen items-center overflow-hidden px-5 py-12 text-slate-100 sm:px-6">
+      <div
+        aria-hidden="true"
+        className="absolute inset-x-0 top-0 -z-10 mx-auto h-96 max-w-5xl rounded-full bg-sky-500/10 blur-3xl"
+      />
+      <div className="mx-auto w-full max-w-md">
+        <Link to="/" className="inline-flex items-center gap-3 text-slate-100">
+          <span className="grid size-10 place-items-center rounded-xl border border-sky-300/30 bg-gradient-to-br from-sky-300 to-cyan-500 font-mono text-sm font-bold text-slate-950 shadow-lg shadow-sky-950/40">
+            E
+          </span>
+          <span>
+            <span className="block font-semibold tracking-tight">Engrove</span>
+            <span className="block font-mono text-[10px] uppercase tracking-[0.2em] text-sky-400">
+              Community
+            </span>
+          </span>
         </Link>
-        <h1 className="mt-6 text-3xl font-semibold">{title}</h1>
-        <div className="mt-8 rounded-2xl border border-slate-800 bg-slate-900/70 p-6">
+        <h1 className="mt-10 text-3xl font-semibold tracking-tight">{title}</h1>
+        <p className="mt-2 text-sm text-slate-400">Your traceable engineering workspace.</p>
+        <div className="mt-6 rounded-2xl border border-slate-700/70 bg-slate-900/75 p-6 shadow-2xl shadow-slate-950/40 backdrop-blur-xl">
           {children}
         </div>
         <ApiStatus />
@@ -184,7 +199,7 @@ function AuthCard({ title, children }: PropsWithChildren<{ title: string }>) {
 }
 
 export const inputClass =
-  'mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-400';
+  'mt-1.5 min-h-10 w-full rounded-xl border border-slate-700/80 bg-slate-950/80 px-3 py-2 text-slate-100 shadow-sm outline-none transition placeholder:text-slate-600 hover:border-slate-600 focus:border-sky-400 focus:ring-2 focus:ring-sky-400/15 disabled:cursor-not-allowed disabled:opacity-50';
 
 function Field({ label, name, type = 'text' }: { label: string; name: string; type?: string }) {
   return (
@@ -339,38 +354,168 @@ function Shell({
   onSignedOut,
   children,
 }: PropsWithChildren<{ user: User; onSignedOut: () => void }>) {
+  const location = useLocation();
+  const projectMatch = location.pathname.match(/^\/workspaces\/([^/]+)\/projects\/([^/]+)/);
+  const projectBase = projectMatch
+    ? `/workspaces/${projectMatch[1]}/projects/${projectMatch[2]}`
+    : undefined;
+  const dataWorkspace = Boolean(projectBase && location.pathname.includes('/data'));
+  const globalLinks = [
+    { to: '/workspaces', label: 'Workspaces' },
+    { to: '/get-started', label: 'Get started' },
+    { to: '/pilot', label: 'Pilot' },
+    ...(allowed(user, 'member.manage') ? [{ to: '/members', label: 'Members' }] : []),
+    ...(allowed(user, 'audit.read') ? [{ to: '/audit', label: 'Audit' }] : []),
+  ];
+  const projectLinks = projectBase
+    ? [
+        { to: projectBase, label: 'Overview', end: true, visible: true },
+        {
+          to: `${projectBase}/data`,
+          label: 'Data',
+          end: false,
+          visible: allowed(user, 'record.read'),
+        },
+        {
+          to: `${projectBase}/files-datasets`,
+          label: 'Files & datasets',
+          end: false,
+          visible: allowed(user, 'file.read'),
+        },
+        {
+          to: `${projectBase}/visualizations`,
+          label: 'Visualizations',
+          end: false,
+          visible: allowed(user, 'dataset.read'),
+        },
+        {
+          to: `${projectBase}/tasks`,
+          label: 'Tasks',
+          end: false,
+          visible: allowed(user, 'task.read'),
+        },
+      ].filter((item) => item.visible)
+    : [];
   async function signOut() {
     await api('/auth/sign-out', { method: 'POST' });
     onSignedOut();
   }
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
-      <header className="border-b border-slate-800 bg-slate-950/90">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-          <nav className="flex items-center gap-6">
-            <Link className="font-semibold text-sky-400" to="/workspaces">
-              Engrove
-            </Link>
-            <Link to="/get-started">Get started</Link>
-            <Link to="/pilot">Pilot</Link>
-            {allowed(user, 'member.manage') && <Link to="/members">Members</Link>}
-            {allowed(user, 'audit.read') && <Link to="/audit">Audit</Link>}
-          </nav>
-          <div className="flex items-center gap-4 text-sm text-slate-400">
-            <span>{user.displayName}</span>
-            <Button variant="quiet" onClick={() => void signOut()}>
-              Sign out
-            </Button>
+    <div className="min-h-screen text-slate-100">
+      <a
+        className="fixed left-4 top-3 z-[60] -translate-y-20 rounded-lg bg-sky-300 px-3 py-2 font-semibold text-slate-950 focus:translate-y-0"
+        href="#main-content"
+      >
+        Skip to content
+      </a>
+      <header className="sticky top-0 z-50 border-b border-slate-800/80 bg-slate-950/75 shadow-lg shadow-slate-950/20 backdrop-blur-xl">
+        <div className="mx-auto max-w-[1440px] px-4 sm:px-6 lg:px-8">
+          <div className="flex h-16 items-center justify-between gap-4">
+            <div className="flex min-w-0 items-center gap-8">
+              <Link className="flex shrink-0 items-center gap-2.5" to="/workspaces">
+                <span className="grid size-8 place-items-center rounded-lg bg-gradient-to-br from-sky-300 to-cyan-500 font-mono text-xs font-bold text-slate-950 shadow-md shadow-sky-950/50">
+                  E
+                </span>
+                <span className="font-semibold tracking-tight">Engrove</span>
+              </Link>
+              <nav aria-label="Global navigation" className="hidden items-center gap-1 md:flex">
+                {globalLinks.map((item) => (
+                  <NavLink
+                    className={({ isActive }) =>
+                      `rounded-lg px-3 py-2 text-sm transition ${isActive ? 'bg-slate-800 text-white' : 'text-slate-400 hover:bg-slate-900 hover:text-slate-100'}`
+                    }
+                    key={item.to}
+                    to={item.to}
+                  >
+                    {item.label}
+                  </NavLink>
+                ))}
+              </nav>
+            </div>
+            <div className="flex shrink-0 items-center gap-3 text-sm">
+              <span className="grid size-8 place-items-center rounded-full border border-slate-700 bg-slate-800 font-semibold text-sky-300">
+                {user.displayName.slice(0, 1).toUpperCase()}
+              </span>
+              <span className="hidden text-right sm:block">
+                <span className="block text-sm font-medium text-slate-200">{user.displayName}</span>
+                <span className="block text-[10px] uppercase tracking-wider text-slate-500">
+                  {user.role}
+                </span>
+              </span>
+              <Button
+                className="min-h-9 px-3 py-1.5"
+                variant="quiet"
+                onClick={() => void signOut()}
+              >
+                Sign out
+              </Button>
+            </div>
           </div>
+          <nav aria-label="Global navigation" className="flex gap-1 overflow-x-auto pb-3 md:hidden">
+            {globalLinks.map((item) => (
+              <NavLink
+                className={({ isActive }) =>
+                  `shrink-0 rounded-lg px-3 py-1.5 text-sm ${isActive ? 'bg-slate-800 text-white' : 'text-slate-400'}`
+                }
+                key={item.to}
+                to={item.to}
+              >
+                {item.label}
+              </NavLink>
+            ))}
+          </nav>
         </div>
+        {projectBase && (
+          <div className="border-t border-slate-800/80 bg-slate-900/35">
+            <nav
+              aria-label="Project navigation"
+              className="mx-auto flex max-w-[1440px] gap-1 overflow-x-auto px-4 py-2 sm:px-6 lg:px-8"
+            >
+              {projectLinks.map((item) => (
+                <NavLink
+                  className={({ isActive }) =>
+                    `shrink-0 rounded-lg px-3 py-1.5 text-sm font-medium ${isActive ? 'bg-sky-400/15 text-sky-300' : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-200'}`
+                  }
+                  end={item.end}
+                  key={item.to}
+                  to={item.to}
+                >
+                  {item.label}
+                </NavLink>
+              ))}
+            </nav>
+          </div>
+        )}
       </header>
-      <main className="mx-auto max-w-6xl px-6 py-10">{children}</main>
+      <main
+        className={`mx-auto px-4 py-8 sm:px-6 sm:py-10 lg:px-8 ${dataWorkspace ? 'max-w-[1800px]' : 'max-w-[1440px]'}`}
+        id="main-content"
+      >
+        {children}
+      </main>
     </div>
   );
 }
 
+export function NoticeText({
+  children,
+  tone = 'info',
+}: PropsWithChildren<{ tone?: 'info' | 'success' | 'error' }>) {
+  const style =
+    tone === 'error'
+      ? 'border-rose-500/20 bg-rose-500/10 text-rose-200'
+      : tone === 'success'
+        ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200'
+        : 'border-sky-500/20 bg-sky-500/10 text-sky-200';
+  return children ? (
+    <p aria-live="polite" className={`mt-4 rounded-xl border px-4 py-3 text-sm ${style}`}>
+      {children}
+    </p>
+  ) : null;
+}
+
 export function ErrorText({ children }: PropsWithChildren) {
-  return children ? <p className="mt-3 text-sm text-rose-300">{children}</p> : null;
+  return <NoticeText tone="error">{children}</NoticeText>;
 }
 
 function WorkspacesPage({ user }: { user: User }) {
@@ -393,18 +538,34 @@ function WorkspacesPage({ user }: { user: User }) {
   }
   return (
     <>
-      <p className="font-mono text-xs uppercase tracking-widest text-sky-400">Organization</p>
-      <h1 className="mt-2 text-4xl font-semibold">Workspaces</h1>
+      <div className="max-w-2xl">
+        <p className="font-mono text-xs uppercase tracking-[0.18em] text-sky-400">Organization</p>
+        <h1 className="mt-2 text-4xl font-semibold tracking-tight sm:text-5xl">Workspaces</h1>
+        <p className="mt-3 text-slate-400">
+          Organize engineering programs, teams, and their traceable project data.
+        </p>
+      </div>
       <ErrorText>{error}</ErrorText>
-      <div className="mt-8 grid gap-4 md:grid-cols-2">
+      <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {items.map((workspace) => (
           <Link
-            className="rounded-2xl border border-slate-800 bg-slate-900/70 p-6 hover:border-sky-500"
+            className="group rounded-2xl border border-slate-800/90 bg-slate-900/60 p-6 shadow-lg shadow-slate-950/15 hover:-translate-y-0.5 hover:border-sky-500/60 hover:bg-slate-900/90"
             key={workspace.id}
             to={`/workspaces/${workspace.id}`}
           >
-            <h2 className="text-xl font-semibold">{workspace.name}</h2>
-            <p className="mt-1 font-mono text-sm text-slate-500">{workspace.slug}</p>
+            <div className="flex items-start justify-between gap-4">
+              <span className="grid size-10 place-items-center rounded-xl border border-slate-700 bg-slate-800 font-mono text-sm text-sky-300">
+                {workspace.name.slice(0, 1).toUpperCase()}
+              </span>
+              <span className="text-slate-600 transition group-hover:translate-x-1 group-hover:text-sky-300">
+                →
+              </span>
+            </div>
+            <h2 className="mt-5 text-xl font-semibold tracking-tight">{workspace.name}</h2>
+            <p className="mt-1 font-mono text-xs text-slate-500">{workspace.slug}</p>
+            <p className="mt-3 line-clamp-2 text-sm text-slate-400">
+              {workspace.description || 'Open this workspace to view its engineering projects.'}
+            </p>
           </Link>
         ))}
         {items.length === 0 && !error && (
@@ -415,12 +576,24 @@ function WorkspacesPage({ user }: { user: User }) {
       </div>
       {allowed(user, 'workspace.manage') && (
         <form
-          className="mt-10 flex max-w-xl flex-wrap gap-3"
+          className="mt-10 max-w-2xl rounded-2xl border border-slate-800 bg-slate-900/40 p-5 shadow-lg shadow-slate-950/10 sm:p-6"
           onSubmit={(event) => void submit(event)}
         >
-          <input className={inputClass} name="name" placeholder="Workspace name" required />
-          <input className={inputClass} name="slug" placeholder="workspace-slug" required />
-          <Button type="submit">Create workspace</Button>
+          <h2 className="text-lg font-semibold">Create a workspace</h2>
+          <p className="mt-1 text-sm text-slate-500">Use a stable slug for shareable URLs.</p>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <label className="text-sm text-slate-300">
+              Workspace name
+              <input className={inputClass} name="name" placeholder="Materials R&D" required />
+            </label>
+            <label className="text-sm text-slate-300">
+              URL slug
+              <input className={inputClass} name="slug" placeholder="materials-rd" required />
+            </label>
+          </div>
+          <Button className="mt-5" type="submit">
+            Create workspace
+          </Button>
           <ErrorText>{formError}</ErrorText>
         </form>
       )}
@@ -452,23 +625,28 @@ function WorkspacePage({ user }: { user: User }) {
   }
   return (
     <>
-      <Link className="text-sm text-sky-400" to="/workspaces">
+      <Link className="text-sm text-slate-400 hover:text-sky-300" to="/workspaces">
         ← Workspaces
       </Link>
-      <h1 className="mt-4 text-4xl font-semibold">Projects</h1>
+      <h1 className="mt-4 text-4xl font-semibold tracking-tight sm:text-5xl">Projects</h1>
+      <p className="mt-3 text-slate-400">Choose a project or start a new engineering workflow.</p>
       <ErrorText>{error}</ErrorText>
-      <div className="mt-8 divide-y divide-slate-800 rounded-2xl border border-slate-800 bg-slate-900/60">
+      <div className="mt-8 divide-y divide-slate-800 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/50 shadow-xl shadow-slate-950/10">
         {items.map((project) => (
           <Link
-            className="flex items-center justify-between p-5 hover:bg-slate-800/50"
+            className="group flex items-center justify-between gap-4 p-5 hover:bg-slate-800/60 sm:p-6"
             key={project.id}
             to={`/workspaces/${id}/projects/${project.id}`}
           >
-            <span>
-              <strong>{project.name}</strong>
-              <span className="ml-3 font-mono text-xs text-slate-500">{project.key}</span>
+            <span className="min-w-0">
+              <strong className="block truncate text-base group-hover:text-sky-200">
+                {project.name}
+              </strong>
+              <span className="mt-1 block font-mono text-xs text-slate-500">{project.key}</span>
             </span>
-            <span className={project.archivedAt ? 'text-amber-300' : 'text-emerald-300'}>
+            <span
+              className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium ${project.archivedAt ? 'bg-amber-500/10 text-amber-300' : 'bg-emerald-500/10 text-emerald-300'}`}
+            >
               {project.archivedAt ? 'Archived' : project.status}
             </span>
           </Link>
@@ -481,12 +659,28 @@ function WorkspacePage({ user }: { user: User }) {
       </div>
       {allowed(user, 'project.create') && (
         <form
-          className="mt-10 flex max-w-xl flex-wrap gap-3"
+          className="mt-10 max-w-2xl rounded-2xl border border-slate-800 bg-slate-900/40 p-5 sm:p-6"
           onSubmit={(event) => void submit(event)}
         >
-          <input className={inputClass} name="name" placeholder="Project name" required />
-          <input className={inputClass} name="key" placeholder="PROJECT" required />
-          <Button type="submit">Create project</Button>
+          <h2 className="text-lg font-semibold">Create a project</h2>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <label className="text-sm text-slate-300">
+              Project name
+              <input
+                className={inputClass}
+                name="name"
+                placeholder="Force characterization"
+                required
+              />
+            </label>
+            <label className="text-sm text-slate-300">
+              Project key
+              <input className={inputClass} name="key" placeholder="FORCE" required />
+            </label>
+          </div>
+          <Button className="mt-5" type="submit">
+            Create project
+          </Button>
           <ErrorText>{formError}</ErrorText>
         </form>
       )}
@@ -498,6 +692,7 @@ function ProjectPage({ user }: { user: User }) {
   const { workspaceId: wid, projectId: pid } = useParams();
   const [project, setProject] = useState<Project>();
   const [message, setMessage] = useState('');
+  const [messageTone, setMessageTone] = useState<'info' | 'success' | 'error'>('info');
   const [demo, setDemo] = useState<{
     installed: boolean;
     installation?: Record<string, unknown>;
@@ -524,7 +719,10 @@ function ProjectPage({ user }: { user: User }) {
         body: JSON.stringify(archived ? { reason: 'Archived from project settings' } : {}),
       });
       await load();
+      setMessageTone('success');
+      setMessage(archived ? 'Project archived.' : 'Project restored.');
     } catch (cause) {
+      setMessageTone('error');
       setMessage(cause instanceof Error ? cause.message : 'Project update failed.');
     }
   }
@@ -542,13 +740,16 @@ function ProjectPage({ user }: { user: User }) {
         }),
       });
       setProject(updated);
+      setMessageTone('success');
       setMessage('Project settings saved.');
     } catch (cause) {
+      setMessageTone('error');
       setMessage(cause instanceof Error ? cause.message : 'Project update failed.');
     }
   }
   async function installDemo() {
     setInstallingDemo(true);
+    setMessageTone('info');
     setMessage('Installing the template, immutable CSV, dataset, chart, and follow-up task…');
     try {
       const result = await api<Record<string, unknown>>(
@@ -571,8 +772,10 @@ function ProjectPage({ user }: { user: User }) {
           dismissed: false,
         }),
       });
+      setMessageTone('success');
       setMessage('Demo installed. Open Charts & dashboards to inspect exact provenance.');
     } catch (cause) {
+      setMessageTone('error');
       setMessage(cause instanceof Error ? cause.message : 'Demo installation failed.');
     } finally {
       setInstallingDemo(false);
@@ -580,122 +783,160 @@ function ProjectPage({ user }: { user: User }) {
   }
   return (
     <>
-      <Link className="text-sm text-sky-400" to={`/workspaces/${wid}`}>
+      <Link className="text-sm text-slate-400 hover:text-sky-300" to={`/workspaces/${wid}`}>
         ← Projects
       </Link>
-      <div className="mt-5 rounded-2xl border border-slate-800 bg-slate-900/70 p-8">
-        <p className="font-mono text-sm text-sky-400">{project.key}</p>
-        <h1 className="mt-2 text-4xl font-semibold">{project.name}</h1>
-        <p className="mt-4 text-slate-400">{project.description || 'No description yet.'}</p>
-        <p className="mt-6 text-sm text-slate-500">Version {project.rowVersion}</p>
-        <div className="mt-6 flex flex-wrap gap-3 border-y border-slate-800 py-4">
-          <span className="text-sm font-medium text-slate-200">Overview</span>
-          {allowed(user, 'record.read') && (
-            <Link
-              className="text-sm text-sky-400 hover:text-sky-300"
-              to={`/workspaces/${wid}/projects/${pid}/data`}
+      <div className="relative mt-5 overflow-hidden rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-900/90 via-slate-900/65 to-sky-950/30 p-6 shadow-2xl shadow-slate-950/20 sm:p-8">
+        <div
+          aria-hidden="true"
+          className="absolute -right-20 -top-24 size-72 rounded-full bg-sky-500/10 blur-3xl"
+        />
+        <div className="relative">
+          <div className="flex flex-wrap items-center gap-3">
+            <p className="font-mono text-xs uppercase tracking-[0.18em] text-sky-400">
+              {project.key}
+            </p>
+            <span
+              className={`rounded-full px-2.5 py-1 text-xs font-medium ${project.archivedAt ? 'bg-amber-500/10 text-amber-300' : 'bg-emerald-500/10 text-emerald-300'}`}
             >
-              Data grid →
-            </Link>
-          )}
-          {allowed(user, 'file.read') && (
-            <Link
-              className="text-sm text-sky-400 hover:text-sky-300"
-              to={`/workspaces/${wid}/projects/${pid}/files-datasets`}
-            >
-              Files &amp; datasets →
-            </Link>
-          )}
-          {allowed(user, 'dataset.read') && (
-            <Link
-              className="text-sm text-sky-400 hover:text-sky-300"
-              to={`/workspaces/${wid}/projects/${pid}/visualizations`}
-            >
-              Charts &amp; dashboards →
-            </Link>
-          )}
-          {allowed(user, 'task.read') && (
-            <Link
-              className="text-sm text-sky-400 hover:text-sky-300"
-              to={`/workspaces/${wid}/projects/${pid}/tasks`}
-            >
-              Tasks →
-            </Link>
-          )}
-        </div>
-        <section className="mt-6 rounded-xl border border-sky-900 bg-sky-950/30 p-5">
-          <p className="font-mono text-xs uppercase tracking-widest text-sky-400">
-            Test &amp; Characterization · v6
-          </p>
-          <h2 className="mt-2 text-xl font-semibold">Traceable onboarding demo</h2>
-          <p className="mt-2 text-sm text-slate-400">
-            Creates clearly labelled synthetic records, an immutable raw CSV and dataset, a pinned
-            chart, and a linked follow-up task. It is safe to archive after evaluation.
-          </p>
-          {demo?.installed ? (
-            <div className="mt-4 flex flex-wrap gap-3 text-sm">
-              <span className="text-emerald-300">Demo installed</span>
+              {project.archivedAt ? 'Archived' : project.status.replace('_', ' ')}
+            </span>
+          </div>
+          <h1 className="mt-3 text-4xl font-semibold tracking-tight sm:text-5xl">{project.name}</h1>
+          <p className="mt-4 text-slate-400">{project.description || 'No description yet.'}</p>
+          <p className="mt-4 text-xs text-slate-600">Configuration version {project.rowVersion}</p>
+          <nav
+            aria-label="Project quick links"
+            className="mt-8 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
+          >
+            {allowed(user, 'record.read') && (
               <Link
-                className="text-sky-300"
-                to={`/workspaces/${wid}/projects/${pid}/visualizations`}
+                className="rounded-xl border border-slate-700/70 bg-slate-950/35 p-4 text-sm font-medium text-slate-200 hover:border-sky-500/50 hover:bg-sky-500/10 hover:text-sky-200"
+                to={`/workspaces/${wid}/projects/${pid}/data`}
               >
-                Inspect chart →
+                Data <span className="float-right text-sky-400">→</span>
+                <span className="mt-1 block text-xs font-normal text-slate-500">
+                  Edit typed records
+                </span>
               </Link>
+            )}
+            {allowed(user, 'file.read') && (
               <Link
-                className="text-sky-300"
+                className="rounded-xl border border-slate-700/70 bg-slate-950/35 p-4 text-sm font-medium text-slate-200 hover:border-sky-500/50 hover:bg-sky-500/10 hover:text-sky-200"
                 to={`/workspaces/${wid}/projects/${pid}/files-datasets`}
               >
-                Inspect raw source →
+                Files &amp; datasets <span className="float-right text-sky-400">→</span>
+                <span className="mt-1 block text-xs font-normal text-slate-500">
+                  Trace raw evidence
+                </span>
               </Link>
-            </div>
-          ) : allowed(user, 'schema.manage') ? (
-            <Button className="mt-4" disabled={installingDemo} onClick={() => void installDemo()}>
-              {installingDemo ? 'Installing demo…' : 'Install template & demo'}
-            </Button>
-          ) : (
-            <p className="mt-4 text-sm text-slate-500">
-              Ask an Engineer or Admin to install the demo.
+            )}
+            {allowed(user, 'dataset.read') && (
+              <Link
+                className="rounded-xl border border-slate-700/70 bg-slate-950/35 p-4 text-sm font-medium text-slate-200 hover:border-sky-500/50 hover:bg-sky-500/10 hover:text-sky-200"
+                to={`/workspaces/${wid}/projects/${pid}/visualizations`}
+              >
+                Visualizations <span className="float-right text-sky-400">→</span>
+                <span className="mt-1 block text-xs font-normal text-slate-500">
+                  Compare exact revisions
+                </span>
+              </Link>
+            )}
+            {allowed(user, 'task.read') && (
+              <Link
+                className="rounded-xl border border-slate-700/70 bg-slate-950/35 p-4 text-sm font-medium text-slate-200 hover:border-sky-500/50 hover:bg-sky-500/10 hover:text-sky-200"
+                to={`/workspaces/${wid}/projects/${pid}/tasks`}
+              >
+                Tasks <span className="float-right text-sky-400">→</span>
+                <span className="mt-1 block text-xs font-normal text-slate-500">
+                  Close the follow-up loop
+                </span>
+              </Link>
+            )}
+          </nav>
+          <section className="mt-8 rounded-2xl border border-sky-800/50 bg-sky-950/30 p-5 sm:p-6">
+            <p className="font-mono text-xs uppercase tracking-widest text-sky-400">
+              Test &amp; Characterization · v6
             </p>
+            <h2 className="mt-2 text-xl font-semibold">Traceable onboarding demo</h2>
+            <p className="mt-2 text-sm text-slate-400">
+              Creates clearly labelled synthetic records, an immutable raw CSV and dataset, a pinned
+              chart, and a linked follow-up task. It is safe to archive after evaluation.
+            </p>
+            {demo?.installed ? (
+              <div className="mt-4 flex flex-wrap gap-3 text-sm">
+                <span className="text-emerald-300">Demo installed</span>
+                <Link
+                  className="text-sky-300"
+                  to={`/workspaces/${wid}/projects/${pid}/visualizations`}
+                >
+                  Inspect chart →
+                </Link>
+                <Link
+                  className="text-sky-300"
+                  to={`/workspaces/${wid}/projects/${pid}/files-datasets`}
+                >
+                  Inspect raw source →
+                </Link>
+              </div>
+            ) : allowed(user, 'schema.manage') ? (
+              <Button className="mt-4" disabled={installingDemo} onClick={() => void installDemo()}>
+                {installingDemo ? 'Installing demo…' : 'Install template & demo'}
+              </Button>
+            ) : (
+              <p className="mt-4 text-sm text-slate-500">
+                Ask an Engineer or Admin to install the demo.
+              </p>
+            )}
+          </section>
+          {allowed(user, 'project.update') && !project.archivedAt && (
+            <form
+              className="mt-8 grid max-w-2xl gap-4 border-t border-slate-800 pt-8"
+              onSubmit={(event) => void update(event)}
+            >
+              <div>
+                <h2 className="text-xl font-semibold">Project settings</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Update the project label and lifecycle status.
+                </p>
+              </div>
+              <label className="text-sm text-slate-300">
+                Project name
+                <input className={inputClass} defaultValue={project.name} name="name" required />
+              </label>
+              <label className="text-sm text-slate-300">
+                Description
+                <textarea
+                  className={inputClass}
+                  defaultValue={project.description}
+                  name="description"
+                  rows={3}
+                />
+              </label>
+              <label className="text-sm text-slate-300">
+                Status
+                <select className={inputClass} defaultValue={project.status} name="status">
+                  <option value="active">Active</option>
+                  <option value="on_hold">On hold</option>
+                  <option value="completed">Completed</option>
+                </select>
+              </label>
+              <Button type="submit">Save project settings</Button>
+            </form>
           )}
-        </section>
-        {allowed(user, 'project.update') && !project.archivedAt && (
-          <form className="mt-6 grid max-w-2xl gap-4" onSubmit={(event) => void update(event)}>
-            <label className="text-sm text-slate-300">
-              Project name
-              <input className={inputClass} defaultValue={project.name} name="name" required />
-            </label>
-            <label className="text-sm text-slate-300">
-              Description
-              <textarea
-                className={inputClass}
-                defaultValue={project.description}
-                name="description"
-                rows={3}
-              />
-            </label>
-            <label className="text-sm text-slate-300">
-              Status
-              <select className={inputClass} defaultValue={project.status} name="status">
-                <option value="active">Active</option>
-                <option value="on_hold">On hold</option>
-                <option value="completed">Completed</option>
-              </select>
-            </label>
-            <Button type="submit">Save project settings</Button>
-          </form>
-        )}
-        <div className="mt-8">
-          {project.archivedAt
-            ? allowed(user, 'project.restore') && (
-                <Button onClick={() => void archive(false)}>Restore project</Button>
-              )
-            : allowed(user, 'project.archive') && (
-                <Button variant="quiet" onClick={() => void archive(true)}>
-                  Archive project
-                </Button>
-              )}
+          <div className="mt-8">
+            {project.archivedAt
+              ? allowed(user, 'project.restore') && (
+                  <Button onClick={() => void archive(false)}>Restore project</Button>
+                )
+              : allowed(user, 'project.archive') && (
+                  <Button variant="quiet" onClick={() => void archive(true)}>
+                    Archive project
+                  </Button>
+                )}
+          </div>
+          <NoticeText tone={messageTone}>{message}</NoticeText>
         </div>
-        <ErrorText>{message}</ErrorText>
       </div>
     </>
   );
@@ -704,12 +945,14 @@ function ProjectPage({ user }: { user: User }) {
 function GetStartedPage() {
   const [completed, setCompleted] = useState<OnboardingStep[]>([]);
   const [message, setMessage] = useState('');
+  const [messageTone, setMessageTone] = useState<'success' | 'error'>('success');
   useEffect(() => {
     void api<{ completed_steps: OnboardingStep[] }>('/onboarding')
       .then((result) => setCompleted(result.completed_steps ?? []))
-      .catch((cause) =>
-        setMessage(cause instanceof Error ? cause.message : 'Unable to load onboarding.'),
-      );
+      .catch((cause) => {
+        setMessageTone('error');
+        setMessage(cause instanceof Error ? cause.message : 'Unable to load onboarding.');
+      });
   }, []);
   async function toggle(step: OnboardingStep) {
     const next = completed.includes(step)
@@ -721,39 +964,59 @@ function GetStartedPage() {
         method: 'PATCH',
         body: JSON.stringify({ completedSteps: next, dismissed: false }),
       });
+      setMessageTone('success');
       setMessage(
         next.length === onboardingSteps.length ? 'Onboarding complete.' : 'Progress saved.',
       );
     } catch (cause) {
       setCompleted(completed);
+      setMessageTone('error');
       setMessage(cause instanceof Error ? cause.message : 'Unable to save onboarding.');
     }
   }
   return (
     <>
       <p className="font-mono text-xs uppercase tracking-widest text-sky-400">Community pilot</p>
-      <h1 className="mt-2 text-4xl font-semibold">Get started</h1>
+      <h1 className="mt-2 text-4xl font-semibold tracking-tight sm:text-5xl">Get started</h1>
       <p className="mt-3 max-w-2xl text-slate-400">
         This golden path takes a result from immutable raw evidence to a chart and follow-up work.
       </p>
-      <div className="mt-8 max-w-2xl space-y-3">
-        {onboardingSteps.map((step, index) => (
-          <label
-            className="flex cursor-pointer items-start gap-4 rounded-xl border border-slate-800 bg-slate-900/60 p-5"
-            key={step.key}
-          >
-            <input
-              checked={completed.includes(step.key)}
-              className="mt-1 size-4 accent-sky-500"
-              type="checkbox"
-              onChange={() => void toggle(step.key)}
-            />
-            <span>
-              <span className="font-mono text-xs text-slate-500">STEP {index + 1}</span>
-              <span className="mt-1 block font-medium">{step.label}</span>
-            </span>
-          </label>
-        ))}
+      <div className="mt-8 max-w-2xl">
+        <div className="mb-5 flex items-center justify-between gap-4 text-sm">
+          <span className="text-slate-400">Setup progress</span>
+          <span className="font-medium text-sky-300">
+            {completed.length} of {onboardingSteps.length}
+          </span>
+        </div>
+        <div className="mb-6 h-2 overflow-hidden rounded-full bg-slate-800">
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-sky-400 to-cyan-300 transition-[width] duration-300"
+            style={{ width: `${(completed.length / onboardingSteps.length) * 100}%` }}
+          />
+        </div>
+        <div className="space-y-3">
+          {onboardingSteps.map((step, index) => (
+            <label
+              className={`flex cursor-pointer items-start gap-4 rounded-2xl border p-5 transition hover:border-sky-500/40 ${completed.includes(step.key) ? 'border-emerald-500/20 bg-emerald-500/5' : 'border-slate-800 bg-slate-900/55 hover:bg-slate-900/80'}`}
+              key={step.key}
+            >
+              <input
+                checked={completed.includes(step.key)}
+                className="mt-1 size-4 accent-sky-400"
+                type="checkbox"
+                onChange={() => void toggle(step.key)}
+              />
+              <span>
+                <span className="font-mono text-xs text-slate-500">STEP {index + 1}</span>
+                <span
+                  className={`mt-1 block font-medium ${completed.includes(step.key) ? 'text-slate-400 line-through decoration-slate-600' : 'text-slate-100'}`}
+                >
+                  {step.label}
+                </span>
+              </span>
+            </label>
+          ))}
+        </div>
       </div>
       <div className="mt-6 flex gap-4">
         <Link className="text-sky-300" to="/workspaces">
@@ -763,13 +1026,14 @@ function GetStartedPage() {
           Share pilot feedback →
         </Link>
       </div>
-      <ErrorText>{message}</ErrorText>
+      <NoticeText tone={messageTone}>{message}</NoticeText>
     </>
   );
 }
 
 function PilotPage({ user }: { user: User }) {
   const [message, setMessage] = useState('');
+  const [messageTone, setMessageTone] = useState<'success' | 'error'>('success');
   const [summary, setSummary] = useState<Record<string, number | string>>();
   const [feedbackItems, setFeedbackItems] = useState<Array<Record<string, unknown>>>([]);
   useEffect(() => {
@@ -797,15 +1061,19 @@ function PilotPage({ user }: { user: User }) {
         }),
       });
       form.reset();
+      setMessageTone('success');
       setMessage('Thank you. The feedback was stored for your Engrove administrators.');
     } catch (cause) {
+      setMessageTone('error');
       setMessage(cause instanceof Error ? cause.message : 'Feedback submission failed.');
     }
   }
   return (
     <>
       <p className="font-mono text-xs uppercase tracking-widest text-sky-400">Pilot</p>
-      <h1 className="mt-2 text-4xl font-semibold">Feedback &amp; adoption</h1>
+      <h1 className="mt-2 text-4xl font-semibold tracking-tight sm:text-5xl">
+        Feedback &amp; adoption
+      </h1>
       {summary && (
         <section className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {(
@@ -873,7 +1141,7 @@ function PilotPage({ user }: { user: User }) {
           </div>
         </section>
       )}
-      <ErrorText>{message}</ErrorText>
+      <NoticeText tone={messageTone}>{message}</NoticeText>
     </>
   );
 }

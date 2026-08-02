@@ -598,10 +598,12 @@ export function VisualizationsPage({ user }: { user: User }) {
         : metrics?.dataset_count;
   return (
     <>
-      <Link className="text-sm text-sky-400" to={base}>
+      <Link className="text-sm text-slate-400 hover:text-sky-300" to={base}>
         ← Project
       </Link>
-      <h1 className="mt-4 text-4xl font-semibold">Charts &amp; dashboards</h1>
+      <h1 className="mt-4 text-4xl font-semibold tracking-tight sm:text-5xl">
+        Charts &amp; dashboards
+      </h1>
       <p className="mt-3 text-slate-400">
         Every chart source and dashboard card is pinned to an immutable revision.
       </p>
@@ -609,7 +611,7 @@ export function VisualizationsPage({ user }: { user: User }) {
       {allowed(user, 'dashboard.manage') && (
         <div className="mt-8 grid gap-5 xl:grid-cols-3">
           <form
-            className="rounded-2xl border border-slate-800 p-5 space-y-3"
+            className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-5 shadow-lg shadow-slate-950/10"
             onSubmit={(event) => void createChart(event)}
           >
             <h2 className="text-xl font-semibold">Overlay XY datasets</h2>
@@ -629,7 +631,7 @@ export function VisualizationsPage({ user }: { user: User }) {
             <Button type="submit">Save chart</Button>
           </form>
           <form
-            className="rounded-2xl border border-slate-800 p-5 space-y-3"
+            className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-5 shadow-lg shadow-slate-950/10"
             onSubmit={(event) => void createStatisticalChart(event)}
           >
             <h2 className="text-xl font-semibold">Statistical chart</h2>
@@ -652,7 +654,7 @@ export function VisualizationsPage({ user }: { user: User }) {
             <Button type="submit">Save statistical chart</Button>
           </form>
           <form
-            className="rounded-2xl border border-slate-800 p-5 space-y-3"
+            className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-5 shadow-lg shadow-slate-950/10"
             onSubmit={(event) => void createDashboard(event)}
           >
             <h2 className="text-xl font-semibold">New dashboard</h2>
@@ -676,7 +678,7 @@ export function VisualizationsPage({ user }: { user: User }) {
         <div className="mt-4 grid gap-5 xl:grid-cols-2">
           {charts.map((chart) => (
             <article
-              className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5"
+              className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5 shadow-xl shadow-slate-950/10"
               key={chart.id}
             >
               <div className="flex justify-between">

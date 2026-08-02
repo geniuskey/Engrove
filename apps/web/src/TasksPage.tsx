@@ -30,6 +30,20 @@ const columns: Array<{ status: Status; label: string }> = [
   { status: 'done', label: 'Done' },
 ];
 
+const columnAccent: Record<Status, string> = {
+  todo: 'border-t-slate-500',
+  in_progress: 'border-t-sky-400',
+  blocked: 'border-t-rose-400',
+  done: 'border-t-emerald-400',
+};
+
+const priorityStyle: Record<Task['priority'], string> = {
+  low: 'bg-slate-500/10 text-slate-300',
+  medium: 'bg-sky-500/10 text-sky-300',
+  high: 'bg-amber-500/10 text-amber-300',
+  critical: 'bg-rose-500/10 text-rose-300',
+};
+
 export function TasksPage({ user }: { user: User }) {
   const { workspaceId, projectId } = useParams();
   const base = `/workspaces/${workspaceId}/projects/${projectId}`;
@@ -104,12 +118,12 @@ export function TasksPage({ user }: { user: User }) {
 
   return (
     <>
-      <Link className="text-sm text-sky-400" to={base}>
+      <Link className="text-sm text-slate-400 hover:text-sky-300" to={base}>
         ← Project
       </Link>
       <div className="mt-4 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-4xl font-semibold">Engineering tasks</h1>
+          <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">Engineering tasks</h1>
           <p className="mt-3 text-slate-400">
             Follow-up work stays linked to the exact engineering evidence that created it.
           </p>
@@ -129,7 +143,7 @@ export function TasksPage({ user }: { user: User }) {
       <ErrorText>{message}</ErrorText>
       {allowed(user, 'task.create') && (
         <form
-          className="mt-8 grid gap-3 rounded-2xl border border-slate-800 p-5 lg:grid-cols-4"
+          className="mt-8 grid gap-4 rounded-2xl border border-slate-800 bg-slate-900/45 p-5 shadow-xl shadow-slate-950/10 lg:grid-cols-4"
           onSubmit={(event) => void create(event)}
         >
           <input className={inputClass} name="title" placeholder="Task title" required />
@@ -155,21 +169,36 @@ export function TasksPage({ user }: { user: User }) {
         </form>
       )}
       {view === 'board' ? (
-        <div className="mt-8 grid gap-4 xl:grid-cols-4">
+        <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           {columns.map((column) => (
-            <section className="rounded-2xl bg-slate-900/60 p-4" key={column.status}>
-              <h2 className="font-semibold">{column.label}</h2>
+            <section
+              className={`rounded-2xl border border-slate-800 border-t-2 bg-slate-900/55 p-4 shadow-lg shadow-slate-950/10 ${columnAccent[column.status]}`}
+              key={column.status}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="font-semibold">{column.label}</h2>
+                <span className="rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-400">
+                  {
+                    tasks.filter((task) => !task.archived_at && task.status === column.status)
+                      .length
+                  }
+                </span>
+              </div>
               <div className="mt-4 space-y-3">
                 {tasks
                   .filter((task) => !task.archived_at && task.status === column.status)
                   .map((task) => (
                     <article
-                      className="rounded-xl border border-slate-800 bg-slate-950 p-4"
+                      className="rounded-xl border border-slate-800 bg-slate-950/80 p-4 shadow-md shadow-slate-950/20 transition hover:border-slate-700"
                       key={task.id}
                     >
                       <div className="flex items-start justify-between gap-2">
                         <h3 className="font-medium">{task.title}</h3>
-                        <span className="text-xs uppercase text-amber-300">{task.priority}</span>
+                        <span
+                          className={`rounded-full px-2 py-1 text-[10px] font-medium uppercase tracking-wide ${priorityStyle[task.priority]}`}
+                        >
+                          {task.priority}
+                        </span>
                       </div>
                       <p className="mt-2 text-xs text-slate-500">
                         {task.due_date ? `Due ${task.due_date}` : 'No due date'} ·{' '}
@@ -209,7 +238,9 @@ export function TasksPage({ user }: { user: User }) {
                     </article>
                   ))}
                 {!tasks.some((task) => !task.archived_at && task.status === column.status) && (
-                  <p className="text-sm text-slate-500">No tasks</p>
+                  <p className="rounded-xl border border-dashed border-slate-800 px-3 py-6 text-center text-sm text-slate-600">
+                    No tasks
+                  </p>
                 )}
               </div>
             </section>
