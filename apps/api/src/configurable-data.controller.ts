@@ -5,6 +5,7 @@ import {
   type JsonValue,
   type RecordQuery,
   type RecordViewConfig,
+  type RecordViewType,
 } from '@engrove/database';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
@@ -18,6 +19,7 @@ const key = z
 const jsonObject = z.record(z.string(), z.unknown());
 const relationMap = z.record(z.string().uuid(), z.array(z.string().uuid()).max(100));
 const fieldType = z.enum(configurableFieldTypes);
+const recordViewType = z.enum(['grid', 'form', 'gallery', 'kanban', 'calendar']);
 const recordFilter = z.object({
   fieldId: id,
   operator: z.enum(['eq', 'ne', 'contains', 'gt', 'gte', 'lt', 'lte', 'in', 'is_null']),
@@ -43,6 +45,14 @@ const recordViewConfig = z
     sorts: z.array(recordSort).max(5),
     rowDensity: z.enum(['compact', 'comfortable']),
     pageSize: z.union([z.literal(25), z.literal(50), z.literal(100)]),
+    viewOptions: z
+      .object({
+        groupFieldId: id.optional(),
+        dateFieldId: id.optional(),
+        contextProjectId: id.nullable().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -227,6 +237,7 @@ export class ConfigurableDataController {
     const body = z
       .object({
         name: z.string().trim().min(1).max(120),
+        viewType: recordViewType.default('grid'),
         config: recordViewConfig,
       })
       .parse(unparsed);
@@ -235,6 +246,7 @@ export class ConfigurableDataController {
     ).createRecordView({
       objectTypeId: id.parse(objectTypeId),
       name: body.name,
+      viewType: body.viewType as RecordViewType,
       config: body.config as RecordViewConfig,
       requestId: requestId(request),
     });
@@ -252,6 +264,7 @@ export class ConfigurableDataController {
     const body = z
       .object({
         name: z.string().trim().min(1).max(120),
+        viewType: recordViewType,
         config: recordViewConfig,
         rowVersion: z.number().int().positive(),
       })
@@ -262,6 +275,7 @@ export class ConfigurableDataController {
       objectTypeId: id.parse(objectTypeId),
       viewId: id.parse(viewId),
       name: body.name,
+      viewType: body.viewType as RecordViewType,
       config: body.config as RecordViewConfig,
       rowVersion: body.rowVersion,
       requestId: requestId(request),
@@ -307,6 +321,8 @@ export class ConfigurableDataController {
       .object({
         filters: z.array(recordFilter).max(20).optional(),
         sorts: z.array(recordSort).max(5).optional(),
+        search: z.string().trim().max(200).optional(),
+        contextProjectId: id.nullable().optional(),
         groupByFieldId: id.optional(),
         page: z.number().int().min(1).optional(),
         pageSize: z.number().int().min(1).max(100).optional(),
@@ -344,6 +360,7 @@ export class ConfigurableDataController {
     const body = z
       .object({
         displayName: z.string().trim().min(1).max(240),
+        contextProjectId: id.nullable().optional(),
         values: jsonObject,
         relations: relationMap.optional(),
         fileReferences: relationMap.optional(),
@@ -352,6 +369,7 @@ export class ConfigurableDataController {
       .parse(unparsed);
     return (await repository(request, workspaceId, projectId, 'record.create', true)).createRecord({
       objectTypeId: id.parse(objectTypeId),
+      ...(body.contextProjectId !== undefined ? { contextProjectId: body.contextProjectId } : {}),
       displayName: body.displayName,
       values: body.values as Record<string, JsonValue>,
       relations: body.relations ?? {},
@@ -373,6 +391,7 @@ export class ConfigurableDataController {
     const body = z
       .object({
         displayName: z.string().trim().min(1).max(240),
+        contextProjectId: id.nullable().optional(),
         values: jsonObject,
         relations: relationMap.optional(),
         fileReferences: relationMap.optional(),
@@ -383,6 +402,7 @@ export class ConfigurableDataController {
     return (await repository(request, workspaceId, projectId, 'record.update', true)).updateRecord({
       objectTypeId: id.parse(objectTypeId),
       recordId: id.parse(recordId),
+      ...(body.contextProjectId !== undefined ? { contextProjectId: body.contextProjectId } : {}),
       displayName: body.displayName,
       values: body.values as Record<string, JsonValue>,
       relations: body.relations ?? {},

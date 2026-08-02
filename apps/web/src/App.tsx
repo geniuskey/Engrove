@@ -13,16 +13,16 @@ import {
 import {
   Link,
   Navigate,
-  NavLink,
   Route,
   Routes,
-  useLocation,
   useNavigate,
   useParams,
   useSearchParams,
-} from 'react-router-dom';
-import { DataPage, RecordDetailPage } from './DataPage.js';
+} from 'react-router';
+import { DataPage, RecordDetailPage, type WorkspaceDataContext } from './DataPage.js';
 import { FilesDatasetsPage } from './FilesDatasetsPage.js';
+import { I18nProvider, useI18n } from './i18n.js';
+import { ServiceShell } from './ServiceSidebar.js';
 import { TasksPage } from './TasksPage.js';
 
 const VisualizationsPage = lazy(() =>
@@ -30,6 +30,7 @@ const VisualizationsPage = lazy(() =>
 );
 
 const apiBase = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000';
+type Theme = 'light' | 'dark';
 
 export interface User {
   id: string;
@@ -199,7 +200,7 @@ function AuthCard({ title, children }: PropsWithChildren<{ title: string }>) {
 }
 
 export const inputClass =
-  'mt-1.5 min-h-10 w-full rounded-xl border border-slate-700/80 bg-slate-950/80 px-3 py-2 text-slate-100 shadow-sm outline-none transition placeholder:text-slate-600 hover:border-slate-600 focus:border-sky-400 focus:ring-2 focus:ring-sky-400/15 disabled:cursor-not-allowed disabled:opacity-50';
+  'mt-1 min-h-8 w-full rounded-lg border border-slate-700/80 bg-slate-950/80 px-2.5 py-1.5 text-sm text-slate-100 shadow-sm outline-none transition placeholder:text-slate-600 hover:border-slate-600 focus:border-sky-400 focus:ring-2 focus:ring-sky-400/15 disabled:cursor-not-allowed disabled:opacity-50';
 
 function Field({ label, name, type = 'text' }: { label: string; name: string; type?: string }) {
   return (
@@ -349,154 +350,6 @@ export function allowed(user: User, action: Action): boolean {
   return can({ actorId: user.id, organizationId: user.organizationId, role: user.role }, action);
 }
 
-function Shell({
-  user,
-  onSignedOut,
-  children,
-}: PropsWithChildren<{ user: User; onSignedOut: () => void }>) {
-  const location = useLocation();
-  const projectMatch = location.pathname.match(/^\/workspaces\/([^/]+)\/projects\/([^/]+)/);
-  const projectBase = projectMatch
-    ? `/workspaces/${projectMatch[1]}/projects/${projectMatch[2]}`
-    : undefined;
-  const dataWorkspace = Boolean(projectBase && location.pathname.includes('/data'));
-  const globalLinks = [
-    { to: '/workspaces', label: 'Workspaces' },
-    { to: '/get-started', label: 'Get started' },
-    { to: '/pilot', label: 'Pilot' },
-    ...(allowed(user, 'member.manage') ? [{ to: '/members', label: 'Members' }] : []),
-    ...(allowed(user, 'audit.read') ? [{ to: '/audit', label: 'Audit' }] : []),
-  ];
-  const projectLinks = projectBase
-    ? [
-        { to: projectBase, label: 'Overview', end: true, visible: true },
-        {
-          to: `${projectBase}/data`,
-          label: 'Data',
-          end: false,
-          visible: allowed(user, 'record.read'),
-        },
-        {
-          to: `${projectBase}/files-datasets`,
-          label: 'Files & datasets',
-          end: false,
-          visible: allowed(user, 'file.read'),
-        },
-        {
-          to: `${projectBase}/visualizations`,
-          label: 'Visualizations',
-          end: false,
-          visible: allowed(user, 'dataset.read'),
-        },
-        {
-          to: `${projectBase}/tasks`,
-          label: 'Tasks',
-          end: false,
-          visible: allowed(user, 'task.read'),
-        },
-      ].filter((item) => item.visible)
-    : [];
-  async function signOut() {
-    await api('/auth/sign-out', { method: 'POST' });
-    onSignedOut();
-  }
-  return (
-    <div className="min-h-screen text-slate-100">
-      <a
-        className="fixed left-4 top-3 z-[60] -translate-y-20 rounded-lg bg-sky-300 px-3 py-2 font-semibold text-slate-950 focus:translate-y-0"
-        href="#main-content"
-      >
-        Skip to content
-      </a>
-      <header className="sticky top-0 z-50 border-b border-slate-800/80 bg-slate-950/75 shadow-lg shadow-slate-950/20 backdrop-blur-xl">
-        <div className="mx-auto max-w-[1440px] px-4 sm:px-6 lg:px-8">
-          <div className="flex h-16 items-center justify-between gap-4">
-            <div className="flex min-w-0 items-center gap-8">
-              <Link className="flex shrink-0 items-center gap-2.5" to="/workspaces">
-                <span className="grid size-8 place-items-center rounded-lg bg-gradient-to-br from-sky-300 to-cyan-500 font-mono text-xs font-bold text-slate-950 shadow-md shadow-sky-950/50">
-                  E
-                </span>
-                <span className="font-semibold tracking-tight">Engrove</span>
-              </Link>
-              <nav aria-label="Global navigation" className="hidden items-center gap-1 md:flex">
-                {globalLinks.map((item) => (
-                  <NavLink
-                    className={({ isActive }) =>
-                      `rounded-lg px-3 py-2 text-sm transition ${isActive ? 'bg-slate-800 text-white' : 'text-slate-400 hover:bg-slate-900 hover:text-slate-100'}`
-                    }
-                    key={item.to}
-                    to={item.to}
-                  >
-                    {item.label}
-                  </NavLink>
-                ))}
-              </nav>
-            </div>
-            <div className="flex shrink-0 items-center gap-3 text-sm">
-              <span className="grid size-8 place-items-center rounded-full border border-slate-700 bg-slate-800 font-semibold text-sky-300">
-                {user.displayName.slice(0, 1).toUpperCase()}
-              </span>
-              <span className="hidden text-right sm:block">
-                <span className="block text-sm font-medium text-slate-200">{user.displayName}</span>
-                <span className="block text-[10px] uppercase tracking-wider text-slate-500">
-                  {user.role}
-                </span>
-              </span>
-              <Button
-                className="min-h-9 px-3 py-1.5"
-                variant="quiet"
-                onClick={() => void signOut()}
-              >
-                Sign out
-              </Button>
-            </div>
-          </div>
-          <nav aria-label="Global navigation" className="flex gap-1 overflow-x-auto pb-3 md:hidden">
-            {globalLinks.map((item) => (
-              <NavLink
-                className={({ isActive }) =>
-                  `shrink-0 rounded-lg px-3 py-1.5 text-sm ${isActive ? 'bg-slate-800 text-white' : 'text-slate-400'}`
-                }
-                key={item.to}
-                to={item.to}
-              >
-                {item.label}
-              </NavLink>
-            ))}
-          </nav>
-        </div>
-        {projectBase && (
-          <div className="border-t border-slate-800/80 bg-slate-900/35">
-            <nav
-              aria-label="Project navigation"
-              className="mx-auto flex max-w-[1440px] gap-1 overflow-x-auto px-4 py-2 sm:px-6 lg:px-8"
-            >
-              {projectLinks.map((item) => (
-                <NavLink
-                  className={({ isActive }) =>
-                    `shrink-0 rounded-lg px-3 py-1.5 text-sm font-medium ${isActive ? 'bg-sky-400/15 text-sky-300' : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-200'}`
-                  }
-                  end={item.end}
-                  key={item.to}
-                  to={item.to}
-                >
-                  {item.label}
-                </NavLink>
-              ))}
-            </nav>
-          </div>
-        )}
-      </header>
-      <main
-        className={`mx-auto px-4 py-8 sm:px-6 sm:py-10 lg:px-8 ${dataWorkspace ? 'max-w-[1800px]' : 'max-w-[1440px]'}`}
-        id="main-content"
-      >
-        {children}
-      </main>
-    </div>
-  );
-}
-
 export function NoticeText({
   children,
   tone = 'info',
@@ -519,6 +372,7 @@ export function ErrorText({ children }: PropsWithChildren) {
 }
 
 function WorkspacesPage({ user }: { user: User }) {
+  const { t } = useI18n();
   const { items, error, refresh } = useAsyncList<Workspace>(() => api('/workspaces'), []);
   const [formError, setFormError] = useState('');
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -539,11 +393,13 @@ function WorkspacesPage({ user }: { user: User }) {
   return (
     <>
       <div className="max-w-2xl">
-        <p className="font-mono text-xs uppercase tracking-[0.18em] text-sky-400">Organization</p>
-        <h1 className="mt-2 text-4xl font-semibold tracking-tight sm:text-5xl">Workspaces</h1>
-        <p className="mt-3 text-slate-400">
-          Organize engineering programs, teams, and their traceable project data.
+        <p className="font-mono text-xs uppercase tracking-[0.18em] text-sky-400">
+          {t('sidebar.organization')}
         </p>
+        <h1 className="mt-2 text-4xl font-semibold tracking-tight sm:text-5xl">
+          {t('common.workspaces')}
+        </h1>
+        <p className="mt-3 text-slate-400">{t('workspaces.description')}</p>
       </div>
       <ErrorText>{error}</ErrorText>
       <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -564,13 +420,13 @@ function WorkspacesPage({ user }: { user: User }) {
             <h2 className="mt-5 text-xl font-semibold tracking-tight">{workspace.name}</h2>
             <p className="mt-1 font-mono text-xs text-slate-500">{workspace.slug}</p>
             <p className="mt-3 line-clamp-2 text-sm text-slate-400">
-              {workspace.description || 'Open this workspace to view its engineering projects.'}
+              {workspace.description || t('workspaces.open')}
             </p>
           </Link>
         ))}
         {items.length === 0 && !error && (
           <p className="rounded-2xl border border-dashed border-slate-700 p-8 text-slate-400">
-            No workspaces yet. Create the first workspace below to organize projects.
+            {t('workspaces.empty')}
           </p>
         )}
       </div>
@@ -579,20 +435,20 @@ function WorkspacesPage({ user }: { user: User }) {
           className="mt-10 max-w-2xl rounded-2xl border border-slate-800 bg-slate-900/40 p-5 shadow-lg shadow-slate-950/10 sm:p-6"
           onSubmit={(event) => void submit(event)}
         >
-          <h2 className="text-lg font-semibold">Create a workspace</h2>
-          <p className="mt-1 text-sm text-slate-500">Use a stable slug for shareable URLs.</p>
+          <h2 className="text-lg font-semibold">{t('workspaces.create')}</h2>
+          <p className="mt-1 text-sm text-slate-500">{t('workspaces.stableSlug')}</p>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <label className="text-sm text-slate-300">
-              Workspace name
+              {t('workspaces.name')}
               <input className={inputClass} name="name" placeholder="Materials R&D" required />
             </label>
             <label className="text-sm text-slate-300">
-              URL slug
+              {t('workspaces.urlSlug')}
               <input className={inputClass} name="slug" placeholder="materials-rd" required />
             </label>
           </div>
           <Button className="mt-5" type="submit">
-            Create workspace
+            {t('workspaces.create')}
           </Button>
           <ErrorText>{formError}</ErrorText>
         </form>
@@ -602,6 +458,7 @@ function WorkspacesPage({ user }: { user: User }) {
 }
 
 function WorkspacePage({ user }: { user: User }) {
+  const { t } = useI18n();
   const id = useParams().workspaceId!;
   const { items, error, refresh } = useAsyncList<Project>(
     () => api(`/workspaces/${id}/projects`),
@@ -625,11 +482,8 @@ function WorkspacePage({ user }: { user: User }) {
   }
   return (
     <>
-      <Link className="text-sm text-slate-400 hover:text-sky-300" to="/workspaces">
-        ← Workspaces
-      </Link>
-      <h1 className="mt-4 text-4xl font-semibold tracking-tight sm:text-5xl">Projects</h1>
-      <p className="mt-3 text-slate-400">Choose a project or start a new engineering workflow.</p>
+      <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">{t('projects.heading')}</h1>
+      <p className="mt-3 text-slate-400">{t('projects.description')}</p>
       <ErrorText>{error}</ErrorText>
       <div className="mt-8 divide-y divide-slate-800 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/50 shadow-xl shadow-slate-950/10">
         {items.map((project) => (
@@ -647,14 +501,12 @@ function WorkspacePage({ user }: { user: User }) {
             <span
               className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium ${project.archivedAt ? 'bg-amber-500/10 text-amber-300' : 'bg-emerald-500/10 text-emerald-300'}`}
             >
-              {project.archivedAt ? 'Archived' : project.status}
+              {project.archivedAt ? t('projects.archived') : project.status}
             </span>
           </Link>
         ))}
         {items.length === 0 && !error && (
-          <p className="p-8 text-slate-400">
-            No projects yet. Create one below, then open its Data grid.
-          </p>
+          <p className="p-8 text-slate-400">{t('projects.empty')}</p>
         )}
       </div>
       {allowed(user, 'project.create') && (
@@ -662,10 +514,10 @@ function WorkspacePage({ user }: { user: User }) {
           className="mt-10 max-w-2xl rounded-2xl border border-slate-800 bg-slate-900/40 p-5 sm:p-6"
           onSubmit={(event) => void submit(event)}
         >
-          <h2 className="text-lg font-semibold">Create a project</h2>
+          <h2 className="text-lg font-semibold">{t('projects.create')}</h2>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <label className="text-sm text-slate-300">
-              Project name
+              {t('projects.name')}
               <input
                 className={inputClass}
                 name="name"
@@ -674,18 +526,72 @@ function WorkspacePage({ user }: { user: User }) {
               />
             </label>
             <label className="text-sm text-slate-300">
-              Project key
+              {t('projects.key')}
               <input className={inputClass} name="key" placeholder="FORCE" required />
             </label>
           </div>
           <Button className="mt-5" type="submit">
-            Create project
+            {t('projects.create')}
           </Button>
           <ErrorText>{formError}</ErrorText>
         </form>
       )}
     </>
   );
+}
+
+function WorkspaceDataPage({ user }: { user: User }) {
+  const workspaceId = useParams().workspaceId!;
+  const [context, setContext] = useState<WorkspaceDataContext>();
+  const [error, setError] = useState('');
+  const load = useCallback(async () => {
+    try {
+      const [dataContext, projectResult] = await Promise.all([
+        api<{ projectId: string; legacyProjectIds?: string[] }>(
+          `/workspaces/${workspaceId}/data-context`,
+          {
+            method: 'POST',
+            body: JSON.stringify({}),
+          },
+        ),
+        api<{ items: Project[] }>(`/workspaces/${workspaceId}/projects`),
+      ]);
+      setContext({
+        workspaceId,
+        backingProjectId: dataContext.projectId,
+        projects: projectResult.items.map(({ id, name, key, archivedAt }) => ({
+          id,
+          name,
+          key,
+          archivedAt,
+        })),
+        legacyProjects: projectResult.items
+          .filter((project) => dataContext.legacyProjectIds?.includes(project.id))
+          .map(({ id, name }) => ({ id, name })),
+      });
+      setError('');
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Workspace data could not be opened.');
+    }
+  }, [workspaceId]);
+  useEffect(() => void load(), [load]);
+
+  if (error)
+    return (
+      <div className="mx-auto max-w-2xl py-12">
+        <ErrorText>{error}</ErrorText>
+        <Button className="mt-4" variant="quiet" onClick={() => void load()}>
+          Retry
+        </Button>
+      </div>
+    );
+  if (!context) return <p className="text-sm text-slate-400">Opening workspace data…</p>;
+  return <DataPage user={user} workspaceData={context} />;
+}
+
+function WorkspaceIndexPage() {
+  const workspaceId = useParams().workspaceId!;
+  return <Navigate replace to={`/workspaces/${workspaceId}/data`} />;
 }
 
 function ProjectPage({ user }: { user: User }) {
@@ -783,7 +689,10 @@ function ProjectPage({ user }: { user: User }) {
   }
   return (
     <>
-      <Link className="text-sm text-slate-400 hover:text-sky-300" to={`/workspaces/${wid}`}>
+      <Link
+        className="text-sm text-slate-400 hover:text-sky-300"
+        to={`/workspaces/${wid}/projects`}
+      >
         ← Projects
       </Link>
       <div className="relative mt-5 overflow-hidden rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-900/90 via-slate-900/65 to-sky-950/30 p-6 shadow-2xl shadow-slate-950/20 sm:p-8">
@@ -814,7 +723,7 @@ function ProjectPage({ user }: { user: User }) {
                 className="rounded-xl border border-slate-700/70 bg-slate-950/35 p-4 text-sm font-medium text-slate-200 hover:border-sky-500/50 hover:bg-sky-500/10 hover:text-sky-200"
                 to={`/workspaces/${wid}/projects/${pid}/data`}
               >
-                Data <span className="float-right text-sky-400">→</span>
+                Engineering records <span className="float-right text-sky-400">→</span>
                 <span className="mt-1 block text-xs font-normal text-slate-500">
                   Edit typed records
                 </span>
@@ -1240,9 +1149,27 @@ function AuditPage() {
   );
 }
 
-export function App() {
+function AppContent() {
+  const { locale, setLocale, t } = useI18n();
+  const [theme, setTheme] = useState<Theme>(() => {
+    const stored = window.localStorage.getItem('engrove-theme');
+    const explicit = window.localStorage.getItem('engrove-theme-explicit') === 'true';
+    const selected = explicit && (stored === 'light' || stored === 'dark') ? stored : 'light';
+    document.documentElement.dataset.theme = selected;
+    return selected;
+  });
   const [user, setUser] = useState<User>();
   const [state, setState] = useState<'loading' | 'setup' | 'signed-out' | 'signed-in'>('loading');
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem('engrove-theme', theme);
+  }, [theme]);
+
+  function toggleTheme() {
+    window.localStorage.setItem('engrove-theme-explicit', 'true');
+    setTheme((current) => (current === 'dark' ? 'light' : 'dark'));
+  }
 
   useEffect(() => {
     void (async () => {
@@ -1262,85 +1189,132 @@ export function App() {
   }, []);
 
   if (state === 'loading') {
-    return <main className="min-h-screen bg-slate-950 p-10 text-slate-300">Loading Engrove…</main>;
+    return (
+      <main className="min-h-screen bg-slate-950 p-10 text-slate-300">{t('app.loading')}</main>
+    );
   }
 
   const protectedElement = (content: React.ReactNode) =>
     state === 'signed-in' && user ? (
-      <Shell user={user} onSignedOut={() => setState('signed-out')}>
+      <ServiceShell
+        can={allowed}
+        request={api}
+        user={user}
+        theme={theme}
+        onSignedOut={() => setState('signed-out')}
+        onToggleTheme={toggleTheme}
+      >
         {content}
-      </Shell>
+      </ServiceShell>
     ) : (
       <Navigate to={state === 'setup' ? '/setup' : '/sign-in'} replace />
     );
 
   return (
-    <Routes>
-      <Route path="/setup" element={<SetupPage />} />
-      <Route
-        path="/sign-in"
-        element={
-          <SignInPage
-            onSignedIn={(next) => {
-              setUser(next);
-              setState('signed-in');
-            }}
-          />
-        }
-      />
-      <Route path="/accept-invitation" element={<TokenPasswordPage invitation />} />
-      <Route path="/reset-password" element={<TokenPasswordPage invitation={false} />} />
-      <Route
-        path="/workspaces"
-        element={protectedElement(user && <WorkspacesPage user={user} />)}
-      />
-      <Route path="/get-started" element={protectedElement(<GetStartedPage />)} />
-      <Route path="/pilot" element={protectedElement(user && <PilotPage user={user} />)} />
-      <Route
-        path="/workspaces/:workspaceId"
-        element={protectedElement(user && <WorkspacePage user={user} />)}
-      />
-      <Route
-        path="/workspaces/:workspaceId/projects/:projectId"
-        element={protectedElement(user && <ProjectPage user={user} />)}
-      />
-      <Route
-        path="/workspaces/:workspaceId/projects/:projectId/data"
-        element={protectedElement(user && <DataPage user={user} />)}
-      />
-      <Route
-        path="/workspaces/:workspaceId/projects/:projectId/files-datasets"
-        element={protectedElement(user && <FilesDatasetsPage user={user} />)}
-      />
-      <Route
-        path="/workspaces/:workspaceId/projects/:projectId/visualizations"
-        element={protectedElement(
-          user && (
-            <Suspense fallback={<p className="text-slate-400">Loading chart studio…</p>}>
-              <VisualizationsPage user={user} />
-            </Suspense>
-          ),
-        )}
-      />
-      <Route
-        path="/workspaces/:workspaceId/projects/:projectId/tasks"
-        element={protectedElement(user && <TasksPage user={user} />)}
-      />
-      <Route
-        path="/workspaces/:workspaceId/projects/:projectId/data/:objectTypeId/records/:recordId"
-        element={protectedElement(user && <RecordDetailPage user={user} />)}
-      />
-      <Route path="/members" element={protectedElement(<MembersPage />)} />
-      <Route path="/audit" element={protectedElement(<AuditPage />)} />
-      <Route
-        path="*"
-        element={
-          <Navigate
-            to={state === 'setup' ? '/setup' : state === 'signed-in' ? '/workspaces' : '/sign-in'}
-            replace
-          />
-        }
-      />
-    </Routes>
+    <>
+      {state !== 'signed-in' && (
+        <>
+          <select
+            aria-label={t('language.label')}
+            className="fixed right-16 top-4 z-[80] min-h-9 rounded-lg border border-slate-700 bg-slate-900 px-2 text-xs text-slate-300 shadow-sm"
+            value={locale}
+            onChange={(event) => setLocale(event.target.value as 'en' | 'ko')}
+          >
+            <option value="en">{t('language.english')}</option>
+            <option value="ko">{t('language.korean')}</option>
+          </select>
+          <button
+            aria-label={t('sidebar.switchTheme', {
+              theme: theme === 'dark' ? 'light' : 'dark',
+            })}
+            className="fixed right-4 top-4 z-[80] grid size-9 place-items-center rounded-lg border border-slate-700 bg-slate-900 text-slate-300 shadow-sm"
+            onClick={toggleTheme}
+            type="button"
+          >
+            {theme === 'dark' ? '☀' : '☾'}
+          </button>
+        </>
+      )}
+      <Routes>
+        <Route path="/setup" element={<SetupPage />} />
+        <Route
+          path="/sign-in"
+          element={
+            <SignInPage
+              onSignedIn={(next) => {
+                setUser(next);
+                setState('signed-in');
+              }}
+            />
+          }
+        />
+        <Route path="/accept-invitation" element={<TokenPasswordPage invitation />} />
+        <Route path="/reset-password" element={<TokenPasswordPage invitation={false} />} />
+        <Route
+          path="/workspaces"
+          element={protectedElement(user && <WorkspacesPage user={user} />)}
+        />
+        <Route path="/get-started" element={protectedElement(<GetStartedPage />)} />
+        <Route path="/pilot" element={protectedElement(user && <PilotPage user={user} />)} />
+        <Route path="/workspaces/:workspaceId" element={protectedElement(<WorkspaceIndexPage />)} />
+        <Route
+          path="/workspaces/:workspaceId/data"
+          element={protectedElement(user && <WorkspaceDataPage user={user} />)}
+        />
+        <Route
+          path="/workspaces/:workspaceId/projects"
+          element={protectedElement(user && <WorkspacePage user={user} />)}
+        />
+        <Route
+          path="/workspaces/:workspaceId/projects/:projectId"
+          element={protectedElement(user && <ProjectPage user={user} />)}
+        />
+        <Route
+          path="/workspaces/:workspaceId/projects/:projectId/data"
+          element={protectedElement(user && <DataPage user={user} />)}
+        />
+        <Route
+          path="/workspaces/:workspaceId/projects/:projectId/files-datasets"
+          element={protectedElement(user && <FilesDatasetsPage user={user} />)}
+        />
+        <Route
+          path="/workspaces/:workspaceId/projects/:projectId/visualizations"
+          element={protectedElement(
+            user && (
+              <Suspense fallback={<p className="text-slate-400">Loading chart studio…</p>}>
+                <VisualizationsPage user={user} />
+              </Suspense>
+            ),
+          )}
+        />
+        <Route
+          path="/workspaces/:workspaceId/projects/:projectId/tasks"
+          element={protectedElement(user && <TasksPage user={user} />)}
+        />
+        <Route
+          path="/workspaces/:workspaceId/projects/:projectId/data/:objectTypeId/records/:recordId"
+          element={protectedElement(user && <RecordDetailPage user={user} />)}
+        />
+        <Route path="/members" element={protectedElement(<MembersPage />)} />
+        <Route path="/audit" element={protectedElement(<AuditPage />)} />
+        <Route
+          path="*"
+          element={
+            <Navigate
+              to={state === 'setup' ? '/setup' : state === 'signed-in' ? '/workspaces' : '/sign-in'}
+              replace
+            />
+          }
+        />
+      </Routes>
+    </>
+  );
+}
+
+export function App() {
+  return (
+    <I18nProvider>
+      <AppContent />
+    </I18nProvider>
   );
 }

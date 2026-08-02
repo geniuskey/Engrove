@@ -180,6 +180,7 @@ export const projects = pgTable(
     key: text('key').notNull(),
     description: text('description').notNull().default(''),
     status: text('status').notNull().default('active'),
+    system: boolean('system').notNull().default(false),
     rowVersion: integer('row_version').notNull().default(1),
     createdBy: uuid('created_by')
       .notNull()
@@ -191,6 +192,9 @@ export const projects = pgTable(
   },
   (table) => [
     uniqueIndex('projects_workspace_key_key').on(table.workspaceId, table.key),
+    uniqueIndex('projects_workspace_system_key')
+      .on(table.workspaceId)
+      .where(sql`${table.system} = true`),
     index('projects_workspace_idx').on(table.workspaceId),
     check('projects_status_check', sql`${table.status} in ('active', 'on_hold', 'completed')`),
   ],
@@ -353,7 +357,10 @@ export const recordViews = pgTable(
       .where(sql`${table.archivedAt} is null`),
     uniqueIndex('record_views_project_id_key').on(table.projectId, table.id),
     index('record_views_object_updated_idx').on(table.objectTypeId, table.updatedAt, table.id),
-    check('record_views_type_check', sql`${table.viewType} = 'grid'`),
+    check(
+      'record_views_type_check',
+      sql`${table.viewType} in ('grid', 'form', 'gallery', 'kanban', 'calendar')`,
+    ),
     check('record_views_row_version_check', sql`${table.rowVersion} > 0`),
   ],
 );
@@ -365,6 +372,9 @@ export const records = pgTable(
     projectId: uuid('project_id').notNull(),
     objectTypeId: uuid('object_type_id').notNull(),
     displayName: text('display_name').notNull(),
+    contextProjectId: uuid('context_project_id').references(() => projects.id, {
+      onDelete: 'restrict',
+    }),
     values: jsonb('values').notNull().default({}),
     rowVersion: integer('row_version').notNull().default(1),
     createdBy: uuid('created_by')
@@ -385,6 +395,7 @@ export const records = pgTable(
       name: 'records_project_object_type_fk',
     }).onDelete('restrict'),
     uniqueIndex('records_project_id_key').on(table.projectId, table.id),
+    index('records_context_project_idx').on(table.contextProjectId, table.updatedAt, table.id),
     index('records_object_updated_idx').on(table.objectTypeId, table.updatedAt, table.id),
   ],
 );

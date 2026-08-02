@@ -10,7 +10,7 @@ import * as echarts from 'echarts/core';
 import { SVGRenderer } from 'echarts/renderers';
 import type { EChartsOption } from 'echarts';
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router';
 import { allowed, api, ErrorText, inputClass, type User } from './App.js';
 
 echarts.use([
@@ -189,16 +189,29 @@ function EChart({ option }: { option: EChartsOption }) {
   const host = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!host.current) return;
-    const instance = echarts.init(host.current, undefined, { renderer: 'svg' });
-    instance.setOption(option, true);
+    const element = host.current;
+    let instance: ReturnType<typeof echarts.init>;
+    const render = () => {
+      instance?.dispose();
+      const theme = document.documentElement.dataset.theme === 'dark' ? 'dark' : undefined;
+      instance = echarts.init(element, theme, { renderer: 'svg' });
+      instance.setOption({ ...option, backgroundColor: 'transparent' }, true);
+    };
+    render();
     const resize = () => instance.resize();
+    const themeObserver = new MutationObserver(render);
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme'],
+    });
     window.addEventListener('resize', resize);
     return () => {
+      themeObserver.disconnect();
       window.removeEventListener('resize', resize);
       instance.dispose();
     };
   }, [option]);
-  return <div className="h-80 w-full" ref={host} />;
+  return <div className="h-64 w-full" ref={host} />;
 }
 
 function percentile(sorted: number[], fraction: number) {

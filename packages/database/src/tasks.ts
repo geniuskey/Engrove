@@ -45,7 +45,7 @@ export class ScopedTaskRepository {
 
   static async open(pool: Pool, actor: ActorSession, workspaceId: string, projectId: string) {
     const found = await pool.query(
-      'select 1 from projects p join workspaces w on w.id=p.workspace_id where p.id=$1 and p.workspace_id=$2 and w.organization_id=$3',
+      'select 1 from projects p join workspaces w on w.id=p.workspace_id where p.id=$1 and p.workspace_id=$2 and w.organization_id=$3 and p.system=false',
       [projectId, workspaceId, actor.organizationId],
     );
     if (!found.rowCount)

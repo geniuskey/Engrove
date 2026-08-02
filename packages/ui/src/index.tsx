@@ -5,7 +5,7 @@ import type { ButtonHTMLAttributes, PropsWithChildren } from 'react';
 import { twMerge } from 'tailwind-merge';
 
 const button = cva(
-  'inline-flex min-h-10 items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold shadow-sm transition duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 active:translate-y-px disabled:pointer-events-none disabled:opacity-45',
+  'inline-flex min-h-8 items-center justify-center rounded-lg px-3 py-1.5 text-sm font-semibold shadow-sm transition duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 active:translate-y-px disabled:pointer-events-none disabled:opacity-45',
   {
     variants: {
       variant: {

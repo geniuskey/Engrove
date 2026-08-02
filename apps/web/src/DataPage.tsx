@@ -10,8 +10,11 @@ import {
   useRef,
   useState,
 } from 'react';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { createPortal } from 'react-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { allowed, api, ApiError, ErrorText, inputClass, NoticeText, type User } from './App.js';
+import { useI18n } from './i18n.js';
+import { useServiceSidebarPortal } from './ServiceSidebar.js';
 
 interface ObjectType {
   id: string;
@@ -61,12 +64,14 @@ interface FieldDefinition {
     allowedUnits?: string[];
     displayPrecision?: number;
   };
+  defaultValue?: unknown;
   projectionStatus: 'ready' | 'rebuilding' | 'failed';
 }
 
 interface DynamicRecord {
   id: string;
   objectTypeId: string;
+  contextProjectId?: string | null;
   displayName: string;
   values: Record<string, unknown>;
   relations: Record<string, string[]>;
@@ -82,12 +87,27 @@ interface DynamicRecord {
   updatedAt: string;
 }
 
+export interface WorkspaceDataContext {
+  workspaceId: string;
+  backingProjectId: string;
+  projects: Array<{
+    id: string;
+    name: string;
+    key: string;
+    archivedAt: string | null;
+  }>;
+  legacyProjects?: Array<{ id: string; name: string }>;
+}
+
 interface QueryResult {
   items: DynamicRecord[];
   page: number;
   pageSize: number;
   total: number;
+  groups?: Array<{ value: string | null; count: number }>;
 }
+
+type RecordViewType = 'grid' | 'form' | 'gallery' | 'kanban' | 'calendar';
 
 interface RecordViewConfig {
   visibleFieldIds: string[];
@@ -104,18 +124,31 @@ interface RecordViewConfig {
   }>;
   rowDensity: 'compact' | 'comfortable';
   pageSize: 25 | 50 | 100;
+  viewOptions?: {
+    groupFieldId?: string;
+    dateFieldId?: string;
+    contextProjectId?: string | null;
+  };
 }
 
 interface RecordView {
   id: string;
   objectTypeId: string;
   name: string;
-  viewType: 'grid';
+  viewType: RecordViewType;
   config: RecordViewConfig;
   rowVersion: number;
   archivedAt: string | null;
   updatedAt: string;
 }
+
+const viewTypeMeta: Record<RecordViewType, { icon: string; label: string }> = {
+  grid: { icon: '▦', label: 'Grid' },
+  form: { icon: '▤', label: 'Form' },
+  gallery: { icon: '▧', label: 'Gallery' },
+  kanban: { icon: '▥', label: 'Kanban' },
+  calendar: { icon: '□', label: 'Calendar' },
+};
 
 interface CsvResult {
   imported: number;
@@ -185,6 +218,8 @@ const fieldTypes: FieldType[] = [
   'quantity',
   'measurement',
   'range',
+  'file',
+  'dataset',
 ];
 
 function projectPath(workspaceId: string, projectId: string): string {
@@ -378,7 +413,7 @@ function GridCell({
     return (
       <button
         aria-label={`Edit ${label} for ${recordName}`}
-        className={`group flex w-full items-center justify-between gap-2 px-3 text-left outline-none hover:bg-sky-500/10 focus:bg-sky-500/10 focus:ring-1 focus:ring-inset focus:ring-sky-400 ${comfortable ? 'min-h-14 py-3' : 'min-h-10 py-1.5'}`}
+        className={`group flex w-full items-center justify-between gap-2 px-2.5 text-left text-xs outline-none hover:bg-sky-500/10 focus:bg-sky-500/10 focus:ring-1 focus:ring-inset focus:ring-sky-400 ${comfortable ? 'min-h-11 py-2' : 'min-h-8 py-1'}`}
         onDoubleClick={beginEditing}
         onKeyDown={(event) => {
           if (event.key === 'Enter' || event.key === 'F2') {
@@ -501,6 +536,329 @@ function GridCell({
       )}
     </div>
   );
+}
+
+function InlineDraftInput({
+  draft,
+  field,
+  onChange,
+  saving,
+}: {
+  draft: GridEditorDraft;
+  field: FieldDefinition;
+  onChange: (draft: GridEditorDraft) => void;
+  saving: boolean;
+}) {
+  if (field.fieldType === 'measurement') {
+    return (
+      <span
+        className="block px-2.5 py-2 text-xs text-slate-600"
+        title="Measurements are appended after the record exists"
+      >
+        Read-only
+      </span>
+    );
+  }
+
+  const common =
+    'min-h-8 w-full border-0 bg-transparent px-2.5 py-1 text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:bg-sky-500/10 focus:ring-1 focus:ring-inset focus:ring-sky-400 disabled:opacity-50';
+  if (field.fieldType === 'boolean') {
+    return (
+      <select
+        aria-label={`New record ${field.name}`}
+        className={common}
+        disabled={saving}
+        value={draft.primary}
+        onChange={(event) => onChange({ ...draft, primary: event.target.value })}
+      >
+        <option value="">Unset</option>
+        <option value="true">Yes</option>
+        <option value="false">No</option>
+      </select>
+    );
+  }
+  if (field.fieldType === 'single_select') {
+    return (
+      <select
+        aria-label={`New record ${field.name}`}
+        className={common}
+        disabled={saving}
+        value={draft.primary}
+        onChange={(event) => onChange({ ...draft, primary: event.target.value })}
+      >
+        <option value="">Select…</option>
+        {(field.config.options ?? []).map((option) => (
+          <option key={option.key} value={option.key}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
+  if (field.fieldType === 'quantity' || field.fieldType === 'range') {
+    return (
+      <div className="flex min-w-0 items-center">
+        <input
+          aria-label={`New record ${field.name}`}
+          className={common}
+          disabled={saving}
+          inputMode="decimal"
+          placeholder={field.fieldType === 'range' ? 'Lower' : 'Value'}
+          value={draft.primary}
+          onChange={(event) => onChange({ ...draft, primary: event.target.value })}
+        />
+        {field.fieldType === 'range' && (
+          <input
+            aria-label={`New record ${field.name} upper`}
+            className={`${common} border-l border-slate-800`}
+            disabled={saving}
+            inputMode="decimal"
+            placeholder="Upper"
+            value={draft.secondary}
+            onChange={(event) => onChange({ ...draft, secondary: event.target.value })}
+          />
+        )}
+        <select
+          aria-label={`New record ${field.name} unit`}
+          className={`${common} w-auto min-w-20 border-l border-slate-800 px-2`}
+          disabled={saving}
+          value={draft.unit}
+          onChange={(event) => onChange({ ...draft, unit: event.target.value })}
+        >
+          {(field.config.allowedUnits ?? []).map((unit) => (
+            <option key={unit}>{unit}</option>
+          ))}
+        </select>
+      </div>
+    );
+  }
+
+  const placeholder =
+    field.fieldType === 'relation'
+      ? 'Record UUID; …'
+      : field.fieldType === 'file' || field.fieldType === 'dataset'
+        ? `${field.fieldType} UUID`
+        : field.fieldType === 'multi_select'
+          ? 'Value, value'
+          : field.required
+            ? 'Required'
+            : 'Enter value';
+  return (
+    <input
+      aria-label={`New record ${field.name}`}
+      className={common}
+      disabled={saving}
+      inputMode={
+        field.fieldType === 'integer' || field.fieldType === 'decimal' ? 'decimal' : undefined
+      }
+      placeholder={placeholder}
+      type={
+        field.fieldType === 'date'
+          ? 'date'
+          : field.fieldType === 'datetime'
+            ? 'datetime-local'
+            : 'text'
+      }
+      value={draft.primary}
+      onChange={(event) => onChange({ ...draft, primary: event.target.value })}
+    />
+  );
+}
+
+function InlineRecordRow({
+  fields,
+  projects,
+  onCancel,
+  onCreate,
+  onOpenFullForm,
+}: {
+  fields: FieldDefinition[];
+  projects?: WorkspaceDataContext['projects'] | undefined;
+  onCancel: () => void;
+  onCreate: (
+    payload: ReturnType<typeof inlineRecordPayload> & { contextProjectId?: string | null },
+  ) => Promise<void>;
+  onOpenFullForm: () => void;
+}) {
+  const [displayName, setDisplayName] = useState('');
+  const [contextProjectId, setContextProjectId] = useState('');
+  const [drafts, setDrafts] = useState<Record<string, GridEditorDraft>>(() =>
+    Object.fromEntries(
+      fields.map((field) => [field.id, gridEditorDraft(field, field.defaultValue)]),
+    ),
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const nameInput = useRef<HTMLInputElement>(null);
+
+  async function save() {
+    if (saving) return;
+    setSaving(true);
+    try {
+      await onCreate({
+        ...inlineRecordPayload(displayName, fields, drafts),
+        ...(projects ? { contextProjectId: contextProjectId || null } : {}),
+      });
+      setDisplayName('');
+      setContextProjectId('');
+      setDrafts(
+        Object.fromEntries(
+          fields.map((field) => [field.id, gridEditorDraft(field, field.defaultValue)]),
+        ),
+      );
+      setError('');
+      window.requestAnimationFrame(() => nameInput.current?.focus());
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Record could not be created.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <>
+      <tr
+        className="bg-sky-500/[0.04]"
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            onCancel();
+          } else if (
+            event.key === 'Enter' &&
+            !event.shiftKey &&
+            !(event.target instanceof HTMLButtonElement) &&
+            !event.nativeEvent.isComposing
+          ) {
+            event.preventDefault();
+            void save();
+          }
+        }}
+      >
+        <td className="border-b border-r border-sky-500/30 px-3 text-center font-mono text-sky-400">
+          +
+        </td>
+        <td className="sticky left-0 z-10 border-b border-r border-sky-500/30 bg-slate-950">
+          <input
+            ref={nameInput}
+            aria-label="New record name"
+            autoFocus
+            className="min-h-8 w-full border-0 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-slate-100 outline-none placeholder:text-slate-500 focus:ring-1 focus:ring-inset focus:ring-sky-400"
+            disabled={saving}
+            placeholder="Record name (required)"
+            value={displayName}
+            onChange={(event) => setDisplayName(event.target.value)}
+          />
+        </td>
+        {projects && (
+          <td className="border-b border-r border-sky-500/30">
+            <select
+              aria-label="New record project"
+              className="min-h-8 w-full border-0 bg-sky-500/10 px-2 py-1 text-xs text-slate-200 outline-none focus:ring-1 focus:ring-inset focus:ring-sky-400"
+              disabled={saving}
+              value={contextProjectId}
+              onChange={(event) => setContextProjectId(event.target.value)}
+            >
+              <option value="">No project</option>
+              {projects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                  {project.archivedAt ? ' (archived)' : ''}
+                </option>
+              ))}
+            </select>
+          </td>
+        )}
+        {fields.map((field) => (
+          <td className="border-b border-r border-sky-500/30" key={field.id}>
+            <InlineDraftInput
+              draft={drafts[field.id] ?? gridEditorDraft(field, field.defaultValue)}
+              field={field}
+              saving={saving}
+              onChange={(draft) =>
+                setDrafts((current) => ({
+                  ...current,
+                  [field.id]: draft,
+                }))
+              }
+            />
+          </td>
+        ))}
+        <td className="border-b border-r border-sky-500/30 px-3 text-xs text-sky-400">New</td>
+        <td className="border-b border-sky-500/30 px-1">
+          <div className="flex items-center justify-center gap-0.5">
+            <button
+              aria-label="Save inline record"
+              className="rounded px-2 py-1 text-base text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50"
+              disabled={saving}
+              onClick={() => void save()}
+              title="Save row (Enter)"
+              type="button"
+            >
+              {saving ? '…' : '✓'}
+            </button>
+            <button
+              aria-label="Cancel inline record"
+              className="rounded px-2 py-1 text-base text-slate-500 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-50"
+              disabled={saving}
+              onClick={onCancel}
+              title="Cancel (Escape)"
+              type="button"
+            >
+              ×
+            </button>
+          </div>
+        </td>
+      </tr>
+      {error && (
+        <tr className="bg-rose-500/[0.04]">
+          <td
+            className="border-b border-rose-500/20 px-3 py-2"
+            colSpan={fields.length + 4 + (projects ? 1 : 0)}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p aria-live="polite" className="text-xs text-rose-300">
+                {error}
+              </p>
+              <button
+                className="text-xs text-sky-300 hover:text-sky-200"
+                onClick={onOpenFullForm}
+                type="button"
+              >
+                Open full form
+              </button>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function inlineRecordPayload(
+  displayName: string,
+  fields: FieldDefinition[],
+  drafts: Record<string, GridEditorDraft>,
+) {
+  const values: Record<string, unknown> = {};
+  const relations: Record<string, string[]> = {};
+  const fileReferences: Record<string, string[]> = {};
+  const datasetReferences: Record<string, string[]> = {};
+  const name = gridValue(undefined, { primary: displayName, secondary: '', unit: '' }) as string;
+  for (const field of fields) {
+    if (field.fieldType === 'measurement') continue;
+    const value = gridValue(field, drafts[field.id] ?? gridEditorDraft(field, field.defaultValue));
+    if (field.fieldType === 'relation') {
+      const targets = Array.isArray(value) ? (value as string[]) : [];
+      if (targets.length) relations[field.id] = targets;
+    } else if (field.fieldType === 'file' || field.fieldType === 'dataset') {
+      const references = Array.isArray(value) ? (value as string[]) : [];
+      if (references.length)
+        (field.fieldType === 'file' ? fileReferences : datasetReferences)[field.id] = references;
+    } else if (value !== undefined) {
+      values[field.key] = value;
+    }
+  }
+  return { displayName: name, values, relations, fileReferences, datasetReferences };
 }
 
 function recordPayload(fields: FieldDefinition[], form: FormData) {
@@ -651,11 +1009,13 @@ function FieldInput({ field, value }: { field: FieldDefinition; value?: unknown 
 function RecordForm({
   fields,
   record,
+  projects,
   onSubmit,
   submitLabel,
 }: {
   fields: FieldDefinition[];
   record?: DynamicRecord;
+  projects?: WorkspaceDataContext['projects'] | undefined;
   onSubmit: (form: FormData) => Promise<void>;
   submitLabel: string;
 }) {
@@ -685,6 +1045,27 @@ function RecordForm({
           required
         />
       </label>
+      {projects && (
+        <label className="block text-sm text-slate-300 md:col-span-2">
+          Project
+          <select
+            className={inputClass}
+            defaultValue={record?.contextProjectId ?? ''}
+            name="contextProjectId"
+          >
+            <option value="">No project</option>
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+                {project.archivedAt ? ' (archived)' : ''}
+              </option>
+            ))}
+          </select>
+          <span className="mt-1 block text-xs text-slate-500">
+            Optional context only; the row remains visible in this workspace table.
+          </span>
+        </label>
+      )}
       {fields.map((field) => (
         <label className="block text-sm text-slate-300" key={field.id}>
           <span className="flex items-center justify-between gap-2">
@@ -716,7 +1097,10 @@ function RecordForm({
               required={field.required}
             />
           ) : (
-            <FieldInput field={field} value={record?.values[field.key]} />
+            <FieldInput
+              field={field}
+              value={record ? record.values[field.key] : field.defaultValue}
+            />
           )}
         </label>
       ))}
@@ -727,6 +1111,215 @@ function RecordForm({
         <ErrorText>{error}</ErrorText>
       </div>
     </form>
+  );
+}
+
+function GalleryRecordsView({
+  fields,
+  records,
+  onOpen,
+}: {
+  fields: FieldDefinition[];
+  records: DynamicRecord[];
+  onOpen: (record: DynamicRecord) => void;
+}) {
+  return (
+    <div className="grid gap-3 p-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+      {records.map((record) => (
+        <article
+          className="group overflow-hidden rounded-lg border border-slate-800 bg-slate-900/55 hover:border-slate-700"
+          key={record.id}
+        >
+          <div className="h-16 border-b border-slate-800 bg-gradient-to-br from-sky-500/15 via-slate-900 to-cyan-500/10" />
+          <div className="p-3">
+            <button
+              className="w-full truncate text-left text-sm font-semibold text-slate-100 group-hover:text-sky-300"
+              onClick={() => onOpen(record)}
+              type="button"
+            >
+              {record.displayName}
+            </button>
+            <dl className="mt-2 space-y-1.5">
+              {fields.slice(0, 5).map((field) => (
+                <div className="grid grid-cols-[5rem_1fr] gap-2 text-xs" key={field.id}>
+                  <dt className="truncate text-slate-500">{field.name}</dt>
+                  <dd className="truncate text-slate-300">
+                    {displayValue(recordGridValue(record, field))}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function KanbanRecordsView({
+  field,
+  records,
+  groups,
+  canUpdate,
+  onMove,
+  onOpen,
+}: {
+  field: FieldDefinition;
+  records: DynamicRecord[];
+  groups: QueryResult['groups'];
+  canUpdate: boolean;
+  onMove: (record: DynamicRecord, value: string) => Promise<void>;
+  onOpen: (record: DynamicRecord) => void;
+}) {
+  const lanes = [{ key: '', label: 'No value' }, ...(field.config.options ?? [])];
+  return (
+    <div className="grid auto-cols-[minmax(15rem,1fr)] grid-flow-col gap-3 overflow-x-auto p-3">
+      {lanes.map((lane) => {
+        const items = records.filter(
+          (record) => String(recordGridValue(record, field) ?? '') === lane.key,
+        );
+        const count =
+          groups?.find((group) => (group.value ?? '') === lane.key)?.count ?? items.length;
+        return (
+          <section
+            className="min-h-72 rounded-lg border border-slate-800 bg-slate-900/35"
+            key={lane.key || 'unassigned'}
+          >
+            <header className="flex items-center justify-between border-b border-slate-800 px-3 py-2">
+              <h3 className="truncate text-xs font-semibold text-slate-300">{lane.label}</h3>
+              <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-500">
+                {count}
+              </span>
+            </header>
+            <div className="space-y-2 p-2">
+              {items.map((record) => (
+                <article
+                  className="rounded-md border border-slate-800 bg-slate-950/75 p-2.5 shadow-sm"
+                  key={record.id}
+                >
+                  <button
+                    className="w-full truncate text-left text-xs font-medium text-slate-200 hover:text-sky-300"
+                    onClick={() => onOpen(record)}
+                    type="button"
+                  >
+                    {record.displayName}
+                  </button>
+                  {canUpdate && (
+                    <select
+                      aria-label={`Move ${record.displayName}`}
+                      className="mt-2 w-full rounded border border-slate-800 bg-slate-900 px-2 py-1 text-[11px] text-slate-400 outline-none focus:border-sky-500"
+                      value={lane.key}
+                      onChange={(event) => void onMove(record, event.target.value)}
+                    >
+                      {lanes.map((candidate) => (
+                        <option key={candidate.key || 'unassigned'} value={candidate.key}>
+                          {candidate.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </article>
+              ))}
+              {!items.length && (
+                <p className="rounded border border-dashed border-slate-800 px-2 py-6 text-center text-xs text-slate-600">
+                  No records
+                </p>
+              )}
+            </div>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function CalendarRecordsView({
+  field,
+  month,
+  records,
+  onMonthChange,
+  onOpen,
+}: {
+  field: FieldDefinition;
+  month: Date;
+  records: DynamicRecord[];
+  onMonthChange: (month: Date) => void;
+  onOpen: (record: DynamicRecord) => void;
+}) {
+  const year = month.getFullYear();
+  const monthIndex = month.getMonth();
+  const leadingDays = new Date(year, monthIndex, 1).getDay();
+  const cells = Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(year, monthIndex, index - leadingDays + 1);
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    return { date, key, current: date.getMonth() === monthIndex };
+  });
+  const byDate = new Map<string, DynamicRecord[]>();
+  for (const record of records) {
+    const value = recordGridValue(record, field);
+    if (typeof value !== 'string' || value.length < 10) continue;
+    const key = value.slice(0, 10);
+    byDate.set(key, [...(byDate.get(key) ?? []), record]);
+  }
+  return (
+    <div className="p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <button
+          aria-label="Previous month"
+          className="rounded-md px-2 py-1 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+          onClick={() => onMonthChange(new Date(year, monthIndex - 1, 1))}
+          type="button"
+        >
+          ‹
+        </button>
+        <h3 className="text-sm font-semibold">
+          {month.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}
+        </h3>
+        <button
+          aria-label="Next month"
+          className="rounded-md px-2 py-1 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+          onClick={() => onMonthChange(new Date(year, monthIndex + 1, 1))}
+          type="button"
+        >
+          ›
+        </button>
+      </div>
+      <div className="grid grid-cols-7 border-l border-t border-slate-800">
+        {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => (
+          <div
+            className="border-b border-r border-slate-800 bg-slate-900/70 px-2 py-1.5 text-center text-[10px] uppercase text-slate-500"
+            key={day}
+          >
+            {day}
+          </div>
+        ))}
+        {cells.map((cell) => (
+          <div
+            className={`min-h-24 border-b border-r border-slate-800 p-1.5 ${cell.current ? 'bg-slate-950/25' : 'bg-slate-900/25 text-slate-600'}`}
+            key={cell.key}
+          >
+            <span className="text-[10px]">{cell.date.getDate()}</span>
+            <div className="mt-1 space-y-1">
+              {(byDate.get(cell.key) ?? []).slice(0, 3).map((record) => (
+                <button
+                  className="block w-full truncate rounded bg-sky-500/10 px-1.5 py-1 text-left text-[10px] text-sky-300 hover:bg-sky-500/20"
+                  key={record.id}
+                  onClick={() => onOpen(record)}
+                  type="button"
+                >
+                  {record.displayName}
+                </button>
+              ))}
+              {(byDate.get(cell.key)?.length ?? 0) > 3 && (
+                <span className="text-[10px] text-slate-500">
+                  +{(byDate.get(cell.key)?.length ?? 0) - 3} more
+                </span>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -1048,8 +1641,48 @@ function recordGridValue(record: DynamicRecord, field: FieldDefinition): unknown
   return record.values[field.key];
 }
 
-export function DataPage({ user }: { user: User }) {
-  const { workspaceId = '', projectId = '' } = useParams();
+function configuredSorts(
+  sortField: string,
+  sortDirection: 'asc' | 'desc',
+): RecordViewConfig['sorts'] {
+  if (!sortField) return [];
+  if (['displayName', 'createdAt', 'updatedAt'].includes(sortField)) {
+    return [
+      {
+        systemField: sortField as 'displayName' | 'createdAt' | 'updatedAt',
+        direction: sortDirection,
+      },
+    ];
+  }
+  return [{ fieldId: sortField, direction: sortDirection }];
+}
+
+function localDateKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function fieldHasUsableDefault(field: FieldDefinition): boolean {
+  const value = field.defaultValue;
+  return (
+    value !== undefined &&
+    value !== null &&
+    value !== '' &&
+    (!Array.isArray(value) || value.length > 0)
+  );
+}
+
+export function DataPage({
+  user,
+  workspaceData,
+}: {
+  user: User;
+  workspaceData?: WorkspaceDataContext;
+}) {
+  const { t } = useI18n();
+  const params = useParams();
+  const workspaceId = workspaceData?.workspaceId ?? params.workspaceId ?? '';
+  const projectId = workspaceData?.backingProjectId ?? params.projectId ?? '';
+  const workspaceMode = Boolean(workspaceData);
   const [search, setSearch] = useSearchParams();
   const base = projectPath(workspaceId, projectId);
   const [objectTypes, setObjectTypes] = useState<ObjectType[]>([]);
@@ -1069,6 +1702,13 @@ export function DataPage({ user }: { user: User }) {
   const [filterOperator, setFilterOperator] = useState('eq');
   const [filterValue, setFilterValue] = useState('');
   const [debouncedFilterValue, setDebouncedFilterValue] = useState('');
+  const [searchValue, setSearchValue] = useState('');
+  const [debouncedSearchValue, setDebouncedSearchValue] = useState('');
+  const [contextProjectFilter, setContextProjectFilter] = useState('all');
+  const [calendarMonth, setCalendarMonth] = useState(() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1);
+  });
   const [activeTool, setActiveTool] = useState<'fields' | 'filter' | 'sort' | null>(null);
   const [hiddenFieldIds, setHiddenFieldIds] = useState<Set<string>>(() => new Set());
   const [fieldOrderIds, setFieldOrderIds] = useState<string[]>([]);
@@ -1079,21 +1719,35 @@ export function DataPage({ user }: { user: User }) {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [showSchema, setShowSchema] = useState(false);
   const [showNewRecord, setShowNewRecord] = useState(false);
+  const [showInlineRecord, setShowInlineRecord] = useState(false);
   const [typesLoading, setTypesLoading] = useState(true);
   const [viewsLoading, setViewsLoading] = useState(false);
   const [contextObjectTypeId, setContextObjectTypeId] = useState('');
   const [viewBusy, setViewBusy] = useState(false);
   const [showCreateView, setShowCreateView] = useState(false);
+  const [newViewType, setNewViewType] = useState<RecordViewType>('grid');
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [messageTone, setMessageTone] = useState<'info' | 'success' | 'error'>('info');
   const [csvResult, setCsvResult] = useState<CsvResult>();
   const appliedViewKey = useRef('');
   const pendingViewId = useRef('');
+  const recordsRequestId = useRef(0);
+  const sidebarPortal = useServiceSidebarPortal();
   const selectedId = search.get('type') ?? objectTypes[0]?.id ?? '';
   const selectedViewId = search.get('view') ?? 'all';
   const selected = objectTypes.find((objectType) => objectType.id === selectedId);
   const selectedView = views.find((view) => view.id === selectedViewId);
+  const activeViewType = selectedView?.viewType ?? 'grid';
+  const kanbanField = fields.find(
+    (field) => field.id === selectedView?.config.viewOptions?.groupFieldId,
+  );
+  const calendarField = fields.find(
+    (field) => field.id === selectedView?.config.viewOptions?.dateFieldId,
+  );
+  const availableFieldTypes = workspaceMode
+    ? fieldTypes.filter((type) => !['measurement', 'file', 'dataset'].includes(type))
+    : fieldTypes;
   const orderedFields = useMemo(() => {
     const position = new Map(fieldOrderIds.map((fieldId, index) => [fieldId, index]));
     return [...fields].sort((left, right) => {
@@ -1110,12 +1764,48 @@ export function DataPage({ user }: { user: User }) {
     () => orderedFields.filter((field) => !hiddenFieldIds.has(field.id)),
     [hiddenFieldIds, orderedFields],
   );
+  const hiddenRequiredFields = useMemo(
+    () =>
+      orderedFields.filter(
+        (field) =>
+          hiddenFieldIds.has(field.id) &&
+          field.required &&
+          field.fieldType !== 'measurement' &&
+          (!fieldHasUsableDefault(field) ||
+            ['relation', 'file', 'dataset'].includes(field.fieldType)),
+      ),
+    [hiddenFieldIds, orderedFields],
+  );
+  const formFields = useMemo(
+    () => [
+      ...visibleFields,
+      ...orderedFields.filter(
+        (field) =>
+          hiddenFieldIds.has(field.id) &&
+          field.required &&
+          field.fieldType !== 'measurement' &&
+          (!fieldHasUsableDefault(field) ||
+            ['relation', 'file', 'dataset'].includes(field.fieldType)),
+      ),
+    ],
+    [hiddenFieldIds, orderedFields, visibleFields],
+  );
   const currentViewConfig = useMemo<RecordViewConfig>(() => {
     const widths = Object.fromEntries(
       orderedFields.flatMap((field) =>
         fieldWidths[field.id] ? [[field.id, fieldWidths[field.id]!] as const] : [],
       ),
     );
+    const preservedOptions = selectedView?.config.viewOptions ?? {};
+    const viewOptions = {
+      ...(preservedOptions.groupFieldId ? { groupFieldId: preservedOptions.groupFieldId } : {}),
+      ...(preservedOptions.dateFieldId ? { dateFieldId: preservedOptions.dateFieldId } : {}),
+      ...(workspaceMode && contextProjectFilter !== 'all'
+        ? {
+            contextProjectId: contextProjectFilter === 'none' ? null : contextProjectFilter,
+          }
+        : {}),
+    };
     return {
       visibleFieldIds: visibleFields.map((field) => field.id),
       fieldWidths: widths,
@@ -1129,12 +1819,10 @@ export function DataPage({ user }: { user: User }) {
               },
             ]
           : [],
-      sorts:
-        sortField === 'displayName'
-          ? [{ systemField: 'displayName', direction: sortDirection }]
-          : [{ fieldId: sortField, direction: sortDirection }],
+      sorts: configuredSorts(sortField, sortDirection),
       rowDensity,
       pageSize,
+      ...(Object.keys(viewOptions).length ? { viewOptions } : {}),
     };
   }, [
     fieldWidths,
@@ -1144,13 +1832,29 @@ export function DataPage({ user }: { user: User }) {
     orderedFields,
     pageSize,
     rowDensity,
+    contextProjectFilter,
+    selectedView?.config.viewOptions,
     sortDirection,
     sortField,
     visibleFields,
+    workspaceMode,
   ]);
   const viewDirty = Boolean(
     selectedView && JSON.stringify(currentViewConfig) !== JSON.stringify(selectedView.config),
   );
+
+  function cycleSort(column: string) {
+    if (sortField !== column) {
+      setSortField(column);
+      setSortDirection('asc');
+    } else if (sortDirection === 'asc') {
+      setSortDirection('desc');
+    } else {
+      setSortField('');
+      setSortDirection('asc');
+    }
+    setPage(1);
+  }
 
   const applyViewConfig = useCallback(
     (config?: RecordViewConfig) => {
@@ -1166,6 +1870,7 @@ export function DataPage({ user }: { user: User }) {
         setSortDirection('asc');
         setRowDensity('compact');
         setPageSize(25);
+        setContextProjectFilter('all');
         setPage(1);
         return;
       }
@@ -1178,6 +1883,7 @@ export function DataPage({ user }: { user: User }) {
       setHiddenFieldIds(
         new Set(fields.map((field) => field.id).filter((fieldId) => !visibleSet.has(fieldId))),
       );
+
       setFieldWidths(
         Object.fromEntries(
           Object.entries(config.fieldWidths).filter(([fieldId]) => validFieldIds.has(fieldId)),
@@ -1189,12 +1895,16 @@ export function DataPage({ user }: { user: User }) {
       setFilterValue(filter?.value === undefined ? '' : String(filter.value));
       const sort = config.sorts[0];
       setSortField(
-        sort?.systemField ??
-          (sort?.fieldId && validFieldIds.has(sort.fieldId) ? sort.fieldId : 'displayName'),
+        sort?.systemField ?? (sort?.fieldId && validFieldIds.has(sort.fieldId) ? sort.fieldId : ''),
       );
       setSortDirection(sort?.direction ?? 'asc');
       setRowDensity(config.rowDensity);
       setPageSize(config.pageSize);
+      setContextProjectFilter(
+        config.viewOptions && 'contextProjectId' in config.viewOptions
+          ? (config.viewOptions.contextProjectId ?? 'none')
+          : 'all',
+      );
       setPage(1);
     },
     [fields],
@@ -1250,10 +1960,20 @@ export function DataPage({ user }: { user: User }) {
   }, [filterValue]);
 
   useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearchValue(searchValue.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [searchValue]);
+
+  useEffect(() => {
     setSelectedRows(new Set());
     setSelectedRecord(undefined);
     setActiveTool(null);
     setShowCreateView(false);
+    setNewViewType('grid');
+    setShowInlineRecord(false);
+    setSearchValue('');
+    setDebouncedSearchValue('');
+    setContextProjectFilter('all');
     setContextObjectTypeId('');
     appliedViewKey.current = '';
     pendingViewId.current = '';
@@ -1293,22 +2013,35 @@ export function DataPage({ user }: { user: User }) {
   useEffect(() => {
     setSelectedRows(new Set());
     setSelectedRecord(undefined);
-  }, [debouncedFilterValue, filterField, page, pageSize, sortDirection, sortField]);
+  }, [
+    activeViewType,
+    calendarField,
+    calendarMonth,
+    contextProjectFilter,
+    debouncedFilterValue,
+    debouncedSearchValue,
+    filterField,
+    page,
+    pageSize,
+    sortDirection,
+    sortField,
+  ]);
 
   useEffect(() => {
-    if (!selectedRecord && !showNewRecord) return;
+    if (!selectedRecord && !showNewRecord && !showInlineRecord) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setSelectedRecord(undefined);
         setShowNewRecord(false);
+        setShowInlineRecord(false);
       }
     };
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [selectedRecord, showNewRecord]);
+  }, [selectedRecord, showInlineRecord, showNewRecord]);
 
   const queryBody = useMemo(() => {
-    const filters =
+    const filters: Array<{ fieldId: string; operator: string; value?: unknown }> =
       filterField && (filterOperator === 'is_null' || debouncedFilterValue)
         ? [
             {
@@ -1318,15 +2051,58 @@ export function DataPage({ user }: { user: User }) {
             },
           ]
         : [];
-    const sorts =
-      sortField === 'displayName'
-        ? [{ systemField: 'displayName', direction: sortDirection }]
-        : [{ fieldId: sortField, direction: sortDirection }];
-    return { filters, sorts, page, pageSize };
-  }, [debouncedFilterValue, filterField, filterOperator, page, pageSize, sortDirection, sortField]);
+    if (activeViewType === 'calendar' && calendarField) {
+      const nextMonth = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1);
+      const datetime = calendarField.fieldType === 'datetime';
+      filters.push(
+        {
+          fieldId: calendarField.id,
+          operator: 'gte',
+          value: datetime
+            ? `${localDateKey(calendarMonth)}T00:00:00.000Z`
+            : localDateKey(calendarMonth),
+        },
+        {
+          fieldId: calendarField.id,
+          operator: 'lt',
+          value: datetime ? `${localDateKey(nextMonth)}T00:00:00.000Z` : localDateKey(nextMonth),
+        },
+      );
+    }
+    const sorts = configuredSorts(sortField, sortDirection);
+    return {
+      filters,
+      sorts,
+      ...(debouncedSearchValue ? { search: debouncedSearchValue } : {}),
+      ...(workspaceMode && contextProjectFilter !== 'all'
+        ? {
+            contextProjectId: contextProjectFilter === 'none' ? null : contextProjectFilter,
+          }
+        : {}),
+      ...(activeViewType === 'kanban' && kanbanField ? { groupByFieldId: kanbanField.id } : {}),
+      page,
+      pageSize: ['kanban', 'calendar'].includes(activeViewType) ? 100 : pageSize,
+    };
+  }, [
+    activeViewType,
+    calendarField,
+    calendarMonth,
+    contextProjectFilter,
+    debouncedFilterValue,
+    debouncedSearchValue,
+    filterField,
+    filterOperator,
+    kanbanField,
+    page,
+    pageSize,
+    sortDirection,
+    sortField,
+    workspaceMode,
+  ]);
 
   const loadRecords = useCallback(async () => {
     if (!selectedId) return;
+    const requestId = ++recordsRequestId.current;
     setRecordsLoading(true);
     try {
       const recordResult = await api<QueryResult>(
@@ -1336,13 +2112,17 @@ export function DataPage({ user }: { user: User }) {
           body: JSON.stringify(queryBody),
         },
       );
-      setRecords(recordResult);
-      setMessage('');
+      if (requestId === recordsRequestId.current) {
+        setRecords(recordResult);
+        setMessage('');
+      }
     } catch (cause) {
-      setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'Records could not be loaded.');
+      if (requestId === recordsRequestId.current) {
+        setMessageTone('error');
+        setMessage(cause instanceof Error ? cause.message : 'Records could not be loaded.');
+      }
     } finally {
-      setRecordsLoading(false);
+      if (requestId === recordsRequestId.current) setRecordsLoading(false);
     }
   }, [base, queryBody, selectedId]);
 
@@ -1512,10 +2292,39 @@ export function DataPage({ user }: { user: User }) {
           method: 'PATCH',
           body: JSON.stringify({
             displayName,
+            contextProjectId: record.contextProjectId ?? null,
             values,
             relations,
             fileReferences,
             datasetReferences,
+            rowVersion: record.rowVersion,
+          }),
+        },
+      );
+      setRecords((current) => ({
+        ...current,
+        items: current.items.map((item) => (item.id === updated.id ? updated : item)),
+      }));
+      setSelectedRecord((current) => (current?.id === updated.id ? updated : current));
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.code === 'VERSION_CONFLICT') await loadRecords();
+      throw cause;
+    }
+  }
+
+  async function saveProjectCell(record: DynamicRecord, contextProjectId: string | null) {
+    try {
+      const updated = await api<DynamicRecord>(
+        `${base}/object-types/${record.objectTypeId}/records/${record.id}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
+            displayName: record.displayName,
+            contextProjectId,
+            values: record.values,
+            relations: record.relations ?? {},
+            fileReferences: record.fileReferences ?? {},
+            datasetReferences: record.datasetReferences ?? {},
             rowVersion: record.rowVersion,
           }),
         },
@@ -1538,6 +2347,9 @@ export function DataPage({ user }: { user: User }) {
         method: 'PATCH',
         body: JSON.stringify({
           ...recordPayload(fields, form),
+          ...(workspaceMode
+            ? { contextProjectId: String(form.get('contextProjectId') ?? '') || null }
+            : { contextProjectId: record.contextProjectId ?? null }),
           rowVersion: record.rowVersion,
         }),
       },
@@ -1549,6 +2361,18 @@ export function DataPage({ user }: { user: User }) {
     setSelectedRecord(updated);
     setMessageTone('success');
     setMessage(`${updated.displayName} saved.`);
+  }
+
+  async function createInlineRecord(
+    payload: ReturnType<typeof inlineRecordPayload> & { contextProjectId?: string | null },
+  ) {
+    const created = await api<DynamicRecord>(`${base}/object-types/${selectedId}/records`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    await loadRecords();
+    setMessageTone('success');
+    setMessage(`${created.displayName} created. The next blank row is ready.`);
   }
 
   function chooseView(viewId: string) {
@@ -1578,13 +2402,35 @@ export function DataPage({ user }: { user: User }) {
   async function createView(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
-    const name = String(new FormData(form).get('name') ?? '').trim();
+    const data = new FormData(form);
+    const name = String(data.get('name') ?? '').trim();
+    const viewType = String(data.get('viewType') ?? 'grid') as RecordViewType;
     if (!name) return;
+    const groupFieldId = String(data.get('groupFieldId') ?? '');
+    const dateFieldId = String(data.get('dateFieldId') ?? '');
+    if (viewType === 'kanban' && !groupFieldId) {
+      setMessageTone('error');
+      setMessage('Choose a single-select grouping field for the Kanban view.');
+      return;
+    }
+    if (viewType === 'calendar' && !dateFieldId) {
+      setMessageTone('error');
+      setMessage('Choose a date field for the Calendar view.');
+      return;
+    }
+    const config: RecordViewConfig = {
+      ...currentViewConfig,
+      ...(viewType === 'kanban'
+        ? { viewOptions: { ...currentViewConfig.viewOptions, groupFieldId } }
+        : viewType === 'calendar'
+          ? { viewOptions: { ...currentViewConfig.viewOptions, dateFieldId } }
+          : {}),
+    };
     setViewBusy(true);
     try {
       const created = await api<RecordView>(`${base}/object-types/${selectedId}/views`, {
         method: 'POST',
-        body: JSON.stringify({ name, config: currentViewConfig }),
+        body: JSON.stringify({ name, viewType, config }),
       });
       pendingViewId.current = created.id;
       appliedViewKey.current = `${selectedId}:${created.id}:${created.rowVersion}:${fields.map((field) => field.id).join(',')}`;
@@ -1592,6 +2438,7 @@ export function DataPage({ user }: { user: User }) {
         [...current, created].sort((left, right) => left.name.localeCompare(right.name)),
       );
       setShowCreateView(false);
+      setNewViewType('grid');
       form.reset();
       setSearch({ type: selectedId, view: created.id });
       setMessageTone('success');
@@ -1614,6 +2461,7 @@ export function DataPage({ user }: { user: User }) {
           method: 'PATCH',
           body: JSON.stringify({
             name: selectedView.name,
+            viewType: selectedView.viewType,
             config: currentViewConfig,
             rowVersion: selectedView.rowVersion,
           }),
@@ -1631,22 +2479,77 @@ export function DataPage({ user }: { user: User }) {
     }
   }
 
-  async function archiveView() {
-    if (!selectedView) return;
-    if (!window.confirm(`Archive the shared view “${selectedView.name}”?`)) return;
+  async function renameView(view: RecordView) {
+    const name = window.prompt('Rename view', view.name)?.trim();
+    if (!name || name === view.name) return;
     setViewBusy(true);
     try {
-      await api(`${base}/object-types/${selectedId}/views/${selectedView.id}/archive`, {
+      const updated = await api<RecordView>(`${base}/object-types/${selectedId}/views/${view.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name,
+          viewType: view.viewType,
+          config: view.config,
+          rowVersion: view.rowVersion,
+        }),
+      });
+      setViews((current) =>
+        current
+          .map((candidate) => (candidate.id === updated.id ? updated : candidate))
+          .sort((left, right) => left.name.localeCompare(right.name)),
+      );
+      setMessageTone('success');
+      setMessage(`View renamed to “${updated.name}”.`);
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.code === 'VERSION_CONFLICT') await loadDataContext();
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : 'View could not be renamed.');
+    } finally {
+      setViewBusy(false);
+    }
+  }
+
+  async function duplicateView(view: RecordView) {
+    const names = new Set(views.map((candidate) => candidate.name.toLocaleLowerCase()));
+    let name = `${view.name} copy`;
+    let copy = 2;
+    while (names.has(name.toLocaleLowerCase())) name = `${view.name} copy ${copy++}`;
+    setViewBusy(true);
+    try {
+      const created = await api<RecordView>(`${base}/object-types/${selectedId}/views`, {
+        method: 'POST',
+        body: JSON.stringify({ name, viewType: view.viewType, config: view.config }),
+      });
+      setViews((current) =>
+        [...current, created].sort((left, right) => left.name.localeCompare(right.name)),
+      );
+      chooseView(created.id);
+      setMessageTone('success');
+      setMessage(`View “${created.name}” duplicated.`);
+    } catch (cause) {
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : 'View could not be duplicated.');
+    } finally {
+      setViewBusy(false);
+    }
+  }
+
+  async function archiveView(target = selectedView) {
+    if (!target) return;
+    if (!window.confirm(`Archive the shared view “${target.name}”?`)) return;
+    setViewBusy(true);
+    try {
+      await api(`${base}/object-types/${selectedId}/views/${target.id}/archive`, {
         method: 'POST',
         body: JSON.stringify({
-          rowVersion: selectedView.rowVersion,
+          rowVersion: target.rowVersion,
           reason: 'Archived from the data workspace',
         }),
       });
-      setViews((current) => current.filter((view) => view.id !== selectedView.id));
-      chooseView('all');
+      setViews((current) => current.filter((view) => view.id !== target.id));
+      if (selectedViewId === target.id) chooseView('all');
       setMessageTone('success');
-      setMessage(`View “${selectedView.name}” archived.`);
+      setMessage(`View “${target.name}” archived.`);
     } catch (cause) {
       if (cause instanceof ApiError && cause.code === 'VERSION_CONFLICT') await loadDataContext();
       setMessageTone('error');
@@ -1688,333 +2591,496 @@ export function DataPage({ user }: { user: User }) {
 
   return (
     <>
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <Link className="text-sm text-slate-400 hover:text-sky-300" to={base}>
-            ← Project overview
-          </Link>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Data workspace</h1>
-          <p className="mt-1 text-sm text-slate-500">Typed, configurable engineering records.</p>
-        </div>
-        {allowed(user, 'schema.manage') && (
+      <div className="flex justify-end">
+        <h1 className="sr-only">
+          {workspaceMode ? t('data.workspaceData') : t('common.engineeringRecords')}
+        </h1>
+        {!workspaceMode && allowed(user, 'schema.manage') && (
           <Button variant="quiet" onClick={() => void installTemplate()}>
-            Install Test &amp; Characterization
+            {t('data.installTemplate')}
           </Button>
         )}
       </div>
       <NoticeText tone={messageTone}>{message}</NoticeText>
-
-      <div className="mt-5 grid min-h-[38rem] min-w-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/35 shadow-2xl shadow-slate-950/15 lg:grid-cols-[240px_minmax(0,1fr)]">
-        <aside className="min-w-0 border-b border-slate-800 bg-slate-900/60 p-3 lg:border-b-0 lg:border-r">
-          <p className="px-3 py-2 font-mono text-xs uppercase tracking-widest text-slate-500">
-            Tables
-          </p>
-          {typesLoading && (
-            <div className="space-y-2 px-3 py-4" aria-label="Loading object types">
-              <div className="h-8 animate-pulse rounded bg-slate-800" />
-              <div className="h-8 animate-pulse rounded bg-slate-800" />
-            </div>
-          )}
-          {!typesLoading && objectTypes.length === 0 && (
-            <p className="px-3 py-4 text-sm text-slate-400">
-              No schema yet. Install the template or create one below.
-            </p>
-          )}
-          {objectTypes.map((objectType) => (
-            <button
-              className={`mb-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm ${selectedId === objectType.id ? 'bg-sky-500/15 font-medium text-sky-300' : 'text-slate-300 hover:bg-slate-800'}`}
-              key={objectType.id}
-              onClick={() => {
-                setPage(1);
-                setSortField('displayName');
-                setSortDirection('asc');
-                setFilterField('');
-                setFilterValue('');
-                setSearch({ type: objectType.id });
-              }}
-            >
-              <span className="text-slate-500">▦</span>
-              <span className="truncate">{objectType.pluralName}</span>
-            </button>
-          ))}
-          {selected && (
-            <div className="mt-4 border-t border-slate-800 pt-3">
-              <div className="flex items-center justify-between px-3 py-2">
-                <p className="font-mono text-xs uppercase tracking-widest text-slate-500">Views</p>
-                {allowed(user, 'schema.manage') && (
-                  <button
-                    aria-label="Create view"
-                    className="rounded px-1.5 text-lg leading-5 text-slate-500 hover:bg-slate-800 hover:text-sky-300"
-                    onClick={() => setShowCreateView((value) => !value)}
-                    type="button"
-                  >
-                    +
-                  </button>
-                )}
-              </div>
-              <button
-                className={`mb-1 flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm ${selectedViewId === 'all' ? 'bg-slate-800/80 text-slate-100' : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'}`}
-                onClick={() => chooseView('all')}
-                type="button"
+      {workspaceMode && Boolean(workspaceData?.legacyProjects?.length) && (
+        <NoticeText tone="info">
+          Existing project-owned engineering tables were preserved during the workspace-data
+          upgrade. Open{' '}
+          {workspaceData!.legacyProjects!.map((project, index) => (
+            <span key={project.id}>
+              {index > 0 ? ', ' : ''}
+              <Link
+                className="font-medium text-sky-300 hover:text-sky-200"
+                to={`/workspaces/${workspaceId}/projects/${project.id}/data`}
               >
-                <span className="flex items-center gap-2">
-                  <span className="text-sky-400">▦</span> All records
-                </span>
-                <span className="rounded bg-slate-700 px-1.5 py-0.5 text-[10px] uppercase text-slate-400">
-                  Grid
-                </span>
-              </button>
-              {viewsLoading && <div className="mx-2 my-2 h-8 animate-pulse rounded bg-slate-800" />}
-              {!viewsLoading &&
-                views.map((view) => (
-                  <button
-                    className={`mb-1 flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm ${selectedViewId === view.id ? 'bg-sky-500/15 text-sky-200' : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'}`}
-                    key={view.id}
-                    onClick={() => chooseView(view.id)}
-                    type="button"
-                  >
-                    <span className="flex min-w-0 items-center gap-2">
-                      <span className="text-sky-400">▦</span>
-                      <span className="truncate">{view.name}</span>
-                    </span>
-                    <span className="ml-2 text-[10px] uppercase text-slate-600">Shared</span>
-                  </button>
-                ))}
-              {showCreateView && allowed(user, 'schema.manage') && (
-                <form className="mt-2 space-y-2 px-2" onSubmit={(event) => void createView(event)}>
-                  <input
-                    aria-label="View name"
-                    autoFocus
-                    className={inputClass}
-                    maxLength={120}
-                    name="name"
-                    placeholder="View name"
-                    required
-                  />
-                  <div className="flex gap-2">
-                    <Button className="flex-1" disabled={viewBusy} variant="quiet" type="submit">
-                      {viewBusy ? 'Saving…' : 'Save view'}
-                    </Button>
+                {project.name}
+              </Link>
+            </span>
+          ))}{' '}
+          to continue using traceable records and their project-scoped resources.
+        </NoticeText>
+      )}
+
+      {sidebarPortal &&
+        createPortal(
+          <nav aria-label="Data navigation" className="p-2">
+            <div className="mb-1 px-2 py-1.5">
+              <p className="text-[10px] font-medium uppercase tracking-wider text-slate-500">
+                {workspaceMode ? t('data.workspaceTables') : t('data.engineeringTables')}
+              </p>
+              <p className="mt-0.5 text-[10px] text-slate-600">
+                {t('data.tableCount', { count: objectTypes.length })}
+              </p>
+            </div>
+            {typesLoading && (
+              <div className="space-y-2 px-3 py-4" aria-label="Loading object types">
+                <div className="h-8 animate-pulse rounded bg-slate-800" />
+                <div className="h-8 animate-pulse rounded bg-slate-800" />
+              </div>
+            )}
+            {!typesLoading && objectTypes.length === 0 && (
+              <p className="px-3 py-4 text-sm text-slate-400">
+                {workspaceMode
+                  ? 'No tables yet. Create the first shared table below.'
+                  : 'No schema yet. Install the template or create one below.'}
+              </p>
+            )}
+            <div aria-label="Tables and views" className="space-y-0.5">
+              {objectTypes.map((objectType) => {
+                const activeTable = selectedId === objectType.id;
+                return (
+                  <div key={objectType.id}>
                     <button
-                      className="rounded-lg px-2 text-xs text-slate-500 hover:bg-slate-800"
-                      onClick={() => setShowCreateView(false)}
+                      aria-expanded={activeTable}
+                      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs ${activeTable ? 'bg-slate-800 font-medium text-slate-100' : 'text-slate-300 hover:bg-slate-800'}`}
+                      onClick={() => {
+                        setPage(1);
+                        setSortField('displayName');
+                        setSortDirection('asc');
+                        setFilterField('');
+                        setFilterValue('');
+                        setSearch({ type: objectType.id });
+                      }}
                       type="button"
                     >
-                      Cancel
+                      <span className="w-3 text-[10px] text-slate-500">
+                        {activeTable ? '▾' : '▸'}
+                      </span>
+                      <span className="text-slate-500">▦</span>
+                      <span className="truncate">{objectType.pluralName}</span>
                     </button>
-                  </div>
-                  <p className="px-1 text-[11px] leading-4 text-slate-600">
-                    Saves the current fields, filter, sort, density, and widths.
-                  </p>
-                </form>
-              )}
-            </div>
-          )}
-          {allowed(user, 'schema.manage') && (
-            <details className="group mt-4 border-t border-slate-800 px-2 pt-3">
-              <summary className="cursor-pointer list-none rounded-lg px-2 py-2 text-sm text-slate-400 hover:bg-slate-800 hover:text-slate-200">
-                + New table
-              </summary>
-              <form className="mt-2 space-y-2" onSubmit={(event) => void createObjectType(event)}>
-                <input className={inputClass} name="name" placeholder="Type name" required />
-                <input
-                  className={inputClass}
-                  name="pluralName"
-                  placeholder="Plural name"
-                  required
-                />
-                <input className={inputClass} name="key" placeholder="stable-key" required />
-                <Button className="w-full" variant="quiet" type="submit">
-                  Add table
-                </Button>
-              </form>
-            </details>
-          )}
-        </aside>
-
-        <section className="min-w-0 bg-slate-950/20 p-4 sm:p-5">
-          {!selected ? (
-            <div className="rounded-2xl border border-dashed border-slate-700 p-10 text-center text-slate-400">
-              Choose or create an object type.
-            </div>
-          ) : (
-            <>
-              <div className="flex flex-wrap items-end justify-between gap-4">
-                <div>
-                  <p className="font-mono text-xs uppercase tracking-widest text-sky-400">
-                    {selected.key}
-                  </p>
-                  <h2 className="mt-1 text-3xl font-semibold">{selected.pluralName}</h2>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {allowed(user, 'schema.manage') && (
-                    <Button variant="quiet" onClick={() => setShowSchema((value) => !value)}>
-                      Schema
-                    </Button>
-                  )}
-                  {allowed(user, 'export.execute') && (
-                    <Button variant="quiet" onClick={() => void exportCsv()}>
-                      Export CSV
-                    </Button>
-                  )}
-                  {allowed(user, 'record.create') && (
-                    <Button onClick={() => setShowNewRecord((value) => !value)}>New record</Button>
-                  )}
-                </div>
-              </div>
-
-              {showSchema && allowed(user, 'schema.manage') && (
-                <div className="mt-6 rounded-2xl border border-slate-700 bg-slate-900 p-5">
-                  <h3 className="text-lg font-semibold">Schema editor</h3>
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    {fields.map((field) => (
-                      <span
-                        className="rounded-full border border-slate-700 px-3 py-1 text-xs"
-                        key={field.id}
-                      >
-                        {field.name} · {field.fieldType}
-                        {field.unique ? ' · unique' : ''}
-                      </span>
-                    ))}
-                  </div>
-                  <form
-                    className="mt-5 grid gap-3 md:grid-cols-3"
-                    onSubmit={(event) => void createField(event)}
-                  >
-                    <input className={inputClass} name="name" placeholder="Field name" required />
-                    <input className={inputClass} name="key" placeholder="field-key" required />
-                    <select className={inputClass} name="fieldType">
-                      {fieldTypes.map((type) => (
-                        <option key={type}>{type}</option>
-                      ))}
-                    </select>
-                    <input
-                      className={inputClass}
-                      name="options"
-                      placeholder="Select options, comma separated"
-                    />
-                    <select className={inputClass} name="targetObjectTypeId" defaultValue="">
-                      <option value="">Relation target…</option>
-                      {objectTypes.map((objectType) => (
-                        <option key={objectType.id} value={objectType.id}>
-                          {objectType.name}
-                        </option>
-                      ))}
-                    </select>
-                    <input
-                      className={inputClass}
-                      name="dimension"
-                      placeholder="Dimension (for example length)"
-                    />
-                    <input
-                      className={inputClass}
-                      name="canonicalUnit"
-                      placeholder="Canonical unit (m)"
-                    />
-                    <input
-                      className={inputClass}
-                      name="allowedUnits"
-                      placeholder="Allowed units: m, mm, um"
-                    />
-                    <input
-                      className={inputClass}
-                      name="displayPrecision"
-                      type="number"
-                      min="0"
-                      max="34"
-                      defaultValue="3"
-                    />
-                    <div className="flex items-center gap-4 px-2 text-sm text-slate-300">
-                      <label>
-                        <input name="required" type="checkbox" /> Required
-                      </label>
-                      <label>
-                        <input name="unique" type="checkbox" /> Unique
-                      </label>
-                      <label>
-                        <input name="multiple" type="checkbox" /> Multiple
-                      </label>
-                    </div>
-                    <Button type="submit">Add field</Button>
-                  </form>
-                </div>
-              )}
-
-              <div className="mt-5 overflow-hidden rounded-xl border border-slate-800 bg-slate-900/45 shadow-lg shadow-slate-950/10">
-                <div className="flex min-h-12 flex-wrap items-center gap-1 p-2">
-                  <div className="mr-1 flex items-center gap-2 border-r border-slate-800 pr-3">
-                    <span className="max-w-40 truncate px-2 text-sm font-medium text-slate-200">
-                      {selectedView?.name ?? 'All records'}
-                    </span>
-                    {viewDirty && (
-                      <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase text-amber-300">
-                        Unsaved
-                      </span>
+                    {activeTable && (
+                      <div className="ml-3 border-l border-slate-700/80 py-1 pl-2">
+                        <div className="flex items-center justify-between px-2 py-1">
+                          <span className="text-[10px] font-medium uppercase tracking-wider text-slate-500">
+                            {t('data.views')}
+                          </span>
+                          {allowed(user, 'schema.manage') && (
+                            <button
+                              aria-label={t('data.createView')}
+                              className="grid size-5 place-items-center rounded text-sm leading-none text-slate-500 hover:bg-slate-800 hover:text-sky-300"
+                              onClick={() => setShowCreateView((value) => !value)}
+                              type="button"
+                            >
+                              +
+                            </button>
+                          )}
+                        </div>
+                        <button
+                          aria-label={t('data.allRecords')}
+                          className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs ${selectedViewId === 'all' ? 'bg-sky-500/15 text-sky-200' : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'}`}
+                          onClick={() => chooseView('all')}
+                          type="button"
+                        >
+                          <span className="text-sky-400">▦</span>
+                          <span className="truncate">{t('data.allRecords')}</span>
+                        </button>
+                        {viewsLoading && (
+                          <div className="mx-2 my-1 h-7 animate-pulse rounded bg-slate-800" />
+                        )}
+                        {!viewsLoading &&
+                          views.map((view) => (
+                            <div className="group/view relative flex items-center" key={view.id}>
+                              <button
+                                aria-label={view.name}
+                                className={`min-w-0 flex-1 rounded-md px-2 py-1.5 text-left text-xs ${selectedViewId === view.id ? 'bg-sky-500/15 text-sky-200' : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'}`}
+                                onClick={() => chooseView(view.id)}
+                                type="button"
+                              >
+                                <span className="flex min-w-0 items-center gap-2">
+                                  <span className="text-sky-400">
+                                    {viewTypeMeta[view.viewType].icon}
+                                  </span>
+                                  <span className="truncate">{view.name}</span>
+                                </span>
+                              </button>
+                              {allowed(user, 'schema.manage') && (
+                                <details className="relative -ml-6">
+                                  <summary
+                                    aria-label={`Actions for view ${view.name}`}
+                                    className="grid size-6 list-none cursor-pointer place-items-center rounded text-slate-600 opacity-0 marker:content-none hover:bg-slate-700 hover:text-slate-200 group-hover/view:opacity-100 focus:opacity-100"
+                                  >
+                                    ⋯
+                                  </summary>
+                                  <div className="absolute right-0 top-7 z-40 grid min-w-32 gap-0.5 rounded-md border border-slate-700 bg-slate-950 p-1 shadow-xl">
+                                    <button
+                                      aria-label={`Rename view ${view.name}`}
+                                      className="rounded px-2 py-1.5 text-left text-xs text-slate-300 hover:bg-slate-800"
+                                      disabled={viewBusy}
+                                      onClick={() => void renameView(view)}
+                                      type="button"
+                                    >
+                                      Rename
+                                    </button>
+                                    <button
+                                      aria-label={`Duplicate view ${view.name}`}
+                                      className="rounded px-2 py-1.5 text-left text-xs text-slate-300 hover:bg-slate-800"
+                                      disabled={viewBusy}
+                                      onClick={() => void duplicateView(view)}
+                                      type="button"
+                                    >
+                                      Duplicate
+                                    </button>
+                                    <button
+                                      aria-label={`Archive view ${view.name}`}
+                                      className="rounded px-2 py-1.5 text-left text-xs text-rose-300 hover:bg-rose-500/10"
+                                      disabled={viewBusy}
+                                      onClick={() => void archiveView(view)}
+                                      type="button"
+                                    >
+                                      Archive
+                                    </button>
+                                  </div>
+                                </details>
+                              )}
+                            </div>
+                          ))}
+                        {showCreateView && allowed(user, 'schema.manage') && (
+                          <form
+                            className="mt-1 space-y-1.5 px-1"
+                            onSubmit={(event) => void createView(event)}
+                          >
+                            <input
+                              aria-label="View name"
+                              autoFocus
+                              className={inputClass}
+                              maxLength={120}
+                              name="name"
+                              placeholder="View name"
+                              required
+                            />
+                            <select
+                              aria-label="View type"
+                              className={inputClass}
+                              name="viewType"
+                              value={newViewType}
+                              onChange={(event) =>
+                                setNewViewType(event.target.value as RecordViewType)
+                              }
+                            >
+                              {(
+                                Object.entries(viewTypeMeta) as Array<
+                                  [RecordViewType, (typeof viewTypeMeta)[RecordViewType]]
+                                >
+                              ).map(([type, meta]) => (
+                                <option key={type} value={type}>
+                                  {meta.label}
+                                </option>
+                              ))}
+                            </select>
+                            {newViewType === 'kanban' && (
+                              <select
+                                aria-label="Kanban grouping field"
+                                className={inputClass}
+                                defaultValue=""
+                                name="groupFieldId"
+                                required
+                              >
+                                <option value="">Kanban group field…</option>
+                                {fields
+                                  .filter((field) => field.fieldType === 'single_select')
+                                  .map((field) => (
+                                    <option key={field.id} value={field.id}>
+                                      {field.name}
+                                    </option>
+                                  ))}
+                              </select>
+                            )}
+                            {newViewType === 'calendar' && (
+                              <select
+                                aria-label="Calendar date field"
+                                className={inputClass}
+                                defaultValue=""
+                                name="dateFieldId"
+                                required
+                              >
+                                <option value="">Calendar date field…</option>
+                                {fields
+                                  .filter((field) => ['date', 'datetime'].includes(field.fieldType))
+                                  .map((field) => (
+                                    <option key={field.id} value={field.id}>
+                                      {field.name}
+                                    </option>
+                                  ))}
+                              </select>
+                            )}
+                            <div className="flex gap-1">
+                              <Button
+                                aria-label="Save new view"
+                                className="flex-1"
+                                disabled={viewBusy}
+                                variant="quiet"
+                                type="submit"
+                              >
+                                {viewBusy ? 'Saving…' : 'Save view'}
+                              </Button>
+                              <button
+                                className="rounded px-2 text-xs text-slate-500 hover:bg-slate-800"
+                                onClick={() => setShowCreateView(false)}
+                                type="button"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </form>
+                        )}
+                      </div>
                     )}
                   </div>
-                  {(['fields', 'filter', 'sort'] as const).map((tool) => {
-                    const active = activeTool === tool;
-                    const label = tool[0]!.toUpperCase() + tool.slice(1);
-                    const count =
-                      tool === 'fields'
-                        ? `${visibleFields.length}/${fields.length}`
-                        : tool === 'filter' && filterField
-                          ? '1'
-                          : tool === 'sort'
-                            ? '1'
-                            : '';
-                    return (
-                      <button
-                        aria-expanded={active}
-                        className={`rounded-lg px-3 py-2 text-sm ${active ? 'bg-sky-500/15 text-sky-300' : 'text-slate-300 hover:bg-slate-800'}`}
-                        key={tool}
-                        onClick={() => setActiveTool(active ? null : tool)}
-                        type="button"
-                      >
-                        {label}
-                        {count && (
-                          <span className="ml-2 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">
-                            {count}
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                  {selectedView && allowed(user, 'schema.manage') && (
-                    <>
-                      <button
-                        className={`rounded-lg px-3 py-2 text-sm ${viewDirty ? 'bg-sky-500/15 font-medium text-sky-300 hover:bg-sky-500/20' : 'text-slate-600'}`}
-                        disabled={!viewDirty || viewBusy}
-                        onClick={() => void saveView()}
-                        type="button"
-                      >
-                        {viewBusy ? 'Saving…' : 'Save view'}
-                      </button>
-                      <button
-                        aria-label={`Archive view ${selectedView.name}`}
-                        className="rounded-lg px-2 py-2 text-sm text-slate-500 hover:bg-rose-500/10 hover:text-rose-300"
-                        disabled={viewBusy}
-                        onClick={() => void archiveView()}
-                        title="Archive view"
-                        type="button"
-                      >
-                        ⋯
-                      </button>
-                    </>
-                  )}
-                  <select
-                    aria-label="Row density"
-                    className="rounded-lg border border-transparent bg-transparent px-3 py-2 text-sm text-slate-300 outline-none hover:bg-slate-800 focus:border-sky-500"
-                    value={rowDensity}
-                    onChange={(event) =>
-                      setRowDensity(event.target.value as 'compact' | 'comfortable')
-                    }
+                );
+              })}
+            </div>
+            {allowed(user, 'schema.manage') && (
+              <details className="group mt-2 border-t border-slate-800 px-1 pt-2">
+                <summary className="cursor-pointer list-none rounded-md px-2 py-1.5 text-xs font-medium text-slate-400 hover:bg-slate-800 hover:text-sky-300">
+                  {t('data.createTable')}
+                </summary>
+                <form className="mt-2 space-y-2" onSubmit={(event) => void createObjectType(event)}>
+                  <input
+                    className={inputClass}
+                    name="name"
+                    placeholder={t('data.typeName')}
+                    required
+                  />
+                  <input
+                    aria-label={t('data.tableLabel')}
+                    className={inputClass}
+                    name="pluralName"
+                    placeholder={t('data.tableLabel')}
+                    required
+                  />
+                  <input
+                    className={inputClass}
+                    name="key"
+                    placeholder={t('data.stableKey')}
+                    required
+                  />
+                  <Button className="w-full" variant="quiet" type="submit">
+                    {t('data.addTable')}
+                  </Button>
+                </form>
+              </details>
+            )}
+          </nav>,
+          sidebarPortal,
+        )}
+
+      <section className="min-w-0 bg-slate-950/20 p-2.5">
+        {!selected ? (
+          <div className="rounded-2xl border border-dashed border-slate-700 p-10 text-center text-slate-400">
+            Choose or create an object type.
+          </div>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex min-w-0 items-baseline gap-2">
+                <h2 className="truncate text-xl font-semibold">{selected.pluralName}</h2>
+                <p className="font-mono text-[10px] uppercase tracking-widest text-sky-400">
+                  {selected.key}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {allowed(user, 'schema.manage') && (
+                  <Button variant="quiet" onClick={() => setShowSchema((value) => !value)}>
+                    {t('data.schema')}
+                  </Button>
+                )}
+                {allowed(user, 'export.execute') && (
+                  <Button variant="quiet" onClick={() => void exportCsv()}>
+                    {t('data.exportCsv')}
+                  </Button>
+                )}
+                {allowed(user, 'record.create') && (
+                  <Button
+                    onClick={() => {
+                      setShowInlineRecord(false);
+                      setShowNewRecord((value) => !value);
+                    }}
                   >
-                    <option value="compact">Compact rows</option>
-                    <option value="comfortable">Comfortable rows</option>
+                    {t('data.newRecord')}
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            {showSchema && allowed(user, 'schema.manage') && (
+              <div className="mt-2 rounded-lg border border-slate-700 bg-slate-900 p-3">
+                <h3 className="text-lg font-semibold">Schema editor</h3>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {fields.map((field) => (
+                    <span
+                      className="rounded-full border border-slate-700 px-3 py-1 text-xs"
+                      key={field.id}
+                    >
+                      {field.name} · {field.fieldType}
+                      {field.unique ? ' · unique' : ''}
+                    </span>
+                  ))}
+                </div>
+                <form
+                  className="mt-5 grid gap-3 md:grid-cols-3"
+                  onSubmit={(event) => void createField(event)}
+                >
+                  <input className={inputClass} name="name" placeholder="Field name" required />
+                  <input className={inputClass} name="key" placeholder="field-key" required />
+                  <select className={inputClass} name="fieldType">
+                    {availableFieldTypes.map((type) => (
+                      <option key={type}>{type}</option>
+                    ))}
                   </select>
+                  <input
+                    className={inputClass}
+                    name="options"
+                    placeholder="Select options, comma separated"
+                  />
+                  <select className={inputClass} name="targetObjectTypeId" defaultValue="">
+                    <option value="">Relation target…</option>
+                    {objectTypes.map((objectType) => (
+                      <option key={objectType.id} value={objectType.id}>
+                        {objectType.name}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    className={inputClass}
+                    name="dimension"
+                    placeholder="Dimension (for example length)"
+                  />
+                  <input
+                    className={inputClass}
+                    name="canonicalUnit"
+                    placeholder="Canonical unit (m)"
+                  />
+                  <input
+                    className={inputClass}
+                    name="allowedUnits"
+                    placeholder="Allowed units: m, mm, um"
+                  />
+                  <input
+                    className={inputClass}
+                    name="displayPrecision"
+                    type="number"
+                    min="0"
+                    max="34"
+                    defaultValue="3"
+                  />
+                  <div className="flex items-center gap-4 px-2 text-sm text-slate-300">
+                    <label>
+                      <input name="required" type="checkbox" /> Required
+                    </label>
+                    <label>
+                      <input name="unique" type="checkbox" /> Unique
+                    </label>
+                    <label>
+                      <input name="multiple" type="checkbox" /> Multiple
+                    </label>
+                  </div>
+                  <Button type="submit">Add field</Button>
+                </form>
+              </div>
+            )}
+
+            <div className="mt-2 overflow-hidden rounded-lg border border-slate-800 bg-slate-900/45 shadow-sm">
+              <div className="flex min-h-9 flex-wrap items-center gap-0.5 p-1">
+                <div className="mr-1 flex items-center gap-2 border-r border-slate-800 pr-3">
+                  <span className="max-w-40 truncate px-2 text-sm font-medium text-slate-200">
+                    {selectedView?.name ?? 'All records'}
+                  </span>
+                  {viewDirty && (
+                    <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase text-amber-300">
+                      Unsaved
+                    </span>
+                  )}
+                </div>
+                {(['fields', 'filter', 'sort'] as const).map((tool) => {
+                  const active = activeTool === tool;
+                  const label =
+                    tool === 'fields'
+                      ? t('data.columns')
+                      : tool === 'filter'
+                        ? t('data.filter')
+                        : t('data.sort');
+                  const count =
+                    tool === 'fields'
+                      ? `${visibleFields.length}/${fields.length}`
+                      : tool === 'filter' && filterField
+                        ? '1'
+                        : tool === 'sort' && sortField
+                          ? '1'
+                          : '';
+                  return (
+                    <button
+                      aria-expanded={active}
+                      className={`rounded-md px-2 py-1.5 text-xs ${active ? 'bg-sky-500/15 text-sky-300' : 'text-slate-300 hover:bg-slate-800'}`}
+                      key={tool}
+                      onClick={() => setActiveTool(active ? null : tool)}
+                      type="button"
+                    >
+                      {label}
+                      {count && (
+                        <span className="ml-2 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">
+                          {count}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+                {selectedView && allowed(user, 'schema.manage') && (
+                  <>
+                    <button
+                      className={`rounded-lg px-3 py-2 text-sm ${viewDirty ? 'bg-sky-500/15 font-medium text-sky-300 hover:bg-sky-500/20' : 'text-slate-600'}`}
+                      disabled={!viewDirty || viewBusy}
+                      onClick={() => void saveView()}
+                      type="button"
+                    >
+                      {viewBusy ? t('data.saving') : t('data.saveView')}
+                    </button>
+                    <button
+                      aria-label={`Archive view ${selectedView.name}`}
+                      className="rounded-lg px-2 py-2 text-sm text-slate-500 hover:bg-rose-500/10 hover:text-rose-300"
+                      disabled={viewBusy}
+                      onClick={() => void archiveView()}
+                      title="Archive view"
+                      type="button"
+                    >
+                      ⋯
+                    </button>
+                  </>
+                )}
+                <select
+                  aria-label={t('data.rowDensity')}
+                  className="rounded-lg border border-transparent bg-transparent px-3 py-2 text-sm text-slate-300 outline-none hover:bg-slate-800 focus:border-sky-500"
+                  value={rowDensity}
+                  onChange={(event) =>
+                    setRowDensity(event.target.value as 'compact' | 'comfortable')
+                  }
+                >
+                  <option value="compact">{t('data.compactRows')}</option>
+                  <option value="comfortable">{t('data.comfortableRows')}</option>
+                </select>
+                {!['kanban', 'calendar'].includes(activeViewType) && (
                   <select
-                    aria-label="Rows per page"
+                    aria-label={t('data.rowsPerPage')}
                     className="rounded-lg border border-transparent bg-transparent px-3 py-2 text-sm text-slate-300 outline-none hover:bg-slate-800 focus:border-sky-500"
                     value={pageSize}
                     onChange={(event) => {
@@ -2024,484 +3090,850 @@ export function DataPage({ user }: { user: User }) {
                   >
                     {[25, 50, 100].map((size) => (
                       <option key={size} value={size}>
-                        {size} rows
+                        {t('data.rows', { count: size })}
                       </option>
                     ))}
                   </select>
-                  <span className="min-w-3 flex-1" />
-                  {selectedRows.size > 0 && (
-                    <div className="flex items-center gap-2 pl-2">
-                      <span className="text-xs font-medium text-sky-300">
-                        {selectedRows.size} selected
-                      </span>
-                      {allowed(user, 'record.archive') && (
-                        <button
-                          className="rounded-lg px-3 py-2 text-sm text-rose-300 hover:bg-rose-500/10"
-                          disabled={bulkBusy}
-                          onClick={() => void archiveSelectedRows()}
-                          type="button"
-                        >
-                          {bulkBusy ? 'Archiving…' : 'Archive'}
-                        </button>
-                      )}
-                      <button
-                        className="rounded-lg px-2 py-2 text-sm text-slate-400 hover:bg-slate-800"
-                        onClick={() => setSelectedRows(new Set())}
-                        type="button"
-                      >
-                        Clear
-                      </button>
-                    </div>
+                )}
+                {workspaceMode && (
+                  <select
+                    aria-label="Project filter"
+                    className="max-w-48 rounded-lg border border-transparent bg-transparent px-3 py-2 text-sm text-slate-300 outline-none hover:bg-slate-800 focus:border-sky-500"
+                    value={contextProjectFilter}
+                    onChange={(event) => {
+                      setContextProjectFilter(event.target.value);
+                      setPage(1);
+                    }}
+                  >
+                    <option value="all">All projects</option>
+                    <option value="none">No project</option>
+                    {workspaceData?.projects.map((project) => (
+                      <option key={project.id} value={project.id}>
+                        {project.name}
+                        {project.archivedAt ? ' (archived)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <span className="min-w-3 flex-1" />
+                <div className="flex h-8 min-w-40 items-center gap-1 rounded-md border border-slate-800 bg-slate-950/55 px-2 focus-within:border-sky-500">
+                  <span aria-hidden="true" className="text-xs text-slate-500">
+                    ⌕
+                  </span>
+                  <input
+                    aria-label={t('data.quickSearch')}
+                    className="min-w-0 flex-1 bg-transparent text-xs text-slate-200 outline-none placeholder:text-slate-600"
+                    maxLength={200}
+                    onChange={(event) => {
+                      setSearchValue(event.target.value);
+                      setPage(1);
+                    }}
+                    placeholder={t('data.searchRecords')}
+                    type="search"
+                    value={searchValue}
+                  />
+                  {searchValue && (
+                    <button
+                      aria-label={t('data.clearSearch')}
+                      className="grid size-5 place-items-center rounded text-xs text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+                      onClick={() => {
+                        setSearchValue('');
+                        setPage(1);
+                      }}
+                      type="button"
+                    >
+                      ×
+                    </button>
                   )}
-                  <span className="px-2 text-xs text-slate-500">{records.total} records</span>
                 </div>
-
-                {activeTool === 'fields' && (
-                  <div className="border-t border-slate-800 p-3">
-                    <div className="grid gap-2 xl:grid-cols-2">
-                      {orderedFields.map((field, index) => {
-                        const visible = !hiddenFieldIds.has(field.id);
-                        return (
-                          <div
-                            className={`flex min-w-0 items-center gap-2 rounded-lg border px-2 py-2 text-xs ${visible ? 'border-sky-500/30 bg-sky-500/10 text-sky-200' : 'border-slate-800 text-slate-500'}`}
-                            key={field.id}
-                          >
-                            <label className="flex min-w-28 flex-1 cursor-pointer items-center gap-2">
-                              <input
-                                aria-label={field.name}
-                                checked={visible}
-                                type="checkbox"
-                                onChange={() =>
-                                  setHiddenFieldIds((current) => {
-                                    const next = new Set(current);
-                                    if (next.has(field.id)) next.delete(field.id);
-                                    else next.add(field.id);
-                                    return next;
-                                  })
-                                }
-                              />
-                              <span className="truncate">{field.name}</span>
-                            </label>
-                            {visible && (
-                              <label className="flex items-center gap-1 text-[10px] text-slate-500">
-                                Width
-                                <input
-                                  aria-label={`${field.name} column width`}
-                                  className="w-20 accent-sky-500"
-                                  max="480"
-                                  min="100"
-                                  step="8"
-                                  type="range"
-                                  value={fieldWidths[field.id] ?? 176}
-                                  onChange={(event) =>
-                                    setFieldWidths((current) => ({
-                                      ...current,
-                                      [field.id]: Number(event.target.value),
-                                    }))
-                                  }
-                                />
-                              </label>
-                            )}
-                            <div className="flex">
-                              <button
-                                aria-label={`Move ${field.name} left`}
-                                className="rounded px-1.5 py-1 text-slate-500 hover:bg-slate-800 hover:text-sky-300 disabled:opacity-30"
-                                disabled={index === 0}
-                                onClick={() => moveField(field.id, -1)}
-                                type="button"
-                              >
-                                ←
-                              </button>
-                              <button
-                                aria-label={`Move ${field.name} right`}
-                                className="rounded px-1.5 py-1 text-slate-500 hover:bg-slate-800 hover:text-sky-300 disabled:opacity-30"
-                                disabled={index === orderedFields.length - 1}
-                                onClick={() => moveField(field.id, 1)}
-                                type="button"
-                              >
-                                →
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {activeTool === 'filter' && (
-                  <div className="flex flex-wrap items-end gap-3 border-t border-slate-800 p-3">
-                    <label className="min-w-44 text-xs text-slate-400">
-                      Field
-                      <select
-                        className={inputClass}
-                        value={filterField}
-                        onChange={(event) => {
-                          setFilterField(event.target.value);
-                          setPage(1);
-                        }}
-                      >
-                        <option value="">No filter</option>
-                        {fields
-                          .filter(
-                            (field) =>
-                              field.fieldType !== 'measurement' && field.fieldType !== 'range',
-                          )
-                          .map((field) => (
-                            <option key={field.id} value={field.id}>
-                              {field.name}
-                            </option>
-                          ))}
-                      </select>
-                    </label>
-                    <label className="min-w-32 text-xs text-slate-400">
-                      Operator
-                      <select
-                        className={inputClass}
-                        value={filterOperator}
-                        onChange={(event) => setFilterOperator(event.target.value)}
-                      >
-                        {['eq', 'ne', 'contains', 'gt', 'gte', 'lt', 'lte', 'is_null'].map(
-                          (operator) => (
-                            <option key={operator}>{operator}</option>
-                          ),
-                        )}
-                      </select>
-                    </label>
-                    {filterOperator !== 'is_null' && (
-                      <label className="min-w-44 text-xs text-slate-400">
-                        Value
-                        <input
-                          className={inputClass}
-                          value={filterValue}
-                          onChange={(event) => {
-                            setFilterValue(event.target.value);
-                            setPage(1);
-                          }}
-                        />
-                      </label>
-                    )}
-                    {filterField && (
+                {selectedRows.size > 0 && (
+                  <div className="flex items-center gap-2 pl-2">
+                    <span className="text-xs font-medium text-sky-300">
+                      {t('data.selected', { count: selectedRows.size })}
+                    </span>
+                    {allowed(user, 'record.archive') && (
                       <button
-                        className="rounded-lg px-3 py-2 text-sm text-slate-400 hover:bg-slate-800"
-                        onClick={() => {
-                          setFilterField('');
-                          setFilterValue('');
-                          setDebouncedFilterValue('');
-                          setFilterOperator('eq');
-                          setPage(1);
-                        }}
+                        className="rounded-lg px-3 py-2 text-sm text-rose-300 hover:bg-rose-500/10"
+                        disabled={bulkBusy}
+                        onClick={() => void archiveSelectedRows()}
                         type="button"
                       >
-                        Clear filter
+                        {bulkBusy ? 'Archiving…' : 'Archive'}
+                      </button>
+                    )}
+                    <button
+                      className="rounded-lg px-2 py-2 text-sm text-slate-400 hover:bg-slate-800"
+                      onClick={() => setSelectedRows(new Set())}
+                      type="button"
+                    >
+                      {t('data.clear')}
+                    </button>
+                  </div>
+                )}
+                <span className="px-2 text-xs text-slate-500">
+                  {t('data.records', { count: records.total })}
+                </span>
+              </div>
+
+              {activeTool === 'fields' && (
+                <div className="border-t border-slate-800 p-3">
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <p className="text-xs text-slate-500">
+                      {t('data.shownHidden', {
+                        shown: visibleFields.length,
+                        hidden: hiddenFieldIds.size,
+                      })}
+                    </p>
+                    {hiddenFieldIds.size > 0 && (
+                      <button
+                        className="rounded-md px-2 py-1 text-xs font-medium text-sky-300 hover:bg-sky-500/10"
+                        onClick={() => setHiddenFieldIds(new Set())}
+                        type="button"
+                      >
+                        {t('data.showAllColumns')}
                       </button>
                     )}
                   </div>
-                )}
-
-                {activeTool === 'sort' && (
-                  <div className="flex flex-wrap items-end gap-3 border-t border-slate-800 p-3">
-                    <label className="min-w-52 text-xs text-slate-400">
-                      Sort records by
-                      <select
-                        className={inputClass}
-                        value={sortField}
-                        onChange={(event) => {
-                          setSortField(event.target.value);
-                          setPage(1);
-                        }}
-                      >
-                        <option value="displayName">Display name</option>
-                        {fields
-                          .filter(
-                            (field) =>
-                              !['relation', 'multi_select', 'measurement', 'range'].includes(
-                                field.fieldType,
-                              ),
-                          )
-                          .map((field) => (
-                            <option key={field.id} value={field.id}>
-                              {field.name}
-                            </option>
-                          ))}
-                      </select>
-                    </label>
-                    <label className="min-w-40 text-xs text-slate-400">
-                      Direction
-                      <select
-                        className={inputClass}
-                        value={sortDirection}
-                        onChange={(event) => {
-                          setSortDirection(event.target.value as 'asc' | 'desc');
-                          setPage(1);
-                        }}
-                      >
-                        <option value="asc">Ascending</option>
-                        <option value="desc">Descending</option>
-                      </select>
-                    </label>
-                  </div>
-                )}
-              </div>
-
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
-                <p>
-                  Spreadsheet view
-                  {allowed(user, 'record.update') &&
-                    ' · double-click a cell or focus it and press Enter. Save with Enter or by leaving the cell; cancel with Escape.'}
-                </p>
-                <p>Measurements are read-only here to preserve observation history.</p>
-              </div>
-
-              <div className="mt-2 max-w-full overflow-x-auto rounded-2xl border border-slate-800">
-                {recordsLoading && (
-                  <div className="space-y-3 p-5" aria-label="Loading records">
-                    <div className="h-10 animate-pulse rounded bg-slate-900" />
-                    <div className="h-10 animate-pulse rounded bg-slate-900" />
-                    <div className="h-10 animate-pulse rounded bg-slate-900" />
-                  </div>
-                )}
-                {!recordsLoading && (
-                  <table className="w-full min-w-[880px] table-fixed border-separate border-spacing-0 text-left text-sm">
-                    <caption className="sr-only">
-                      Editable spreadsheet view for {selected.pluralName}
-                    </caption>
-                    <colgroup>
-                      <col className="w-20" />
-                      <col className="w-52" />
-                      {visibleFields.map((field) => (
-                        <col key={field.id} style={{ width: fieldWidths[field.id] ?? 176 }} />
-                      ))}
-                      <col className="w-28" />
-                      <col className="w-20" />
-                    </colgroup>
-                    <thead className="sticky top-0 z-20 bg-slate-900 text-xs uppercase tracking-wider text-slate-500">
-                      <tr>
-                        <th className="w-20 border-b border-r border-slate-800 px-3 py-3">
-                          <span className="flex items-center gap-2">
+                  <div className="grid gap-2 xl:grid-cols-2">
+                    {orderedFields.map((field, index) => {
+                      const visible = !hiddenFieldIds.has(field.id);
+                      return (
+                        <div
+                          className={`flex min-w-0 items-center gap-2 rounded-lg border px-2 py-2 text-xs ${visible ? 'border-sky-500/30 bg-sky-500/10 text-sky-200' : 'border-slate-800 text-slate-500'}`}
+                          key={field.id}
+                        >
+                          <label className="flex min-w-28 flex-1 cursor-pointer items-center gap-2">
                             <input
-                              aria-label="Select all visible records"
-                              checked={
-                                records.items.length > 0 &&
-                                records.items.every((record) => selectedRows.has(record.id))
-                              }
+                              aria-label={field.name}
+                              checked={visible}
                               type="checkbox"
-                              onChange={(event) =>
-                                setSelectedRows((current) => {
+                              onChange={() =>
+                                setHiddenFieldIds((current) => {
                                   const next = new Set(current);
-                                  for (const record of records.items) {
-                                    if (event.target.checked) next.add(record.id);
-                                    else next.delete(record.id);
-                                  }
+                                  if (next.has(field.id)) next.delete(field.id);
+                                  else next.add(field.id);
                                   return next;
                                 })
                               }
                             />
-                            #
-                          </span>
-                        </th>
-                        <th className="sticky left-0 z-30 min-w-52 border-b border-r border-slate-800 bg-slate-900 px-3 py-3">
-                          Name
-                        </th>
-                        {visibleFields.map((field) => (
-                          <th
-                            className="border-b border-r border-slate-800 px-3 py-3"
-                            key={field.id}
-                            style={{ width: fieldWidths[field.id] ?? 176 }}
-                          >
-                            <span className="block truncate">
-                              {field.name}
-                              <span className="ml-2 font-normal normal-case text-slate-600">
-                                {field.fieldType}
-                              </span>
-                            </span>
-                          </th>
-                        ))}
-                        <th className="min-w-28 border-b border-r border-slate-800 px-3 py-3">
-                          Updated
-                        </th>
-                        <th className="w-20 border-b border-slate-800 px-3 py-3">Detail</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {records.items.map((record, index) => (
-                        <tr
-                          className={`${selectedRows.has(record.id) ? 'bg-sky-500/5' : 'bg-slate-950/30'} hover:bg-slate-900/40`}
-                          key={record.id}
-                        >
-                          <td className="border-b border-r border-slate-800 px-3 text-xs text-slate-600">
-                            <span className="flex items-center gap-2">
+                            <span className="truncate">{field.name}</span>
+                          </label>
+                          {visible && (
+                            <label className="flex items-center gap-1 text-[10px] text-slate-500">
+                              Width
                               <input
-                                aria-label={`Select ${record.displayName}`}
-                                checked={selectedRows.has(record.id)}
-                                type="checkbox"
+                                aria-label={`${field.name} column width`}
+                                className="w-20 accent-sky-500"
+                                max="480"
+                                min="100"
+                                step="8"
+                                type="range"
+                                value={fieldWidths[field.id] ?? 176}
                                 onChange={(event) =>
-                                  setSelectedRows((current) => {
-                                    const next = new Set(current);
-                                    if (event.target.checked) next.add(record.id);
-                                    else next.delete(record.id);
-                                    return next;
-                                  })
+                                  setFieldWidths((current) => ({
+                                    ...current,
+                                    [field.id]: Number(event.target.value),
+                                  }))
                                 }
                               />
-                              <button
-                                aria-label={`Quick view ${record.displayName}`}
-                                className="rounded px-1 py-2 font-mono hover:bg-slate-800 hover:text-sky-300"
-                                onClick={() => setSelectedRecord(record)}
-                                title="Open quick view"
-                                type="button"
-                              >
-                                {(records.page - 1) * records.pageSize + index + 1}
-                              </button>
+                            </label>
+                          )}
+                          <div className="flex">
+                            <button
+                              aria-label={`Move ${field.name} left`}
+                              className="rounded px-1.5 py-1 text-slate-500 hover:bg-slate-800 hover:text-sky-300 disabled:opacity-30"
+                              disabled={index === 0}
+                              onClick={() => moveField(field.id, -1)}
+                              type="button"
+                            >
+                              ←
+                            </button>
+                            <button
+                              aria-label={`Move ${field.name} right`}
+                              className="rounded px-1.5 py-1 text-slate-500 hover:bg-slate-800 hover:text-sky-300 disabled:opacity-30"
+                              disabled={index === orderedFields.length - 1}
+                              onClick={() => moveField(field.id, 1)}
+                              type="button"
+                            >
+                              →
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {activeTool === 'filter' && (
+                <div className="flex flex-wrap items-end gap-3 border-t border-slate-800 p-3">
+                  <label className="min-w-44 text-xs text-slate-400">
+                    {t('data.field')}
+                    <select
+                      className={inputClass}
+                      value={filterField}
+                      onChange={(event) => {
+                        setFilterField(event.target.value);
+                        setPage(1);
+                      }}
+                    >
+                      <option value="">{t('data.noFilter')}</option>
+                      {fields
+                        .filter(
+                          (field) =>
+                            field.fieldType !== 'measurement' && field.fieldType !== 'range',
+                        )
+                        .map((field) => (
+                          <option key={field.id} value={field.id}>
+                            {field.name}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                  <label className="min-w-32 text-xs text-slate-400">
+                    {t('data.operator')}
+                    <select
+                      className={inputClass}
+                      value={filterOperator}
+                      onChange={(event) => setFilterOperator(event.target.value)}
+                    >
+                      {['eq', 'ne', 'contains', 'gt', 'gte', 'lt', 'lte', 'is_null'].map(
+                        (operator) => (
+                          <option key={operator}>{operator}</option>
+                        ),
+                      )}
+                    </select>
+                  </label>
+                  {filterOperator !== 'is_null' && (
+                    <label className="min-w-44 text-xs text-slate-400">
+                      {t('data.value')}
+                      <input
+                        className={inputClass}
+                        value={filterValue}
+                        onChange={(event) => {
+                          setFilterValue(event.target.value);
+                          setPage(1);
+                        }}
+                      />
+                    </label>
+                  )}
+                  {filterField && (
+                    <button
+                      className="rounded-lg px-3 py-2 text-sm text-slate-400 hover:bg-slate-800"
+                      onClick={() => {
+                        setFilterField('');
+                        setFilterValue('');
+                        setDebouncedFilterValue('');
+                        setFilterOperator('eq');
+                        setPage(1);
+                      }}
+                      type="button"
+                    >
+                      {t('data.clearFilter')}
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {activeTool === 'sort' && (
+                <div className="flex flex-wrap items-end gap-3 border-t border-slate-800 p-3">
+                  <label className="min-w-52 text-xs text-slate-400">
+                    {t('data.sortRecordsBy')}
+                    <select
+                      className={inputClass}
+                      value={sortField}
+                      onChange={(event) => {
+                        setSortField(event.target.value);
+                        setPage(1);
+                      }}
+                    >
+                      <option value="">{t('data.noSorting')}</option>
+                      <option value="displayName">{t('data.displayName')}</option>
+                      <option value="updatedAt">{t('data.updated')}</option>
+                      {fields
+                        .filter(
+                          (field) =>
+                            !['relation', 'multi_select', 'measurement', 'range'].includes(
+                              field.fieldType,
+                            ),
+                        )
+                        .map((field) => (
+                          <option key={field.id} value={field.id}>
+                            {field.name}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                  <label className="min-w-40 text-xs text-slate-400">
+                    {t('data.direction')}
+                    <select
+                      className={inputClass}
+                      disabled={!sortField}
+                      value={sortDirection}
+                      onChange={(event) => {
+                        setSortDirection(event.target.value as 'asc' | 'desc');
+                        setPage(1);
+                      }}
+                    >
+                      <option value="asc">{t('data.ascending')}</option>
+                      <option value="desc">{t('data.descending')}</option>
+                    </select>
+                  </label>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+              <p>
+                {viewTypeMeta[activeViewType].label} view
+                {activeViewType === 'grid' &&
+                  allowed(user, 'record.update') &&
+                  ' · double-click a cell or focus it and press Enter. Save with Enter or by leaving the cell; cancel with Escape.'}
+              </p>
+              <p>Changes are shared across every view of this table.</p>
+            </div>
+
+            <div className="mt-1.5 max-w-full overflow-x-auto rounded-md border border-slate-800">
+              {recordsLoading && (
+                <div className="space-y-3 p-5" aria-label="Loading records">
+                  <div className="h-10 animate-pulse rounded bg-slate-900" />
+                  <div className="h-10 animate-pulse rounded bg-slate-900" />
+                  <div className="h-10 animate-pulse rounded bg-slate-900" />
+                </div>
+              )}
+              {!recordsLoading && activeViewType === 'grid' && (
+                <table className="w-full min-w-[880px] table-fixed border-separate border-spacing-0 text-left text-sm">
+                  <caption className="sr-only">
+                    Editable spreadsheet view for {selected.pluralName}
+                  </caption>
+                  <colgroup>
+                    <col className="w-20" />
+                    <col className="w-52" />
+                    {workspaceMode && <col className="w-48" />}
+                    {visibleFields.map((field) => (
+                      <col key={field.id} style={{ width: fieldWidths[field.id] ?? 176 }} />
+                    ))}
+                    <col className="w-28" />
+                    <col className="w-20" />
+                  </colgroup>
+                  <thead className="sticky top-0 z-20 bg-slate-900 text-xs uppercase tracking-wider text-slate-500">
+                    <tr>
+                      <th className="w-20 border-b border-r border-slate-800 px-2.5 py-2">
+                        <span className="flex items-center gap-2">
+                          <input
+                            aria-label={t('data.selectAll')}
+                            checked={
+                              records.items.length > 0 &&
+                              records.items.every((record) => selectedRows.has(record.id))
+                            }
+                            type="checkbox"
+                            onChange={(event) =>
+                              setSelectedRows((current) => {
+                                const next = new Set(current);
+                                for (const record of records.items) {
+                                  if (event.target.checked) next.add(record.id);
+                                  else next.delete(record.id);
+                                }
+                                return next;
+                              })
+                            }
+                          />
+                          #
+                        </span>
+                      </th>
+                      <th className="sticky left-0 z-30 min-w-52 border-b border-r border-slate-800 bg-slate-900 px-1.5 py-1">
+                        <button
+                          aria-label={t('data.sortByColumn', { column: t('data.name') })}
+                          className="flex w-full items-center rounded px-1 py-1 text-left hover:bg-slate-800"
+                          onClick={() => cycleSort('displayName')}
+                          title={t('data.sortCycleHint')}
+                          type="button"
+                        >
+                          {t('data.name')}
+                          {sortField === 'displayName' && (
+                            <span aria-hidden="true" className="ml-1 text-sky-400">
+                              {sortDirection === 'asc' ? '↑' : '↓'}
                             </span>
-                          </td>
-                          <td className="sticky left-0 z-10 border-b border-r border-slate-800 bg-slate-950">
+                          )}
+                        </button>
+                      </th>
+                      {workspaceMode && (
+                        <th className="min-w-48 border-b border-r border-slate-800 px-2.5 py-2">
+                          {t('data.project')}
+                        </th>
+                      )}
+                      {visibleFields.map((field) => (
+                        <th
+                          className="border-b border-r border-slate-800 px-1.5 py-1"
+                          key={field.id}
+                          style={{ width: fieldWidths[field.id] ?? 176 }}
+                        >
+                          <div className="flex min-w-0 items-center gap-1">
+                            <button
+                              aria-label={t('data.sortByColumn', { column: field.name })}
+                              className="flex min-w-0 flex-1 items-center rounded px-1 py-1 text-left hover:bg-slate-800"
+                              disabled={[
+                                'relation',
+                                'multi_select',
+                                'measurement',
+                                'range',
+                              ].includes(field.fieldType)}
+                              onClick={() => cycleSort(field.id)}
+                              title={t('data.sortCycleHint')}
+                              type="button"
+                            >
+                              <span className="truncate">{field.name}</span>
+                              {sortField === field.id && (
+                                <span aria-hidden="true" className="ml-1 text-sky-400">
+                                  {sortDirection === 'asc' ? '↑' : '↓'}
+                                </span>
+                              )}
+                              <span className="ml-2 truncate font-normal normal-case text-slate-600">
+                                {field.fieldType}
+                              </span>
+                            </button>
+                            <details className="relative shrink-0 normal-case">
+                              <summary
+                                aria-label={t('data.columnOptions', { column: field.name })}
+                                className="grid size-7 cursor-pointer list-none place-items-center rounded text-base tracking-normal text-slate-500 marker:content-none hover:bg-slate-800 hover:text-slate-200"
+                                role="button"
+                              >
+                                ⋮
+                              </summary>
+                              <div className="absolute right-0 top-8 z-50 grid w-52 gap-0.5 rounded-md border border-slate-700 bg-slate-950 p-1 text-xs font-normal tracking-normal text-slate-300 shadow-xl">
+                                {!['relation', 'multi_select', 'measurement', 'range'].includes(
+                                  field.fieldType,
+                                ) && (
+                                  <>
+                                    <button
+                                      aria-label={`Sort ${field.name} ascending`}
+                                      className="rounded px-2 py-1.5 text-left hover:bg-slate-800"
+                                      onClick={() => {
+                                        setSortField(field.id);
+                                        setSortDirection('asc');
+                                        setPage(1);
+                                      }}
+                                      type="button"
+                                    >
+                                      <span className="mr-2 text-sky-400">↑</span>{' '}
+                                      {t('data.sortAscending')}
+                                    </button>
+                                    <button
+                                      aria-label={`Sort ${field.name} descending`}
+                                      className="rounded px-2 py-1.5 text-left hover:bg-slate-800"
+                                      onClick={() => {
+                                        setSortField(field.id);
+                                        setSortDirection('desc');
+                                        setPage(1);
+                                      }}
+                                      type="button"
+                                    >
+                                      <span className="mr-2 text-sky-400">↓</span>{' '}
+                                      {t('data.sortDescending')}
+                                    </button>
+                                    {sortField === field.id && (
+                                      <button
+                                        aria-label={`Remove sorting from ${field.name}`}
+                                        className="rounded px-2 py-1.5 text-left hover:bg-slate-800"
+                                        onClick={() => {
+                                          setSortField('');
+                                          setSortDirection('asc');
+                                          setPage(1);
+                                        }}
+                                        type="button"
+                                      >
+                                        <span className="mr-2 text-slate-500">×</span>{' '}
+                                        {t('data.removeSorting')}
+                                      </button>
+                                    )}
+                                  </>
+                                )}
+                                {!['measurement', 'range'].includes(field.fieldType) && (
+                                  <button
+                                    aria-label={`Filter ${field.name}`}
+                                    className="rounded px-2 py-1.5 text-left hover:bg-slate-800"
+                                    onClick={() => {
+                                      setFilterField(field.id);
+                                      setFilterOperator('eq');
+                                      setFilterValue('');
+                                      setDebouncedFilterValue('');
+                                      setActiveTool('filter');
+                                      setPage(1);
+                                    }}
+                                    type="button"
+                                  >
+                                    <span className="mr-2 text-sky-400">⌕</span>{' '}
+                                    {t('data.filterColumn')}
+                                  </button>
+                                )}
+                                <button
+                                  aria-label={`Hide ${field.name} column`}
+                                  className="rounded px-2 py-1.5 text-left hover:bg-slate-800"
+                                  onClick={() =>
+                                    setHiddenFieldIds((current) => new Set([...current, field.id]))
+                                  }
+                                  type="button"
+                                >
+                                  <span className="mr-2 text-slate-500">◫</span>{' '}
+                                  {t('data.hideColumn')}
+                                </button>
+                                {hiddenFieldIds.size > 0 && (
+                                  <button
+                                    className="border-t border-slate-800 px-2 py-1.5 text-left text-sky-300 hover:bg-slate-800"
+                                    onClick={() => setActiveTool('fields')}
+                                    type="button"
+                                  >
+                                    {t('data.showHiddenColumns')}
+                                  </button>
+                                )}
+                              </div>
+                            </details>
+                          </div>
+                        </th>
+                      ))}
+                      <th className="min-w-28 border-b border-r border-slate-800 px-1.5 py-1">
+                        <button
+                          aria-label={t('data.sortByColumn', { column: t('data.updated') })}
+                          className="flex w-full items-center rounded px-1 py-1 text-left hover:bg-slate-800"
+                          onClick={() => cycleSort('updatedAt')}
+                          title={t('data.sortCycleHint')}
+                          type="button"
+                        >
+                          {t('data.updated')}
+                          {sortField === 'updatedAt' && (
+                            <span aria-hidden="true" className="ml-1 text-sky-400">
+                              {sortDirection === 'asc' ? '↑' : '↓'}
+                            </span>
+                          )}
+                        </button>
+                      </th>
+                      <th className="w-20 border-b border-slate-800 px-2.5 py-2">
+                        {t('data.detail')}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {records.items.map((record, index) => (
+                      <tr
+                        className={`${selectedRows.has(record.id) ? 'bg-sky-500/5' : 'bg-slate-950/30'} hover:bg-slate-900/40`}
+                        key={record.id}
+                      >
+                        <td className="border-b border-r border-slate-800 px-3 text-xs text-slate-600">
+                          <span className="flex items-center gap-2">
+                            <input
+                              aria-label={`Select ${record.displayName}`}
+                              checked={selectedRows.has(record.id)}
+                              type="checkbox"
+                              onChange={(event) =>
+                                setSelectedRows((current) => {
+                                  const next = new Set(current);
+                                  if (event.target.checked) next.add(record.id);
+                                  else next.delete(record.id);
+                                  return next;
+                                })
+                              }
+                            />
+                            <button
+                              aria-label={`Quick view ${record.displayName}`}
+                              className="rounded px-1 py-2 font-mono hover:bg-slate-800 hover:text-sky-300"
+                              onClick={() => setSelectedRecord(record)}
+                              title="Open quick view"
+                              type="button"
+                            >
+                              {(records.page - 1) * records.pageSize + index + 1}
+                            </button>
+                          </span>
+                        </td>
+                        <td className="sticky left-0 z-10 border-b border-r border-slate-800 bg-slate-950">
+                          {allowed(user, 'record.update') ? (
+                            <GridCell
+                              comfortable={rowDensity === 'comfortable'}
+                              label="Name"
+                              recordName={record.displayName}
+                              value={record.displayName}
+                              onSave={(value) => saveGridCell(record, 'displayName', value)}
+                            />
+                          ) : (
+                            <span className="block px-2.5 py-2 text-xs font-medium text-slate-200">
+                              {record.displayName}
+                            </span>
+                          )}
+                        </td>
+                        {workspaceMode && (
+                          <td className="border-b border-r border-slate-800 px-1.5 py-1">
                             {allowed(user, 'record.update') ? (
-                              <GridCell
-                                comfortable={rowDensity === 'comfortable'}
-                                label="Name"
-                                recordName={record.displayName}
-                                value={record.displayName}
-                                onSave={(value) => saveGridCell(record, 'displayName', value)}
-                              />
+                              <select
+                                aria-label={`Project for ${record.displayName}`}
+                                className="min-h-7 w-full rounded border border-transparent bg-transparent px-1.5 text-xs text-slate-300 outline-none hover:border-slate-700 focus:border-sky-400"
+                                value={record.contextProjectId ?? ''}
+                                onChange={(event) =>
+                                  void saveProjectCell(record, event.target.value || null).catch(
+                                    (cause: unknown) => {
+                                      setMessageTone('error');
+                                      setMessage(
+                                        cause instanceof Error
+                                          ? cause.message
+                                          : 'Project link could not be saved.',
+                                      );
+                                    },
+                                  )
+                                }
+                              >
+                                <option value="">{t('data.noProject')}</option>
+                                {workspaceData?.projects.map((project) => (
+                                  <option key={project.id} value={project.id}>
+                                    {project.name}
+                                    {project.archivedAt ? ' (archived)' : ''}
+                                  </option>
+                                ))}
+                              </select>
                             ) : (
-                              <span className="block px-3 py-3 font-medium text-slate-200">
-                                {record.displayName}
+                              <span className="block truncate px-1.5 text-xs text-slate-400">
+                                {workspaceData?.projects.find(
+                                  (project) => project.id === record.contextProjectId,
+                                )?.name ?? t('data.noProject')}
                               </span>
                             )}
                           </td>
-                          {visibleFields.map((field) => (
-                            <td className="border-b border-r border-slate-800" key={field.id}>
-                              {field.fieldType === 'measurement' ? (
-                                <span className="block max-w-64 truncate px-3 py-3 text-slate-400">
-                                  {record.measurements?.[field.id]?.resultId
-                                    ? `${record.measurements[field.id]?.value} ${record.measurements[field.id]?.unit} · ${record.measurements[field.id]?.status ?? 'pending'}`
-                                    : (record.measurements?.[field.id]?.status ?? '—')}
-                                </span>
-                              ) : allowed(user, 'record.update') ? (
-                                <GridCell
-                                  comfortable={rowDensity === 'comfortable'}
-                                  field={field}
-                                  label={field.name}
-                                  recordName={record.displayName}
-                                  value={recordGridValue(record, field)}
-                                  onSave={(value) => saveGridCell(record, field, value)}
-                                />
-                              ) : (
-                                <span
-                                  className={`block max-w-64 truncate px-3 text-slate-300 ${rowDensity === 'comfortable' ? 'py-4' : 'py-2.5'}`}
-                                >
-                                  {displayValue(recordGridValue(record, field))}
-                                </span>
-                              )}
-                            </td>
-                          ))}
-                          <td
-                            className={`border-b border-r border-slate-800 px-3 text-slate-500 ${rowDensity === 'comfortable' ? 'py-4' : 'py-2.5'}`}
+                        )}
+                        {visibleFields.map((field) => (
+                          <td className="border-b border-r border-slate-800" key={field.id}>
+                            {field.fieldType === 'measurement' ? (
+                              <span className="block max-w-64 truncate px-2.5 py-2 text-xs text-slate-400">
+                                {record.measurements?.[field.id]?.resultId
+                                  ? `${record.measurements[field.id]?.value} ${record.measurements[field.id]?.unit} · ${record.measurements[field.id]?.status ?? 'pending'}`
+                                  : (record.measurements?.[field.id]?.status ?? '—')}
+                              </span>
+                            ) : allowed(user, 'record.update') ? (
+                              <GridCell
+                                comfortable={rowDensity === 'comfortable'}
+                                field={field}
+                                label={field.name}
+                                recordName={record.displayName}
+                                value={recordGridValue(record, field)}
+                                onSave={(value) => saveGridCell(record, field, value)}
+                              />
+                            ) : (
+                              <span
+                                className={`block max-w-64 truncate px-2.5 text-xs text-slate-300 ${rowDensity === 'comfortable' ? 'py-3' : 'py-1.5'}`}
+                              >
+                                {displayValue(recordGridValue(record, field))}
+                              </span>
+                            )}
+                          </td>
+                        ))}
+                        <td
+                          className={`border-b border-r border-slate-800 px-2.5 text-xs text-slate-500 ${rowDensity === 'comfortable' ? 'py-3' : 'py-1.5'}`}
+                        >
+                          {new Date(record.updatedAt).toLocaleDateString()}
+                        </td>
+                        <td className="border-b border-slate-800 px-3 py-2">
+                          <button
+                            aria-label={`Expand ${record.displayName}`}
+                            className="rounded-lg px-2 py-1 text-sky-400 hover:bg-sky-500/10 hover:text-sky-300"
+                            onClick={() => setSelectedRecord(record)}
+                            title={`Quick view ${record.displayName}`}
+                            type="button"
                           >
-                            {new Date(record.updatedAt).toLocaleDateString()}
-                          </td>
-                          <td className="border-b border-slate-800 px-3 py-2">
-                            <button
-                              aria-label={`Expand ${record.displayName}`}
-                              className="rounded-lg px-2 py-1 text-sky-400 hover:bg-sky-500/10 hover:text-sky-300"
-                              onClick={() => setSelectedRecord(record)}
-                              title={`Quick view ${record.displayName}`}
-                              type="button"
-                            >
-                              ↗
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                      {allowed(user, 'record.create') && (
-                        <tr>
-                          <td
-                            className="border-r border-slate-800 p-1"
-                            colSpan={visibleFields.length + 4}
+                            ↗
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                    {showInlineRecord && allowed(user, 'record.create') && (
+                      <InlineRecordRow
+                        fields={visibleFields}
+                        projects={workspaceData?.projects}
+                        key={`${selectedId}:${visibleFields.map((field) => field.id).join(',')}`}
+                        onCancel={() => setShowInlineRecord(false)}
+                        onCreate={createInlineRecord}
+                        onOpenFullForm={() => {
+                          setShowInlineRecord(false);
+                          setShowNewRecord(true);
+                        }}
+                      />
+                    )}
+                    {!showInlineRecord && allowed(user, 'record.create') && (
+                      <tr>
+                        <td
+                          className="border-r border-slate-800 p-1"
+                          colSpan={visibleFields.length + 4 + (workspaceMode ? 1 : 0)}
+                        >
+                          <button
+                            className="w-full rounded-lg px-3 py-2 text-left text-sm text-slate-500 hover:bg-slate-900 hover:text-sky-300"
+                            onClick={() => {
+                              if (hiddenRequiredFields.length) setShowNewRecord(true);
+                              else setShowInlineRecord(true);
+                            }}
+                            title={
+                              hiddenRequiredFields.length
+                                ? `Full form required for: ${hiddenRequiredFields.map((field) => field.name).join(', ')}`
+                                : 'Add a record inline'
+                            }
+                            type="button"
                           >
-                            <button
-                              className="w-full rounded-lg px-3 py-2 text-left text-sm text-slate-500 hover:bg-slate-900 hover:text-sky-300"
-                              onClick={() => setShowNewRecord(true)}
-                              type="button"
-                            >
-                              + Add record
-                            </button>
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                )}
-                {!recordsLoading && records.items.length === 0 && (
+                            + Add record
+                          </button>
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              )}
+              {!recordsLoading && activeViewType === 'gallery' && (
+                <GalleryRecordsView
+                  fields={visibleFields}
+                  records={records.items}
+                  onOpen={setSelectedRecord}
+                />
+              )}
+              {!recordsLoading && activeViewType === 'kanban' && (
+                <>
+                  {kanbanField ? (
+                    <KanbanRecordsView
+                      canUpdate={allowed(user, 'record.update')}
+                      field={kanbanField}
+                      groups={records.groups}
+                      records={records.items}
+                      onMove={(record, value) => saveGridCell(record, kanbanField, value)}
+                      onOpen={setSelectedRecord}
+                    />
+                  ) : (
+                    <p className="p-8 text-center text-sm text-rose-300">
+                      This Kanban view needs a valid single-select field.
+                    </p>
+                  )}
+                </>
+              )}
+              {!recordsLoading && activeViewType === 'calendar' && (
+                <>
+                  {calendarField ? (
+                    <CalendarRecordsView
+                      field={calendarField}
+                      month={calendarMonth}
+                      records={records.items}
+                      onMonthChange={(month) => {
+                        setCalendarMonth(month);
+                        setPage(1);
+                      }}
+                      onOpen={setSelectedRecord}
+                    />
+                  ) : (
+                    <p className="p-8 text-center text-sm text-rose-300">
+                      This Calendar view needs a valid date field.
+                    </p>
+                  )}
+                </>
+              )}
+              {!recordsLoading && activeViewType === 'form' && (
+                <div className="mx-auto max-w-3xl p-5">
+                  <div className="mb-4 border-b border-slate-800 pb-3">
+                    <h3 className="text-lg font-semibold">Add {selected.name}</h3>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Submissions create records in {selected.pluralName} and appear in every view.
+                    </p>
+                  </div>
+                  {allowed(user, 'record.create') ? (
+                    <RecordForm
+                      fields={formFields}
+                      projects={workspaceData?.projects}
+                      submitLabel="Submit record"
+                      onSubmit={async (form) => {
+                        const created = await api<DynamicRecord>(
+                          `${base}/object-types/${selected.id}/records`,
+                          {
+                            method: 'POST',
+                            body: JSON.stringify({
+                              ...recordPayload(fields, form),
+                              ...(workspaceMode
+                                ? {
+                                    contextProjectId:
+                                      String(form.get('contextProjectId') ?? '') || null,
+                                  }
+                                : {}),
+                            }),
+                          },
+                        );
+                        setMessageTone('success');
+                        setMessage(`${created.displayName} submitted.`);
+                        await loadRecords();
+                      }}
+                    />
+                  ) : (
+                    <p className="rounded-md border border-dashed border-slate-800 p-6 text-center text-sm text-slate-500">
+                      You have read-only access to this form.
+                    </p>
+                  )}
+                </div>
+              )}
+              {!recordsLoading &&
+                activeViewType !== 'form' &&
+                records.items.length === 0 &&
+                !showInlineRecord && (
                   <p className="p-10 text-center text-slate-400">
                     No matching records. Create the first one or adjust the filter.
                   </p>
                 )}
+            </div>
+            <div className="mt-2 flex items-center justify-between text-xs text-slate-400">
+              <span>
+                {records.total} records · page {records.page} of{' '}
+                {Math.max(1, Math.ceil(records.total / records.pageSize))}
+              </span>
+              <div className="flex gap-2">
+                <Button
+                  variant="quiet"
+                  disabled={page <= 1}
+                  onClick={() => setPage((value) => value - 1)}
+                >
+                  Previous
+                </Button>
+                <Button
+                  variant="quiet"
+                  disabled={page * records.pageSize >= records.total}
+                  onClick={() => setPage((value) => value + 1)}
+                >
+                  Next
+                </Button>
               </div>
-              <div className="mt-4 flex items-center justify-between text-sm text-slate-400">
-                <span>
-                  {records.total} records · page {records.page} of{' '}
-                  {Math.max(1, Math.ceil(records.total / records.pageSize))}
-                </span>
-                <div className="flex gap-2">
-                  <Button
-                    variant="quiet"
-                    disabled={page <= 1}
-                    onClick={() => setPage((value) => value - 1)}
-                  >
-                    Previous
-                  </Button>
-                  <Button
-                    variant="quiet"
-                    disabled={page * records.pageSize >= records.total}
-                    onClick={() => setPage((value) => value + 1)}
-                  >
-                    Next
-                  </Button>
-                </div>
-              </div>
+            </div>
 
-              {allowed(user, 'record.create') && (
-                <details className="mt-6 rounded-xl border border-slate-800 bg-slate-900/25">
-                  <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium text-slate-300 hover:text-sky-300">
-                    Import records from CSV
-                  </summary>
-                  <form
-                    className="border-t border-slate-800 p-4"
-                    onSubmit={(event) => void importCsv(event)}
-                  >
-                    <p className="text-xs text-slate-500">
-                      Use displayName and stable field keys as headers. Relations use
-                      semicolon-separated record UUIDs.
+            {allowed(user, 'record.create') && (
+              <details className="mt-6 rounded-xl border border-slate-800 bg-slate-900/25">
+                <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium text-slate-300 hover:text-sky-300">
+                  Import records from CSV
+                </summary>
+                <form
+                  className="border-t border-slate-800 p-4"
+                  onSubmit={(event) => void importCsv(event)}
+                >
+                  <p className="text-xs text-slate-500">
+                    Use displayName and stable field keys as headers. Relations use
+                    semicolon-separated record UUIDs.
+                  </p>
+                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                    <input accept=".csv,text/csv" name="csv" required type="file" />
+                    <Button variant="quiet" type="submit">
+                      Import
+                    </Button>
+                  </div>
+                  {csvResult && (
+                    <p className="mt-3 text-sm text-slate-300">
+                      Imported {csvResult.imported}; {csvResult.failed} failed.
                     </p>
-                    <div className="mt-3 flex flex-wrap items-center gap-3">
-                      <input accept=".csv,text/csv" name="csv" required type="file" />
-                      <Button variant="quiet" type="submit">
-                        Import
-                      </Button>
-                    </div>
-                    {csvResult && (
-                      <p className="mt-3 text-sm text-slate-300">
-                        Imported {csvResult.imported}; {csvResult.failed} failed.
-                      </p>
-                    )}
-                    {csvResult?.errors.map((error) => (
-                      <p
-                        className="mt-1 text-xs text-rose-300"
-                        key={`${error.row}:${error.reason}`}
-                      >
-                        Row {error.row}: {error.reason}
-                      </p>
-                    ))}
-                  </form>
-                </details>
-              )}
-              <SpecificationsPanel base={base} fields={fields} user={user} />
-            </>
-          )}
-        </section>
-      </div>
+                  )}
+                  {csvResult?.errors.map((error) => (
+                    <p className="mt-1 text-xs text-rose-300" key={`${error.row}:${error.reason}`}>
+                      Row {error.row}: {error.reason}
+                    </p>
+                  ))}
+                </form>
+              </details>
+            )}
+            <SpecificationsPanel base={base} fields={fields} user={user} />
+          </>
+        )}
+      </section>
       {showNewRecord && selected && allowed(user, 'record.create') && (
         <div className="fixed inset-0 z-[70] flex justify-end" role="presentation">
           <button
@@ -2528,7 +3960,7 @@ export function DataPage({ user }: { user: User }) {
               <button
                 aria-label="Close new record panel"
                 autoFocus
-                className="grid size-9 place-items-center rounded-lg border border-slate-700 text-xl text-slate-400 hover:bg-slate-800 hover:text-white"
+                className="grid size-9 place-items-center rounded-lg border border-slate-700 text-xl text-slate-400 hover:bg-slate-800 hover:text-slate-100"
                 onClick={() => setShowNewRecord(false)}
                 type="button"
               >
@@ -2538,11 +3970,19 @@ export function DataPage({ user }: { user: User }) {
             <div className="p-5 sm:p-7">
               <RecordForm
                 fields={fields}
+                projects={workspaceData?.projects}
                 submitLabel="Create record"
                 onSubmit={async (form) => {
                   await api(`${base}/object-types/${selected.id}/records`, {
                     method: 'POST',
-                    body: JSON.stringify(recordPayload(fields, form)),
+                    body: JSON.stringify({
+                      ...recordPayload(fields, form),
+                      ...(workspaceMode
+                        ? {
+                            contextProjectId: String(form.get('contextProjectId') ?? '') || null,
+                          }
+                        : {}),
+                    }),
                   });
                   setShowNewRecord(false);
                   await loadRecords();
@@ -2579,16 +4019,18 @@ export function DataPage({ user }: { user: User }) {
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                <Link
-                  className="rounded-lg px-3 py-2 text-sm text-sky-300 hover:bg-sky-500/10"
-                  to={`${base}/data/${selectedRecord.objectTypeId}/records/${selectedRecord.id}`}
-                >
-                  Full record
-                </Link>
+                {!workspaceMode && (
+                  <Link
+                    className="rounded-lg px-3 py-2 text-sm text-sky-300 hover:bg-sky-500/10"
+                    to={`${base}/data/${selectedRecord.objectTypeId}/records/${selectedRecord.id}`}
+                  >
+                    Full record
+                  </Link>
+                )}
                 <button
                   aria-label="Close quick record view"
                   autoFocus
-                  className="grid size-9 place-items-center rounded-lg border border-slate-700 text-xl text-slate-400 hover:bg-slate-800 hover:text-white"
+                  className="grid size-9 place-items-center rounded-lg border border-slate-700 text-xl text-slate-400 hover:bg-slate-800 hover:text-slate-100"
                   onClick={() => setSelectedRecord(undefined)}
                   type="button"
                 >
@@ -2598,12 +4040,14 @@ export function DataPage({ user }: { user: User }) {
             </header>
             <div className="p-5 sm:p-7">
               <div className="mb-6 rounded-xl border border-slate-800 bg-slate-900/45 px-4 py-3 text-xs text-slate-400">
-                Mutable properties can be edited here without leaving the grid. Measurements and
-                evaluation history remain available in the full record view.
+                Mutable properties can be edited here without leaving the grid.
+                {!workspaceMode &&
+                  ' Measurements and evaluation history remain available in the full record view.'}
               </div>
               {allowed(user, 'record.update') ? (
                 <RecordForm
                   fields={fields}
+                  projects={workspaceData?.projects}
                   record={selectedRecord}
                   submitLabel="Save record"
                   onSubmit={(form) => saveRecordPanel(selectedRecord, form)}

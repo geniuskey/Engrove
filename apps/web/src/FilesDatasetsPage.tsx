@@ -1,6 +1,6 @@
 import { Button } from '@engrove/ui';
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router';
 import { allowed, api, ErrorText, inputClass, type User } from './App.js';
 
 interface FileObject {

@@ -1,0 +1,2 @@
+ALTER TABLE "record_views" DROP CONSTRAINT "record_views_type_check";--> statement-breakpoint
+ALTER TABLE "record_views" ADD CONSTRAINT "record_views_type_check" CHECK ("record_views"."view_type" in ('grid', 'form', 'gallery', 'kanban', 'calendar'));

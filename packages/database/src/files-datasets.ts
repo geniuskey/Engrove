@@ -64,7 +64,7 @@ export class ScopedFileDatasetRepository {
   ) {}
   static async open(pool: Pool, actor: ActorSession, workspaceId: string, projectId: string) {
     const found = await pool.query(
-      'select 1 from projects p join workspaces w on w.id=p.workspace_id where p.id=$1 and p.workspace_id=$2 and w.organization_id=$3',
+      'select 1 from projects p join workspaces w on w.id=p.workspace_id where p.id=$1 and p.workspace_id=$2 and w.organization_id=$3 and p.system=false',
       [projectId, workspaceId, actor.organizationId],
     );
     if (!found.rowCount)
@@ -575,6 +575,32 @@ export async function claimDatasetJob(pool: Pool, workerId: string, leaseSeconds
     );
     return { ...row, attemptId, attemptNumber };
   });
+}
+
+export async function renewDatasetJobLease(
+  pool: Pool,
+  input: { jobId: string; attemptId: string; workerId: string },
+  leaseSeconds = 60,
+): Promise<boolean> {
+  const renewed = await pool.query(
+    `with renewed_job as (
+       update background_jobs j
+       set lease_expires_at=now()+($4||' seconds')::interval,updated_at=now()
+       where j.id=$1 and j.status='running' and j.lease_owner=$3
+         and exists (
+           select 1 from background_job_attempts a
+           where a.id=$2 and a.job_id=j.id and a.status='running' and a.worker_identity=$3
+         )
+       returning j.id
+     )
+     update background_job_attempts a
+     set heartbeat_at=now()
+     from renewed_job j
+     where a.id=$2 and a.job_id=j.id and a.status='running' and a.worker_identity=$3
+     returning a.id`,
+    [input.jobId, input.attemptId, input.workerId, leaseSeconds],
+  );
+  return Boolean(renewed.rowCount);
 }
 
 export async function completeDatasetJob(

@@ -41,6 +41,7 @@ export interface ProjectScope {
   actor: ActorSession;
   workspaceId: string;
   projectId: string;
+  system: boolean;
 }
 
 export interface ObjectTypeRow {
@@ -75,6 +76,7 @@ export interface FieldDefinitionRow {
 export interface RecordRow {
   id: string;
   projectId: string;
+  contextProjectId: string | null;
   objectTypeId: string;
   displayName: string;
   values: Record<string, JsonValue>;
@@ -109,6 +111,8 @@ export interface RecordSort {
 export interface RecordQuery {
   filters?: RecordFilter[];
   sorts?: RecordSort[];
+  search?: string;
+  contextProjectId?: string | null;
   groupByFieldId?: string;
   page?: number;
   pageSize?: number;
@@ -130,14 +134,21 @@ export interface RecordViewConfig {
   sorts: RecordSort[];
   rowDensity: 'compact' | 'comfortable';
   pageSize: 25 | 50 | 100;
+  viewOptions?: {
+    groupFieldId?: string;
+    dateFieldId?: string;
+    contextProjectId?: string | null;
+  };
 }
+
+export type RecordViewType = 'grid' | 'form' | 'gallery' | 'kanban' | 'calendar';
 
 export interface RecordViewRow {
   id: string;
   projectId: string;
   objectTypeId: string;
   name: string;
-  viewType: 'grid';
+  viewType: RecordViewType;
   config: RecordViewConfig;
   rowVersion: number;
   createdBy: string;
@@ -177,7 +188,7 @@ interface DbRecordViewRow {
   project_id: string;
   object_type_id: string;
   name: string;
-  view_type: 'grid';
+  view_type: RecordViewType;
   config: RecordViewConfig;
   row_version: number;
   created_by: string;
@@ -503,6 +514,15 @@ function normalizeValue(field: FieldDefinitionRow, value: JsonValue): JsonValue 
   if (field.fieldType === 'date' || field.fieldType === 'datetime') return projection[0]!.value;
   if (field.fieldType === 'text' || field.fieldType === 'long_text') return projection[0]!.value;
   return value;
+}
+
+function hasRecordValue(value: JsonValue | undefined): value is JsonValue {
+  return (
+    value !== undefined &&
+    value !== null &&
+    value !== '' &&
+    (!Array.isArray(value) || value.length > 0)
+  );
 }
 
 function validateConfig(type: ConfigurableFieldType, config: Record<string, JsonValue>): void {
@@ -895,14 +915,19 @@ export class ScopedProjectRepository {
     workspaceId: string,
     projectId: string,
   ): Promise<ScopedProjectRepository> {
-    const result = await pool.query(
-      `select 1 from projects p join workspaces w on w.id = p.workspace_id
+    const result = await pool.query<{ system: boolean }>(
+      `select p.system from projects p join workspaces w on w.id = p.workspace_id
        where p.id = $1 and p.workspace_id = $2 and w.organization_id = $3`,
       [projectId, workspaceId, actor.organizationId],
     );
     if (!result.rowCount)
       throw new RepositoryError('PROJECT_NOT_FOUND', 404, 'Project was not found.');
-    return new ScopedProjectRepository(pool, { actor, workspaceId, projectId });
+    return new ScopedProjectRepository(pool, {
+      actor,
+      workspaceId,
+      projectId,
+      system: result.rows[0]!.system,
+    });
   }
 
   private audit(
@@ -967,6 +992,7 @@ export class ScopedProjectRepository {
   private async validateRecordViewConfig(
     client: PoolClient,
     objectTypeId: string,
+    viewType: RecordViewType,
     config: RecordViewConfig,
   ): Promise<void> {
     const objectType = await client.query(
@@ -981,10 +1007,11 @@ export class ScopedProjectRepository {
       ...Object.keys(config.fieldWidths),
       ...config.filters.map((filter) => filter.fieldId),
       ...config.sorts.flatMap((sort) => (sort.fieldId ? [sort.fieldId] : [])),
+      ...(config.viewOptions?.groupFieldId ? [config.viewOptions.groupFieldId] : []),
+      ...(config.viewOptions?.dateFieldId ? [config.viewOptions.dateFieldId] : []),
     ]);
-    if (!referencedFieldIds.size) return;
-    const fields = await client.query<{ id: string }>(
-      `select id from field_definitions
+    const fields = await client.query<{ id: string; field_type: ConfigurableFieldType }>(
+      `select id, field_type from field_definitions
        where project_id = $1 and object_type_id = $2 and id = any($3::uuid[])`,
       [this.scope.projectId, objectTypeId, [...referencedFieldIds]],
     );
@@ -994,6 +1021,48 @@ export class ScopedProjectRepository {
         400,
         'The view references a field that does not belong to this table.',
       );
+    }
+    const byId = new Map(fields.rows.map((field) => [field.id, field.field_type]));
+    const groupFieldId = config.viewOptions?.groupFieldId;
+    if (viewType === 'kanban' && (!groupFieldId || byId.get(groupFieldId) !== 'single_select')) {
+      throw new RepositoryError(
+        'RECORD_VIEW_CONFIG_INVALID',
+        400,
+        'Kanban views require a single-select grouping field.',
+      );
+    }
+    const dateFieldId = config.viewOptions?.dateFieldId;
+    if (
+      viewType === 'calendar' &&
+      (!dateFieldId || !['date', 'datetime'].includes(byId.get(dateFieldId) ?? ''))
+    ) {
+      throw new RepositoryError(
+        'RECORD_VIEW_CONFIG_INVALID',
+        400,
+        'Calendar views require a date or datetime field.',
+      );
+    }
+    if (config.viewOptions?.contextProjectId) {
+      await this.validateContextProject(client, config.viewOptions.contextProjectId);
+    }
+    if (viewType === 'form') {
+      const hiddenRequired = await client.query<{ name: string }>(
+        `select name from field_definitions
+         where project_id = $1 and object_type_id = $2 and required = true
+           and field_type <> 'measurement'
+           and (default_value is null or default_value in ('null'::jsonb, '""'::jsonb, '[]'::jsonb)
+             or field_type in ('relation', 'file', 'dataset'))
+           and not (id = any($3::uuid[]))
+         order by position, id limit 1`,
+        [this.scope.projectId, objectTypeId, config.visibleFieldIds],
+      );
+      if (hiddenRequired.rows[0]) {
+        throw new RepositoryError(
+          'RECORD_VIEW_CONFIG_INVALID',
+          400,
+          `Form views must include required field '${hiddenRequired.rows[0].name}'.`,
+        );
+      }
     }
   }
 
@@ -1021,17 +1090,23 @@ export class ScopedProjectRepository {
   async createRecordView(input: {
     objectTypeId: string;
     name: string;
+    viewType: RecordViewType;
     config: RecordViewConfig;
     requestId: string;
   }): Promise<RecordViewRow> {
     try {
       return await transaction(this.pool, async (client) => {
-        await this.validateRecordViewConfig(client, input.objectTypeId, input.config);
+        await this.validateRecordViewConfig(
+          client,
+          input.objectTypeId,
+          input.viewType,
+          input.config,
+        );
         const id = uuidv7();
         const result = await client.query<DbRecordViewRow>(
           `insert into record_views
             (id, project_id, object_type_id, name, view_type, config, created_by, updated_by)
-           values ($1, $2, $3, $4, 'grid', $5::jsonb, $6, $6)
+           values ($1, $2, $3, $4, $5, $6::jsonb, $7, $7)
            returning id, project_id, object_type_id, name, view_type, config, row_version,
                      created_by, updated_by, archived_at, created_at, updated_at`,
           [
@@ -1039,6 +1114,7 @@ export class ScopedProjectRepository {
             this.scope.projectId,
             input.objectTypeId,
             input.name.trim(),
+            input.viewType,
             JSON.stringify(input.config),
             this.scope.actor.actorId,
           ],
@@ -1051,7 +1127,11 @@ export class ScopedProjectRepository {
             targetType: 'record_view',
             targetId: id,
             requestId: input.requestId,
-            payload: { objectTypeId: input.objectTypeId, name: input.name.trim() },
+            payload: {
+              objectTypeId: input.objectTypeId,
+              name: input.name.trim(),
+              viewType: input.viewType,
+            },
           }),
         );
         return mapRecordView(result.rows[0]!);
@@ -1065,19 +1145,25 @@ export class ScopedProjectRepository {
     objectTypeId: string;
     viewId: string;
     name: string;
+    viewType: RecordViewType;
     config: RecordViewConfig;
     rowVersion: number;
     requestId: string;
   }): Promise<RecordViewRow> {
     try {
       return await transaction(this.pool, async (client) => {
-        await this.validateRecordViewConfig(client, input.objectTypeId, input.config);
+        await this.validateRecordViewConfig(
+          client,
+          input.objectTypeId,
+          input.viewType,
+          input.config,
+        );
         const result = await client.query<DbRecordViewRow>(
           `update record_views set
-             name = $4, config = $5::jsonb, row_version = row_version + 1,
-             updated_by = $6, updated_at = now()
+             name = $4, view_type = $5, config = $6::jsonb, row_version = row_version + 1,
+             updated_by = $7, updated_at = now()
            where project_id = $1 and object_type_id = $2 and id = $3
-             and row_version = $7 and archived_at is null
+             and row_version = $8 and archived_at is null
            returning id, project_id, object_type_id, name, view_type, config, row_version,
                      created_by, updated_by, archived_at, created_at, updated_at`,
           [
@@ -1085,6 +1171,7 @@ export class ScopedProjectRepository {
             input.objectTypeId,
             input.viewId,
             input.name.trim(),
+            input.viewType,
             JSON.stringify(input.config),
             this.scope.actor.actorId,
             input.rowVersion,
@@ -1112,7 +1199,11 @@ export class ScopedProjectRepository {
             targetType: 'record_view',
             targetId: input.viewId,
             requestId: input.requestId,
-            payload: { name: input.name.trim(), rowVersion: result.rows[0].row_version },
+            payload: {
+              name: input.name.trim(),
+              viewType: input.viewType,
+              rowVersion: result.rows[0].row_version,
+            },
           }),
         );
         return mapRecordView(result.rows[0]);
@@ -1215,6 +1306,30 @@ export class ScopedProjectRepository {
     defaultValue?: JsonValue;
     requestId: string;
   }): Promise<FieldDefinitionRow> {
+    if (this.scope.system && ['measurement', 'file', 'dataset'].includes(input.fieldType)) {
+      throw new RepositoryError(
+        'WORKSPACE_FIELD_TYPE_UNSUPPORTED',
+        400,
+        'Workspace tables cannot contain project-scoped measurement, file, or dataset fields.',
+      );
+    }
+    if (
+      input.defaultValue !== undefined &&
+      ['relation', 'measurement', 'file', 'dataset'].includes(input.fieldType)
+    ) {
+      throw new RepositoryError(
+        'FIELD_DEFAULT_UNSUPPORTED',
+        400,
+        'Relation, measurement, file, and dataset fields cannot have default values.',
+      );
+    }
+    if (input.defaultValue !== undefined && !hasRecordValue(input.defaultValue)) {
+      throw new RepositoryError(
+        'FIELD_DEFAULT_INVALID',
+        400,
+        'A field default must contain a value.',
+      );
+    }
     const config = input.config ?? {};
     validateConfig(input.fieldType, config);
     if (input.unique && !uniqueAllowed(input.fieldType)) {
@@ -1503,6 +1618,13 @@ export class ScopedProjectRepository {
     changed: boolean;
     objectTypes: ObjectTypeRow[];
   }> {
+    if (this.scope.system) {
+      throw new RepositoryError(
+        'WORKSPACE_TEMPLATE_UNSUPPORTED',
+        400,
+        'The engineering template can only be installed in an ordinary project.',
+      );
+    }
     const changed = await transaction(this.pool, async (client) => {
       const installation = await client.query<{ version: number }>(
         `select version from template_installations
@@ -1693,6 +1815,25 @@ export class ScopedProjectRepository {
     return result.rows.map(mapField);
   }
 
+  private async validateContextProject(
+    client: PoolClient,
+    contextProjectId: string | null,
+  ): Promise<void> {
+    if (!contextProjectId) return;
+    const result = await client.query(
+      `select 1 from projects
+       where id = $1 and workspace_id = $2 and system = false`,
+      [contextProjectId, this.scope.workspaceId],
+    );
+    if (!result.rowCount) {
+      throw new RepositoryError(
+        'PROJECT_NOT_FOUND',
+        404,
+        'Linked project was not found in this workspace.',
+      );
+    }
+  }
+
   private async normalizeRecordInput(
     client: PoolClient,
     objectTypeId: string,
@@ -1839,7 +1980,7 @@ export class ScopedProjectRepository {
       let value = values[field.key];
       if (creating && value === undefined && field.defaultValue !== undefined)
         value = field.defaultValue;
-      if (value === undefined || value === null || value === '') {
+      if (!hasRecordValue(value)) {
         if (field.required) {
           throw new RepositoryError(
             'FIELD_VALIDATION_FAILED',
@@ -2021,6 +2162,7 @@ export class ScopedProjectRepository {
     row: {
       id: string;
       project_id: string;
+      context_project_id?: string | null;
       object_type_id: string;
       display_name: string;
       values: Record<string, JsonValue>;
@@ -2040,6 +2182,7 @@ export class ScopedProjectRepository {
     return {
       id: row.id,
       projectId: row.project_id,
+      contextProjectId: row.context_project_id ?? null,
       objectTypeId: row.object_type_id,
       displayName: row.display_name,
       values: row.values,
@@ -2056,7 +2199,7 @@ export class ScopedProjectRepository {
 
   async getRecord(objectTypeId: string, recordId: string): Promise<RecordRow> {
     const result = await this.pool.query(
-      `select id, project_id, object_type_id, display_name, values, row_version, archived_at,
+      `select id, project_id, context_project_id, object_type_id, display_name, values, row_version, archived_at,
               created_at, updated_at
        from records where project_id = $1 and object_type_id = $2 and id = $3`,
       [this.scope.projectId, objectTypeId, recordId],
@@ -2079,6 +2222,7 @@ export class ScopedProjectRepository {
 
   async createRecord(input: {
     objectTypeId: string;
+    contextProjectId?: string | null;
     displayName: string;
     values: Record<string, JsonValue>;
     relations?: Record<string, string[]>;
@@ -2089,6 +2233,7 @@ export class ScopedProjectRepository {
     try {
       const id = uuidv7();
       await transaction(this.pool, async (client) => {
+        await this.validateContextProject(client, input.contextProjectId ?? null);
         const normalized = await this.normalizeRecordInput(
           client,
           input.objectTypeId,
@@ -2100,11 +2245,12 @@ export class ScopedProjectRepository {
         );
         await client.query(
           `insert into records
-            (id, project_id, object_type_id, display_name, values, created_by, updated_by)
-           values ($1, $2, $3, $4, $5::jsonb, $6, $6)`,
+            (id, project_id, context_project_id, object_type_id, display_name, values, created_by, updated_by)
+           values ($1, $2, $3, $4, $5, $6::jsonb, $7, $7)`,
           [
             id,
             this.scope.projectId,
+            input.contextProjectId ?? null,
             input.objectTypeId,
             input.displayName.trim(),
             JSON.stringify(normalized.values),
@@ -2129,7 +2275,10 @@ export class ScopedProjectRepository {
             targetType: 'record',
             targetId: id,
             requestId: input.requestId,
-            payload: { objectTypeId: input.objectTypeId },
+            payload: {
+              objectTypeId: input.objectTypeId,
+              contextProjectId: input.contextProjectId ?? null,
+            },
           }),
         );
       });
@@ -2142,6 +2291,7 @@ export class ScopedProjectRepository {
   async updateRecord(input: {
     objectTypeId: string;
     recordId: string;
+    contextProjectId?: string | null;
     displayName: string;
     values: Record<string, JsonValue>;
     relations?: Record<string, string[]>;
@@ -2152,6 +2302,8 @@ export class ScopedProjectRepository {
   }): Promise<RecordRow> {
     try {
       await transaction(this.pool, async (client) => {
+        if (input.contextProjectId !== undefined)
+          await this.validateContextProject(client, input.contextProjectId);
         const existing = await client.query<{ id: string }>(
           `select id from records where project_id = $1 and object_type_id = $2 and id = $3
              and row_version = $4 for update`,
@@ -2179,6 +2331,7 @@ export class ScopedProjectRepository {
         );
         await client.query(
           `update records set display_name = $4, values = $5::jsonb, updated_by = $6,
+                  context_project_id = case when $7::boolean then $8::uuid else context_project_id end,
                   row_version = row_version + 1, updated_at = now()
            where project_id = $1 and object_type_id = $2 and id = $3`,
           [
@@ -2188,6 +2341,8 @@ export class ScopedProjectRepository {
             input.displayName.trim(),
             JSON.stringify(normalized.values),
             this.scope.actor.actorId,
+            input.contextProjectId !== undefined,
+            input.contextProjectId ?? null,
           ],
         );
         await this.replaceRecordDerivedData(
@@ -2207,7 +2362,12 @@ export class ScopedProjectRepository {
             targetType: 'record',
             targetId: input.recordId,
             requestId: input.requestId,
-            payload: { rowVersion: input.rowVersion + 1 },
+            payload: {
+              rowVersion: input.rowVersion + 1,
+              ...(input.contextProjectId !== undefined
+                ? { contextProjectId: input.contextProjectId }
+                : {}),
+            },
           }),
         );
       });
@@ -2492,6 +2652,27 @@ export class ScopedProjectRepository {
     };
     const where = ['r.project_id = $1', 'r.object_type_id = $2'];
     if (!query.includeArchived) where.push('r.archived_at is null');
+    if (query.contextProjectId !== undefined) {
+      if (query.contextProjectId === null) where.push('r.context_project_id is null');
+      else where.push(`r.context_project_id = ${bind(query.contextProjectId)}`);
+    }
+    const search = query.search?.trim();
+    if (search) {
+      const escaped = search.replace(/[\\%_]/g, '\\$&');
+      const searchBind = bind(`%${escaped}%`);
+      where.push(
+        `(r.display_name ilike ${searchBind} escape '\\'
+          or exists (
+            select 1 from jsonb_each(r.values) record_value
+            where record_value.value::text ilike ${searchBind} escape '\\'
+          )
+          or exists (
+            select 1 from projects context_project
+            where context_project.id = r.context_project_id
+              and context_project.name ilike ${searchBind} escape '\\'
+          ))`,
+      );
+    }
 
     for (const filter of filters) {
       const field = byId.get(filter.fieldId)!;
@@ -2607,7 +2788,7 @@ export class ScopedProjectRepository {
     const limitBind = bind(pageSize);
     const offsetBind = bind((page - 1) * pageSize);
     const result = await this.pool.query(
-      `select r.id, r.project_id, r.object_type_id, r.display_name, r.values, r.row_version,
+      `select r.id, r.project_id, r.context_project_id, r.object_type_id, r.display_name, r.values, r.row_version,
               r.archived_at, r.created_at, r.updated_at
        from records r ${joins.join(' ')}
        where ${where.join(' and ')} order by ${order.join(', ')}

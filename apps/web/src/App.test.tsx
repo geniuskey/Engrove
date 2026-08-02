@@ -1,9 +1,14 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiStatus, App } from './App.js';
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  window.localStorage.clear();
+  delete document.documentElement.dataset.theme;
+  document.documentElement.lang = 'en';
+});
 
 describe('App', () => {
   it('renders an actionable unavailable state and recovers', async () => {
@@ -45,6 +50,19 @@ describe('App', () => {
           },
         });
       }
+      if (url.endsWith('/workspaces')) {
+        return json({
+          items: [
+            {
+              id: 'workspace-id',
+              name: 'Alpha workspace',
+              slug: 'alpha',
+              description: '',
+              archivedAt: null,
+            },
+          ],
+        });
+      }
       if (url.endsWith('/workspaces/workspace-id/projects')) {
         return json({
           items: [
@@ -75,11 +93,39 @@ describe('App', () => {
 
     const projectNav = await screen.findByRole('navigation', { name: 'Project navigation' });
     expect(projectNav).toHaveTextContent('Overview');
-    expect(projectNav).toHaveTextContent('Data');
+    expect(projectNav).toHaveTextContent('Engineering records');
     expect(projectNav).toHaveTextContent('Files & datasets');
     expect(projectNav).toHaveTextContent('Visualizations');
     expect(projectNav).toHaveTextContent('Tasks');
     expect(screen.getByRole('link', { name: 'Overview' })).toHaveAttribute('aria-current', 'page');
+
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'Workspace selector' })).toHaveValue(
+        'workspace-id',
+      ),
+    );
+    expect(screen.getByRole('link', { name: 'Data' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Projects' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse service sidebar' }));
+    expect(screen.getByRole('button', { name: 'Expand service sidebar' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Expand service sidebar' }));
+
+    expect(document.documentElement).toHaveAttribute('data-theme', 'light');
+    expect(window.localStorage.getItem('engrove-theme')).toBe('light');
+    fireEvent.click(screen.getByRole('button', { name: 'Open user menu' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to dark theme' }));
+    expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
+    expect(window.localStorage.getItem('engrove-theme')).toBe('dark');
+    expect(window.localStorage.getItem('engrove-theme-explicit')).toBe('true');
+
+    expect(document.documentElement).toHaveAttribute('lang', 'en');
+    fireEvent.change(screen.getByRole('combobox', { name: 'Language' }), {
+      target: { value: 'ko' },
+    });
+    expect(await screen.findByRole('link', { name: '데이터' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '프로젝트' })).toBeInTheDocument();
+    expect(document.documentElement).toHaveAttribute('lang', 'ko');
+    expect(window.localStorage.getItem('engrove-locale')).toBe('ko');
   });
 });
 

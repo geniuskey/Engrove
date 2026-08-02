@@ -2,6 +2,16 @@ packages:
   - apps/*
   - packages/*
 
+overrides:
+  '@esbuild-kit/core-utils>esbuild': 0.25.12
+  '@nestjs/swagger>js-yaml': 5.2.2
+  'tsup>esbuild': 0.28.1
+
+allowedDeprecatedVersions:
+  '@esbuild-kit/core-utils': 3.3.2
+  '@esbuild-kit/esm-loader': 2.6.5
+
 onlyBuiltDependencies:
+  - '@swc/core'
   - argon2
   - esbuild

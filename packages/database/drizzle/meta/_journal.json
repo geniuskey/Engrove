@@ -78,6 +78,20 @@
       "when": 1785631933704,
       "tag": "0010_cheerful_magneto",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1785679863339,
+      "tag": "0011_late_outlaw_kid",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1785680936051,
+      "tag": "0012_unusual_blockbuster",
+      "breakpoints": true
     }
   ]
 }

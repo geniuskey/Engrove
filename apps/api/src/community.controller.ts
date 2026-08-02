@@ -19,11 +19,13 @@ import {
   createProject,
   createSession,
   createWorkspace,
+  ensureWorkspaceDataProject,
   findPasswordUser,
   getInstallationOrganizationId,
   isSetupAvailable,
   issueSecurityToken,
   listAuditEvents,
+  listLegacyConfigurableDataProjects,
   listMembers,
   listProjects,
   listWorkspaces,
@@ -354,6 +356,27 @@ export class CommunityController {
     return {
       items: await listProjects(appRuntime().pool, actor, workspaceId.parse(unparsedWorkspaceId)),
     };
+  }
+
+  @Post('workspaces/:workspaceId/data-context')
+  async workspaceDataContext(
+    @Req() request: Request,
+    @Param('workspaceId') unparsedWorkspaceId: string,
+  ) {
+    const actor = await requireActor(request, 'schema.read', true);
+    const parsedWorkspaceId = workspaceId.parse(unparsedWorkspaceId);
+    const project = await ensureWorkspaceDataProject(
+      appRuntime().pool,
+      actor,
+      parsedWorkspaceId,
+      requestId(request),
+    );
+    const legacyProjects = await listLegacyConfigurableDataProjects(
+      appRuntime().pool,
+      actor,
+      parsedWorkspaceId,
+    );
+    return { projectId: project.id, legacyProjectIds: legacyProjects.map((item) => item.id) };
   }
 
   @Post('workspaces/:workspaceId/projects')

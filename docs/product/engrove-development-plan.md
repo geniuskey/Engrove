@@ -1,6 +1,6 @@
 # Engrove Development Plan
 
-> **Status:** Draft v0.9
+> **Status:** Draft v0.10
 > **Product:** Engrove  
 > **Category:** Self-hosted Engineering Data & Operations Workspace  
 > **Primary audience:** Manufacturing R&D, test, validation, reliability, and engineering teams  
@@ -14,7 +14,9 @@
 
 This document is the implementation plan for Codex or another coding agent to build the first usable version of Engrove.
 
-The goal is not to create a generic Airtable, NocoDB, Jira, Grafana, LIMS, PLM, or MES clone.
+The goal is to provide the core no-code database workflow expected from a self-hosted NocoDB
+alternative, then extend it with engineering-specific traceability. Engrove does not need to copy
+every Airtable, Jira, Grafana, LIMS, PLM, or MES feature indiscriminately.
 
 Engrove must become a focused engineering workspace that connects:
 
@@ -52,7 +54,7 @@ The following decisions are fixed for the MVP:
 16. Configurable record properties use JSONB as the source of truth plus a transactionally maintained typed projection for filtering, sorting, grouping, and uniqueness.
 17. The unit registry is a versioned repository-owned data file that generates matching TypeScript and Python artifacts. Third-party unit libraries are not authoritative.
 18. Quantity conversion and persistence use decimal-safe representations rather than binary floating-point values.
-19. PostgreSQL row-level security is not used in the MVP. Project isolation is enforced by the permission service, scoped repositories, normalized ownership keys, database roles, and cross-project isolation tests.
+19. PostgreSQL row-level security is not used in the MVP. Project isolation for engineering resources is enforced by the permission service, scoped repositories, normalized ownership keys, database roles, and cross-project isolation tests. Workspace-shared configurable tables follow ADR-015.
 20. Every committed file version has a unique, never-reused object key. Application-level file series and exact version references are authoritative; bucket versioning is defense in depth only.
 21. User-facing deletion of traceable entities is archive or tombstone behavior. Physical purge of committed records, raw files, datasets, specifications, and tasks is not available in the MVP.
 22. A ready dataset is immutable. Changed parser versions, parameters, or XY selections create a new dataset with explicit lineage.
@@ -64,6 +66,22 @@ The following decisions are fixed for the MVP:
 28. The object-type data grid provides spreadsheet-style direct editing for mutable records. Each cell save uses optimistic concurrency and the normal validated, audited record mutation transaction. Measurement observations and ready dataset contents remain immutable and are read-only in the grid.
 29. The MVP record grid uses a data-workbench layout: table and view context remain visible, Fields/Filter/Sort controls are compact and contextual, rows support selection and authorized bulk archive, and a record may be created or edited in a side panel without losing grid context.
 30. Named grid views are project-shared `RecordView` entities. A view persists visible-field order, field widths, filters, sorts, row density, and page size with optimistic concurrency and audit history. `schema.read` may list and use shared views; `schema.manage` is required to create, update, or archive one. The built-in `All records` view is virtual and cannot be modified or archived.
+31. An authorized user may create records directly in the grid through one inline draft row. The draft follows the active view's visible-field order, Tab moves between cells, Enter submits the row, Escape cancels it, and a successful create resets and focuses the draft for continuous entry. The normal validated and audited record-create transaction remains authoritative; hidden required fields or complex validation failures surface inline with a full-form fallback. Measurement fields remain read-only until the record exists.
+32. Configurable tables are workspace-shared rather than project-owned in the user-facing model. Each row may optionally link to one ordinary project through a visible, inline-editable Project column; the link provides context and filtering but never hides the row from the workspace table. Immutable engineering resources remain project-scoped.
+
+### 1.2 NocoDB compatibility baseline
+
+Engrove treats the following capabilities as the compatibility path for its no-code database layer:
+
+1. **Foundation:** workspace/base navigation with optional per-row project context, a persistent project minibar for engineering resources, a table-and-view tree sidebar, grid CRUD, typed fields, relations, CSV import/export, quick search, filtering, sorting, field visibility/order/width, row density, pagination, and shared saved views.
+2. **View parity:** generic Form, Gallery, Kanban, and Calendar views over configurable object types, followed by grouping and footer aggregations. View configuration stays independent while record mutations are shared across views.
+3. **Collaboration:** view rename/duplicate/archive, locked and personal views, record comments, public or password-protected view sharing, and finer table/view permissions.
+4. **Automation and interoperability:** table webhooks, workflow triggers/actions, API snippets/tokens, and carefully scoped external PostgreSQL/MySQL connections.
+
+Engineering-specific immutable files, datasets, measurements, specifications, evaluations, charts,
+tasks, and audit history remain first-class features rather than compatibility add-ons. Formula fields,
+AI assistance, extension marketplaces, and broad external-database compatibility remain deferred until
+the foundation and view-parity layers are reliable.
 
 ---
 
@@ -2680,7 +2698,7 @@ Engrove is in early development and is not ready for production use.
 
 ## 26. Open Decisions
 
-No unresolved product or architecture decision currently blocks the Community MVP phases in this document. ADR-001 through ADR-014 must record the accepted decisions before or during Phase 0, with the relevant ADR merged before affected implementation code.
+No unresolved product or architecture decision currently blocks the Community MVP phases in this document. ADR-001 through ADR-015 record the accepted decisions, with the relevant ADR merged before affected implementation code.
 
 Exact dependency patch versions and container image digests are implementation selections rather than open architecture decisions. They must be pinned in lockfiles or deployment manifests, use stable releases, and be recorded in the Phase 0 verification report.
 

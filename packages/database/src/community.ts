@@ -796,10 +796,83 @@ export async function listProjects(
   const result = await pool.query(
     `select p.id, p.workspace_id, p.name, p.key, p.description, p.status, p.row_version, p.archived_at
      from projects p join workspaces w on w.id = p.workspace_id
-     where p.workspace_id = $1 and w.organization_id = $2 order by p.name, p.id`,
+     where p.workspace_id = $1 and w.organization_id = $2 and p.system = false
+     order by p.name, p.id`,
     [workspaceId, actor.organizationId],
   );
   return result.rows.map(mapProject);
+}
+
+export async function listLegacyConfigurableDataProjects(
+  pool: Pool,
+  actor: ActorSession,
+  workspaceId: string,
+): Promise<ProjectRow[]> {
+  const result = await pool.query(
+    `select p.id, p.workspace_id, p.name, p.key, p.description, p.status, p.row_version,
+            p.archived_at
+     from projects p join workspaces w on w.id = p.workspace_id
+     where p.workspace_id = $1 and w.organization_id = $2 and p.system = false
+       and exists (select 1 from object_types o where o.project_id = p.id)
+     order by p.name, p.id`,
+    [workspaceId, actor.organizationId],
+  );
+  return result.rows.map(mapProject);
+}
+
+export async function ensureWorkspaceDataProject(
+  pool: Pool,
+  actor: ActorSession,
+  workspaceId: string,
+  requestId: string,
+): Promise<ProjectRow> {
+  return transaction(pool, async (client) => {
+    await assertWorkspaceScope(client, actor, workspaceId);
+    const existing = await client.query(
+      `select id, workspace_id, name, key, description, status, row_version, archived_at
+       from projects where workspace_id = $1 and system = true`,
+      [workspaceId],
+    );
+    if (existing.rows[0]) return mapProject(existing.rows[0]);
+
+    const id = uuidv7();
+    const inserted = await client.query(
+      `insert into projects
+         (id, workspace_id, name, key, description, system, created_by)
+       values ($1, $2, 'Workspace data', '__WORKSPACE_DATA__',
+               'Internal backing scope for workspace-shared tables.', true, $3)
+       on conflict (workspace_id) where system = true do nothing
+       returning id, workspace_id, name, key, description, status, row_version, archived_at`,
+      [id, workspaceId, actor.actorId],
+    );
+    const project =
+      inserted.rows[0] ??
+      (
+        await client.query(
+          `select id, workspace_id, name, key, description, status, row_version, archived_at
+           from projects where workspace_id = $1 and system = true`,
+          [workspaceId],
+        )
+      ).rows[0];
+    if (!project)
+      throw new RepositoryError(
+        'WORKSPACE_DATA_UNAVAILABLE',
+        500,
+        'Workspace data scope could not be initialized.',
+      );
+    if (inserted.rows[0]) {
+      await appendAudit(client, {
+        organizationId: actor.organizationId,
+        workspaceId,
+        actorId: actor.actorId,
+        action: 'workspace.data_initialized',
+        targetType: 'project',
+        targetId: id,
+        requestId,
+      });
+    }
+    return mapProject(project);
+  });
 }
 
 export async function createProject(
@@ -861,7 +934,7 @@ export async function updateProject(
     const result = await client.query(
       `update projects set name = $4, description = $5, status = $6,
           row_version = row_version + 1, updated_at = now()
-       where id = $1 and workspace_id = $2 and row_version = $3
+       where id = $1 and workspace_id = $2 and row_version = $3 and system = false
        returning id, workspace_id, name, key, description, status, row_version, archived_at`,
       [
         input.projectId,
@@ -874,7 +947,7 @@ export async function updateProject(
     );
     if (!result.rows[0]) {
       const exists = await client.query(
-        'select 1 from projects where id = $1 and workspace_id = $2',
+        'select 1 from projects where id = $1 and workspace_id = $2 and system = false',
         [input.projectId, input.workspaceId],
       );
       throw new RepositoryError(
@@ -917,7 +990,7 @@ export async function setProjectArchived(
            archived_by = case when $4::boolean then $3::uuid else null end,
            archive_reason = case when $4::boolean then $5::text else null end,
            row_version = row_version + 1, updated_at = now()
-       where id = $1 and workspace_id = $2
+       where id = $1 and workspace_id = $2 and system = false
        returning id, workspace_id, name, key, description, status, row_version, archived_at`,
       [input.projectId, input.workspaceId, actor.actorId, input.archived, input.reason ?? null],
     );
