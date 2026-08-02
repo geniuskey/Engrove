@@ -127,6 +127,54 @@ const received = await request(`${prefixA}/object-types/${sample.id}/fields`, {
   body: { name: 'Received', key: 'received', fieldType: 'date' },
 });
 
+const reviewViewConfig = {
+  visibleFieldIds: [label.id, serial.id],
+  fieldWidths: { [label.id]: 224, [serial.id]: 160 },
+  filters: [{ fieldId: serial.id, operator: 'gte', value: '10' }],
+  sorts: [{ fieldId: serial.id, direction: 'desc' }],
+  rowDensity: 'compact',
+  pageSize: 25,
+};
+const reviewView = await request(`${prefixA}/object-types/${sample.id}/views`, {
+  jar: owner,
+  method: 'POST',
+  body: { name: 'Review queue', config: reviewViewConfig },
+});
+assert.equal(reviewView.rowVersion, 1);
+assert.deepEqual(
+  (await request(`${prefixA}/object-types/${sample.id}/views`, { jar: owner })).items.map(
+    (view) => view.id,
+  ),
+  [reviewView.id],
+);
+await request(`${prefixA}/object-types/${sample.id}/views`, {
+  jar: owner,
+  method: 'POST',
+  expected: 409,
+  body: { name: 'review QUEUE', config: reviewViewConfig },
+});
+const updatedReviewView = await request(
+  `${prefixA}/object-types/${sample.id}/views/${reviewView.id}`,
+  {
+    jar: owner,
+    method: 'PATCH',
+    body: {
+      name: 'Priority review',
+      config: { ...reviewViewConfig, rowDensity: 'comfortable', pageSize: 50 },
+      rowVersion: reviewView.rowVersion,
+    },
+  },
+);
+assert.equal(updatedReviewView.rowVersion, 2);
+assert.equal(updatedReviewView.config.rowDensity, 'comfortable');
+await request(`${prefixA}/object-types/${sample.id}/views/${reviewView.id}`, {
+  jar: owner,
+  method: 'PATCH',
+  expected: 409,
+  body: { name: 'Stale update', config: reviewViewConfig, rowVersion: reviewView.rowVersion },
+});
+await request(`${prefixB}/object-types/${sample.id}/views`, { jar: owner, expected: 404 });
+
 const container = await request(`${prefixA}/object-types`, {
   jar: owner,
   method: 'POST',
@@ -214,6 +262,16 @@ const grouped = await request(`${prefixA}/object-types/${sample.id}/records/quer
   body: { groupByFieldId: label.id },
 });
 assert.ok(grouped.groups.some((group) => group.value === 'Alpha' && group.count === 1));
+
+await request(`${prefixA}/object-types/${sample.id}/views/${reviewView.id}/archive`, {
+  jar: owner,
+  method: 'POST',
+  body: { rowVersion: updatedReviewView.rowVersion, reason: 'View lifecycle test' },
+});
+assert.equal(
+  (await request(`${prefixA}/object-types/${sample.id}/views`, { jar: owner })).items.length,
+  0,
+);
 
 const linked = await request(`${prefixA}/object-types/${container.id}/records`, {
   jar: owner,
@@ -364,6 +422,9 @@ const audits = await request('/audit-events?limit=200', { jar: owner });
 for (const action of [
   'schema.object_type_created',
   'schema.field_created',
+  'record_view.created',
+  'record_view.updated',
+  'record_view.archived',
   'template.installed',
   'record.created',
   'record.updated',

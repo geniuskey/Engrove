@@ -4,6 +4,7 @@ import {
   ScopedProjectRepository,
   type JsonValue,
   type RecordQuery,
+  type RecordViewConfig,
 } from '@engrove/database';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
@@ -17,6 +18,33 @@ const key = z
 const jsonObject = z.record(z.string(), z.unknown());
 const relationMap = z.record(z.string().uuid(), z.array(z.string().uuid()).max(100));
 const fieldType = z.enum(configurableFieldTypes);
+const recordFilter = z.object({
+  fieldId: id,
+  operator: z.enum(['eq', 'ne', 'contains', 'gt', 'gte', 'lt', 'lte', 'in', 'is_null']),
+  value: z.unknown().optional(),
+});
+const recordSort = z
+  .object({
+    fieldId: id.optional(),
+    systemField: z.enum(['displayName', 'createdAt', 'updatedAt']).optional(),
+    direction: z.enum(['asc', 'desc']),
+  })
+  .refine((sort) => Number(Boolean(sort.fieldId)) + Number(Boolean(sort.systemField)) === 1);
+const recordViewConfig = z
+  .object({
+    visibleFieldIds: z
+      .array(id)
+      .max(200)
+      .refine((ids) => new Set(ids).size === ids.length),
+    fieldWidths: z
+      .record(id, z.number().int().min(80).max(800))
+      .refine((widths) => Object.keys(widths).length <= 200),
+    filters: z.array(recordFilter).max(20),
+    sorts: z.array(recordSort).max(5),
+    rowDensity: z.enum(['compact', 'comfortable']),
+    pageSize: z.union([z.literal(25), z.literal(50), z.literal(100)]),
+  })
+  .strict();
 
 async function repository(
   request: Request,
@@ -174,6 +202,99 @@ export class ConfigurableDataController {
     ).installTestCharacterizationTemplate(requestId(request));
   }
 
+  @Get('object-types/:objectTypeId/views')
+  async views(
+    @Req() request: Request,
+    @Param('workspaceId') workspaceId: string,
+    @Param('projectId') projectId: string,
+    @Param('objectTypeId') objectTypeId: string,
+  ) {
+    return {
+      items: await (
+        await repository(request, workspaceId, projectId, 'schema.read')
+      ).listRecordViews(id.parse(objectTypeId)),
+    };
+  }
+
+  @Post('object-types/:objectTypeId/views')
+  async createView(
+    @Req() request: Request,
+    @Param('workspaceId') workspaceId: string,
+    @Param('projectId') projectId: string,
+    @Param('objectTypeId') objectTypeId: string,
+    @Body() unparsed: unknown,
+  ) {
+    const body = z
+      .object({
+        name: z.string().trim().min(1).max(120),
+        config: recordViewConfig,
+      })
+      .parse(unparsed);
+    return (
+      await repository(request, workspaceId, projectId, 'schema.manage', true)
+    ).createRecordView({
+      objectTypeId: id.parse(objectTypeId),
+      name: body.name,
+      config: body.config as RecordViewConfig,
+      requestId: requestId(request),
+    });
+  }
+
+  @Patch('object-types/:objectTypeId/views/:viewId')
+  async updateView(
+    @Req() request: Request,
+    @Param('workspaceId') workspaceId: string,
+    @Param('projectId') projectId: string,
+    @Param('objectTypeId') objectTypeId: string,
+    @Param('viewId') viewId: string,
+    @Body() unparsed: unknown,
+  ) {
+    const body = z
+      .object({
+        name: z.string().trim().min(1).max(120),
+        config: recordViewConfig,
+        rowVersion: z.number().int().positive(),
+      })
+      .parse(unparsed);
+    return (
+      await repository(request, workspaceId, projectId, 'schema.manage', true)
+    ).updateRecordView({
+      objectTypeId: id.parse(objectTypeId),
+      viewId: id.parse(viewId),
+      name: body.name,
+      config: body.config as RecordViewConfig,
+      rowVersion: body.rowVersion,
+      requestId: requestId(request),
+    });
+  }
+
+  @Post('object-types/:objectTypeId/views/:viewId/archive')
+  async archiveView(
+    @Req() request: Request,
+    @Param('workspaceId') workspaceId: string,
+    @Param('projectId') projectId: string,
+    @Param('objectTypeId') objectTypeId: string,
+    @Param('viewId') viewId: string,
+    @Body() unparsed: unknown,
+  ) {
+    const body = z
+      .object({
+        rowVersion: z.number().int().positive(),
+        reason: z.string().trim().min(1).max(500),
+      })
+      .parse(unparsed);
+    return (
+      await repository(request, workspaceId, projectId, 'schema.manage', true)
+    ).setRecordViewArchived({
+      objectTypeId: id.parse(objectTypeId),
+      viewId: id.parse(viewId),
+      archived: true,
+      rowVersion: body.rowVersion,
+      reason: body.reason,
+      requestId: requestId(request),
+    });
+  }
+
   @Post('object-types/:objectTypeId/records/query')
   async queryRecords(
     @Req() request: Request,
@@ -184,30 +305,8 @@ export class ConfigurableDataController {
   ) {
     const body = z
       .object({
-        filters: z
-          .array(
-            z.object({
-              fieldId: id,
-              operator: z.enum(['eq', 'ne', 'contains', 'gt', 'gte', 'lt', 'lte', 'in', 'is_null']),
-              value: z.unknown().optional(),
-            }),
-          )
-          .max(20)
-          .optional(),
-        sorts: z
-          .array(
-            z
-              .object({
-                fieldId: id.optional(),
-                systemField: z.enum(['displayName', 'createdAt', 'updatedAt']).optional(),
-                direction: z.enum(['asc', 'desc']),
-              })
-              .refine(
-                (sort) => Number(Boolean(sort.fieldId)) + Number(Boolean(sort.systemField)) === 1,
-              ),
-          )
-          .max(5)
-          .optional(),
+        filters: z.array(recordFilter).max(20).optional(),
+        sorts: z.array(recordSort).max(5).optional(),
         groupByFieldId: id.optional(),
         page: z.number().int().min(1).optional(),
         pageSize: z.number().int().min(1).max(100).optional(),

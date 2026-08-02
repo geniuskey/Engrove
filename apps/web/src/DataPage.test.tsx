@@ -23,6 +23,8 @@ function json(value: unknown): Response {
 describe('DataPage', () => {
   it('renders an object-type grid with typed values and pagination state', async () => {
     let patchBody: Record<string, unknown> | undefined;
+    let createViewBody: Record<string, unknown> | undefined;
+    let updateViewBody: Record<string, unknown> | undefined;
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
@@ -59,6 +61,35 @@ describe('DataPage', () => {
               projectionStatus: 'ready',
             },
           ],
+        });
+      }
+      if (url.endsWith('/views')) {
+        if (init?.method === 'POST') {
+          createViewBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+          return json({
+            id: '019fbcf9-e020-71da-935a-6a6a728b3796',
+            objectTypeId: '019fbcf9-e020-71da-935a-6a6a728b3792',
+            name: createViewBody.name,
+            viewType: 'grid',
+            config: createViewBody.config,
+            rowVersion: 1,
+            archivedAt: null,
+            updatedAt: '2026-08-01T00:00:00.000Z',
+          });
+        }
+        return json({ items: [] });
+      }
+      if (url.endsWith('/views/019fbcf9-e020-71da-935a-6a6a728b3796')) {
+        updateViewBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return json({
+          id: '019fbcf9-e020-71da-935a-6a6a728b3796',
+          objectTypeId: '019fbcf9-e020-71da-935a-6a6a728b3792',
+          name: updateViewBody.name,
+          viewType: 'grid',
+          config: updateViewBody.config,
+          rowVersion: 2,
+          archivedAt: null,
+          updatedAt: '2026-08-01T01:00:00.000Z',
         });
       }
       if (url.endsWith('/records/query')) {
@@ -137,6 +168,42 @@ describe('DataPage', () => {
     expect(screen.queryByRole('columnheader', { name: /Serial/ })).not.toBeInTheDocument();
     fireEvent.click(serialVisibility);
     expect(screen.getByRole('columnheader', { name: /Serial/ })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole('slider', { name: 'Serial column width' }), {
+      target: { value: '240' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create view' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'View name' }), {
+      target: { value: 'Review queue' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save view' }));
+    await waitFor(() =>
+      expect(createViewBody).toMatchObject({
+        name: 'Review queue',
+        config: {
+          visibleFieldIds: ['019fbcf9-e020-71da-935a-6a6a728b3794'],
+          fieldWidths: { '019fbcf9-e020-71da-935a-6a6a728b3794': 240 },
+          rowDensity: 'compact',
+          pageSize: 25,
+        },
+      }),
+    );
+    expect(await screen.findByRole('button', { name: /Review queue/ })).toBeInTheDocument();
+
+    const densitySelect = screen.getByRole('combobox', { name: 'Row density' });
+    fireEvent.change(densitySelect, {
+      target: { value: 'comfortable' },
+    });
+    expect(screen.getByRole('combobox', { name: 'Row density' })).toHaveValue('comfortable');
+    expect(await screen.findByText('Unsaved')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save view' }));
+    await waitFor(() =>
+      expect(updateViewBody).toMatchObject({
+        name: 'Review queue',
+        rowVersion: 1,
+        config: { rowDensity: 'comfortable' },
+      }),
+    );
 
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select Sample Two' }));
     expect(screen.getByText('1 selected')).toBeInTheDocument();

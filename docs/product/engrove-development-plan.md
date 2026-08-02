@@ -1,6 +1,6 @@
 # Engrove Development Plan
 
-> **Status:** Draft v0.8
+> **Status:** Draft v0.9
 > **Product:** Engrove  
 > **Category:** Self-hosted Engineering Data & Operations Workspace  
 > **Primary audience:** Manufacturing R&D, test, validation, reliability, and engineering teams  
@@ -62,7 +62,8 @@ The following decisions are fixed for the MVP:
 26. Backups use a write-quiesced, manifest-driven bundle with PostgreSQL custom-format dump, exact referenced object versions, SHA-256 verification, and `age` recipient encryption by default.
 27. Community is developed and delivered first. No Enterprise repository, module, database schema, license gate, feature flag, runtime plugin loader, or speculative extension hook is implemented during the MVP.
 28. The object-type data grid provides spreadsheet-style direct editing for mutable records. Each cell save uses optimistic concurrency and the normal validated, audited record mutation transaction. Measurement observations and ready dataset contents remain immutable and are read-only in the grid.
-29. The MVP record grid uses a data-workbench layout: table and view context remain visible, Fields/Filter/Sort controls are compact and contextual, rows support selection and authorized bulk archive, and a record may be created or edited in a side panel without losing grid context. Persisted named-view definitions and view-level permissions require an explicit later data model and are not simulated only in browser state.
+29. The MVP record grid uses a data-workbench layout: table and view context remain visible, Fields/Filter/Sort controls are compact and contextual, rows support selection and authorized bulk archive, and a record may be created or edited in a side panel without losing grid context.
+30. Named grid views are project-shared `RecordView` entities. A view persists visible-field order, field widths, filters, sorts, row density, and page size with optimistic concurrency and audit history. `schema.read` may list and use shared views; `schema.manage` is required to create, update, or archive one. The built-in `All records` view is virtual and cannot be modified or archived.
 
 ---
 
@@ -708,6 +709,25 @@ The field type and key are immutable after the field contains data in the MVP. D
 For MVP, dynamic values may be stored in JSONB. Frequently filtered system fields and relation edges must use normalized columns/tables.
 
 `Record.values` stores configurable record properties, including `quantity` properties such as a nominal length. It must not store `measurement` observations. The record grid may project the latest non-superseded measurement result for a measurement field, but that projection is derived data and is not the source of truth.
+
+#### RecordView
+
+- id
+- projectId
+- objectTypeId
+- name
+- viewType (`grid` in the MVP)
+- config JSONB
+- rowVersion
+- createdBy
+- updatedBy
+- createdAt
+- updatedAt
+- archivedAt
+- archivedBy
+- archiveReason
+
+`RecordView.config` contains field IDs in display order, per-field pixel widths, validated record filters and sorts, row density, and page size. Every referenced field must belong to the same object type. Active view names are case-insensitively unique within an object type. Updates and archive operations require the last-read `rowVersion`; a stale write returns `VERSION_CONFLICT`. Views are shared project configuration rather than private browser preferences, and all mutations write audit events.
 
 #### RecordIndexValue
 

@@ -123,6 +123,30 @@ export interface RecordQueryResult {
   groups?: Array<{ value: string | null; count: number }>;
 }
 
+export interface RecordViewConfig {
+  visibleFieldIds: string[];
+  fieldWidths: Record<string, number>;
+  filters: RecordFilter[];
+  sorts: RecordSort[];
+  rowDensity: 'compact' | 'comfortable';
+  pageSize: 25 | 50 | 100;
+}
+
+export interface RecordViewRow {
+  id: string;
+  projectId: string;
+  objectTypeId: string;
+  name: string;
+  viewType: 'grid';
+  config: RecordViewConfig;
+  rowVersion: number;
+  createdBy: string;
+  updatedBy: string;
+  archivedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface ProjectionValue {
   ordinal: number;
   valueKind: 'text' | 'numeric' | 'boolean' | 'date' | 'datetime' | 'uuid';
@@ -146,6 +170,21 @@ interface DbFieldRow {
   system: boolean;
   projection_status: ProjectionStatus;
   projection_version: number;
+}
+
+interface DbRecordViewRow {
+  id: string;
+  project_id: string;
+  object_type_id: string;
+  name: string;
+  view_type: 'grid';
+  config: RecordViewConfig;
+  row_version: number;
+  created_by: string;
+  updated_by: string;
+  archived_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
 }
 
 async function transaction<T>(pool: Pool, action: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -193,6 +232,23 @@ function mapField(row: DbFieldRow): FieldDefinitionRow {
     system: row.system,
     projectionStatus: row.projection_status,
     projectionVersion: row.projection_version,
+  };
+}
+
+function mapRecordView(row: DbRecordViewRow): RecordViewRow {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    objectTypeId: row.object_type_id,
+    name: row.name,
+    viewType: row.view_type,
+    config: row.config,
+    rowVersion: row.row_version,
+    createdBy: row.created_by,
+    updatedBy: row.updated_by,
+    archivedAt: row.archived_at?.toISOString() ?? null,
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
   };
 }
 
@@ -664,6 +720,24 @@ function mapUniqueViolation(error: unknown): never {
   throw error;
 }
 
+function mapRecordViewUniqueViolation(error: unknown): never {
+  if (
+    typeof error === 'object' &&
+    error &&
+    'code' in error &&
+    error.code === '23505' &&
+    'constraint' in error &&
+    error.constraint === 'record_views_active_object_name_key'
+  ) {
+    throw new RepositoryError(
+      'RECORD_VIEW_NAME_CONFLICT',
+      409,
+      'An active view already uses this name.',
+    );
+  }
+  throw error;
+}
+
 interface TemplateField {
   key: string;
   name: string;
@@ -888,6 +962,225 @@ export class ScopedProjectRepository {
       );
       return mapObjectType(result.rows[0]);
     });
+  }
+
+  private async validateRecordViewConfig(
+    client: PoolClient,
+    objectTypeId: string,
+    config: RecordViewConfig,
+  ): Promise<void> {
+    const objectType = await client.query(
+      'select 1 from object_types where project_id = $1 and id = $2',
+      [this.scope.projectId, objectTypeId],
+    );
+    if (!objectType.rowCount)
+      throw new RepositoryError('OBJECT_TYPE_NOT_FOUND', 404, 'Object type was not found.');
+
+    const referencedFieldIds = new Set([
+      ...config.visibleFieldIds,
+      ...Object.keys(config.fieldWidths),
+      ...config.filters.map((filter) => filter.fieldId),
+      ...config.sorts.flatMap((sort) => (sort.fieldId ? [sort.fieldId] : [])),
+    ]);
+    if (!referencedFieldIds.size) return;
+    const fields = await client.query<{ id: string }>(
+      `select id from field_definitions
+       where project_id = $1 and object_type_id = $2 and id = any($3::uuid[])`,
+      [this.scope.projectId, objectTypeId, [...referencedFieldIds]],
+    );
+    if (fields.rowCount !== referencedFieldIds.size) {
+      throw new RepositoryError(
+        'RECORD_VIEW_FIELD_NOT_FOUND',
+        400,
+        'The view references a field that does not belong to this table.',
+      );
+    }
+  }
+
+  async listRecordViews(objectTypeId: string, includeArchived = false): Promise<RecordViewRow[]> {
+    const result = await this.pool.query<DbRecordViewRow>(
+      `select id, project_id, object_type_id, name, view_type, config, row_version,
+              created_by, updated_by, archived_at, created_at, updated_at
+       from record_views
+       where project_id = $1 and object_type_id = $2
+         and ($3::boolean or archived_at is null)
+       order by lower(name), id`,
+      [this.scope.projectId, objectTypeId, includeArchived],
+    );
+    if (!result.rowCount) {
+      const exists = await this.pool.query(
+        'select 1 from object_types where project_id = $1 and id = $2',
+        [this.scope.projectId, objectTypeId],
+      );
+      if (!exists.rowCount)
+        throw new RepositoryError('OBJECT_TYPE_NOT_FOUND', 404, 'Object type was not found.');
+    }
+    return result.rows.map(mapRecordView);
+  }
+
+  async createRecordView(input: {
+    objectTypeId: string;
+    name: string;
+    config: RecordViewConfig;
+    requestId: string;
+  }): Promise<RecordViewRow> {
+    try {
+      return await transaction(this.pool, async (client) => {
+        await this.validateRecordViewConfig(client, input.objectTypeId, input.config);
+        const id = uuidv7();
+        const result = await client.query<DbRecordViewRow>(
+          `insert into record_views
+            (id, project_id, object_type_id, name, view_type, config, created_by, updated_by)
+           values ($1, $2, $3, $4, 'grid', $5::jsonb, $6, $6)
+           returning id, project_id, object_type_id, name, view_type, config, row_version,
+                     created_by, updated_by, archived_at, created_at, updated_at`,
+          [
+            id,
+            this.scope.projectId,
+            input.objectTypeId,
+            input.name.trim(),
+            JSON.stringify(input.config),
+            this.scope.actor.actorId,
+          ],
+        );
+        await appendAudit(
+          client,
+          this.audit({
+            actorId: this.scope.actor.actorId,
+            action: 'record_view.created',
+            targetType: 'record_view',
+            targetId: id,
+            requestId: input.requestId,
+            payload: { objectTypeId: input.objectTypeId, name: input.name.trim() },
+          }),
+        );
+        return mapRecordView(result.rows[0]!);
+      });
+    } catch (error) {
+      return mapRecordViewUniqueViolation(error);
+    }
+  }
+
+  async updateRecordView(input: {
+    objectTypeId: string;
+    viewId: string;
+    name: string;
+    config: RecordViewConfig;
+    rowVersion: number;
+    requestId: string;
+  }): Promise<RecordViewRow> {
+    try {
+      return await transaction(this.pool, async (client) => {
+        await this.validateRecordViewConfig(client, input.objectTypeId, input.config);
+        const result = await client.query<DbRecordViewRow>(
+          `update record_views set
+             name = $4, config = $5::jsonb, row_version = row_version + 1,
+             updated_by = $6, updated_at = now()
+           where project_id = $1 and object_type_id = $2 and id = $3
+             and row_version = $7 and archived_at is null
+           returning id, project_id, object_type_id, name, view_type, config, row_version,
+                     created_by, updated_by, archived_at, created_at, updated_at`,
+          [
+            this.scope.projectId,
+            input.objectTypeId,
+            input.viewId,
+            input.name.trim(),
+            JSON.stringify(input.config),
+            this.scope.actor.actorId,
+            input.rowVersion,
+          ],
+        );
+        if (!result.rows[0]) {
+          const exists = await client.query(
+            `select 1 from record_views
+             where project_id = $1 and object_type_id = $2 and id = $3 and archived_at is null`,
+            [this.scope.projectId, input.objectTypeId, input.viewId],
+          );
+          throw new RepositoryError(
+            exists.rowCount ? 'VERSION_CONFLICT' : 'RECORD_VIEW_NOT_FOUND',
+            exists.rowCount ? 409 : 404,
+            exists.rowCount
+              ? 'The view changed since it was loaded.'
+              : 'Record view was not found.',
+          );
+        }
+        await appendAudit(
+          client,
+          this.audit({
+            actorId: this.scope.actor.actorId,
+            action: 'record_view.updated',
+            targetType: 'record_view',
+            targetId: input.viewId,
+            requestId: input.requestId,
+            payload: { name: input.name.trim(), rowVersion: result.rows[0].row_version },
+          }),
+        );
+        return mapRecordView(result.rows[0]);
+      });
+    } catch (error) {
+      return mapRecordViewUniqueViolation(error);
+    }
+  }
+
+  async setRecordViewArchived(input: {
+    objectTypeId: string;
+    viewId: string;
+    archived: boolean;
+    rowVersion: number;
+    reason?: string;
+    requestId: string;
+  }): Promise<RecordViewRow> {
+    try {
+      return await transaction(this.pool, async (client) => {
+        const result = await client.query<DbRecordViewRow>(
+          `update record_views set
+             archived_at = case when $4::boolean then now() else null end,
+             archived_by = case when $4::boolean then $5::uuid else null end,
+             archive_reason = case when $4::boolean then $6::text else null end,
+             row_version = row_version + 1, updated_by = $5, updated_at = now()
+           where project_id = $1 and object_type_id = $2 and id = $3 and row_version = $7
+             and (($4::boolean and archived_at is null) or (not $4::boolean and archived_at is not null))
+           returning id, project_id, object_type_id, name, view_type, config, row_version,
+                     created_by, updated_by, archived_at, created_at, updated_at`,
+          [
+            this.scope.projectId,
+            input.objectTypeId,
+            input.viewId,
+            input.archived,
+            this.scope.actor.actorId,
+            input.reason ?? null,
+            input.rowVersion,
+          ],
+        );
+        if (!result.rows[0]) {
+          const exists = await client.query(
+            'select 1 from record_views where project_id = $1 and object_type_id = $2 and id = $3',
+            [this.scope.projectId, input.objectTypeId, input.viewId],
+          );
+          throw new RepositoryError(
+            exists.rowCount ? 'VERSION_CONFLICT' : 'RECORD_VIEW_NOT_FOUND',
+            exists.rowCount ? 409 : 404,
+            exists.rowCount
+              ? 'The view changed since it was loaded.'
+              : 'Record view was not found.',
+          );
+        }
+        await appendAudit(
+          client,
+          this.audit({
+            actorId: this.scope.actor.actorId,
+            action: input.archived ? 'record_view.archived' : 'record_view.restored',
+            targetType: 'record_view',
+            targetId: input.viewId,
+            requestId: input.requestId,
+            payload: input.archived ? { reason: input.reason ?? null } : {},
+          }),
+        );
+        return mapRecordView(result.rows[0]);
+      });
+    } catch (error) {
+      return mapRecordViewUniqueViolation(error);
+    }
   }
 
   async listFields(objectTypeId: string): Promise<FieldDefinitionRow[]> {

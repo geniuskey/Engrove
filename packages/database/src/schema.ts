@@ -321,6 +321,43 @@ export const fieldDefinitions = pgTable(
   ],
 );
 
+export const recordViews = pgTable(
+  'record_views',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id').notNull(),
+    objectTypeId: uuid('object_type_id').notNull(),
+    name: text('name').notNull(),
+    viewType: text('view_type').notNull().default('grid'),
+    config: jsonb('config').notNull().default({}),
+    rowVersion: integer('row_version').notNull().default(1),
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    updatedBy: uuid('updated_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
+    archivedBy: uuid('archived_by').references(() => users.id, { onDelete: 'restrict' }),
+    archiveReason: text('archive_reason'),
+    ...auditColumns,
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.projectId, table.objectTypeId],
+      foreignColumns: [objectTypes.projectId, objectTypes.id],
+      name: 'record_views_project_object_type_fk',
+    }).onDelete('restrict'),
+    uniqueIndex('record_views_active_object_name_key')
+      .on(table.objectTypeId, sql`lower(${table.name})`)
+      .where(sql`${table.archivedAt} is null`),
+    uniqueIndex('record_views_project_id_key').on(table.projectId, table.id),
+    index('record_views_object_updated_idx').on(table.objectTypeId, table.updatedAt, table.id),
+    check('record_views_type_check', sql`${table.viewType} = 'grid'`),
+    check('record_views_row_version_check', sql`${table.rowVersion} > 0`),
+  ],
+);
+
 export const records = pgTable(
   'records',
   {

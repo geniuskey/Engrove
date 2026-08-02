@@ -5,6 +5,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -86,6 +87,34 @@ interface QueryResult {
   page: number;
   pageSize: number;
   total: number;
+}
+
+interface RecordViewConfig {
+  visibleFieldIds: string[];
+  fieldWidths: Record<string, number>;
+  filters: Array<{
+    fieldId: string;
+    operator: string;
+    value?: unknown;
+  }>;
+  sorts: Array<{
+    fieldId?: string;
+    systemField?: 'displayName' | 'createdAt' | 'updatedAt';
+    direction: 'asc' | 'desc';
+  }>;
+  rowDensity: 'compact' | 'comfortable';
+  pageSize: 25 | 50 | 100;
+}
+
+interface RecordView {
+  id: string;
+  objectTypeId: string;
+  name: string;
+  viewType: 'grid';
+  config: RecordViewConfig;
+  rowVersion: number;
+  archivedAt: string | null;
+  updatedAt: string;
 }
 
 interface CsvResult {
@@ -1025,6 +1054,7 @@ export function DataPage({ user }: { user: User }) {
   const base = projectPath(workspaceId, projectId);
   const [objectTypes, setObjectTypes] = useState<ObjectType[]>([]);
   const [fields, setFields] = useState<FieldDefinition[]>([]);
+  const [views, setViews] = useState<RecordView[]>([]);
   const [records, setRecords] = useState<QueryResult>({
     items: [],
     page: 1,
@@ -1032,7 +1062,7 @@ export function DataPage({ user }: { user: User }) {
     total: 0,
   });
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(25);
+  const [pageSize, setPageSize] = useState<25 | 50 | 100>(25);
   const [sortField, setSortField] = useState('displayName');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [filterField, setFilterField] = useState('');
@@ -1041,6 +1071,8 @@ export function DataPage({ user }: { user: User }) {
   const [debouncedFilterValue, setDebouncedFilterValue] = useState('');
   const [activeTool, setActiveTool] = useState<'fields' | 'filter' | 'sort' | null>(null);
   const [hiddenFieldIds, setHiddenFieldIds] = useState<Set<string>>(() => new Set());
+  const [fieldOrderIds, setFieldOrderIds] = useState<string[]>([]);
+  const [fieldWidths, setFieldWidths] = useState<Record<string, number>>({});
   const [rowDensity, setRowDensity] = useState<'compact' | 'comfortable'>('compact');
   const [selectedRows, setSelectedRows] = useState<Set<string>>(() => new Set());
   const [selectedRecord, setSelectedRecord] = useState<DynamicRecord>();
@@ -1048,15 +1080,124 @@ export function DataPage({ user }: { user: User }) {
   const [showSchema, setShowSchema] = useState(false);
   const [showNewRecord, setShowNewRecord] = useState(false);
   const [typesLoading, setTypesLoading] = useState(true);
+  const [viewsLoading, setViewsLoading] = useState(false);
+  const [contextObjectTypeId, setContextObjectTypeId] = useState('');
+  const [viewBusy, setViewBusy] = useState(false);
+  const [showCreateView, setShowCreateView] = useState(false);
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [messageTone, setMessageTone] = useState<'info' | 'success' | 'error'>('info');
   const [csvResult, setCsvResult] = useState<CsvResult>();
+  const appliedViewKey = useRef('');
+  const pendingViewId = useRef('');
   const selectedId = search.get('type') ?? objectTypes[0]?.id ?? '';
+  const selectedViewId = search.get('view') ?? 'all';
   const selected = objectTypes.find((objectType) => objectType.id === selectedId);
+  const selectedView = views.find((view) => view.id === selectedViewId);
+  const orderedFields = useMemo(() => {
+    const position = new Map(fieldOrderIds.map((fieldId, index) => [fieldId, index]));
+    return [...fields].sort((left, right) => {
+      const leftPosition = position.get(left.id) ?? Number.MAX_SAFE_INTEGER;
+      const rightPosition = position.get(right.id) ?? Number.MAX_SAFE_INTEGER;
+      return (
+        leftPosition - rightPosition ||
+        left.position - right.position ||
+        left.id.localeCompare(right.id)
+      );
+    });
+  }, [fieldOrderIds, fields]);
   const visibleFields = useMemo(
-    () => fields.filter((field) => !hiddenFieldIds.has(field.id)),
-    [fields, hiddenFieldIds],
+    () => orderedFields.filter((field) => !hiddenFieldIds.has(field.id)),
+    [hiddenFieldIds, orderedFields],
+  );
+  const currentViewConfig = useMemo<RecordViewConfig>(() => {
+    const widths = Object.fromEntries(
+      orderedFields.flatMap((field) =>
+        fieldWidths[field.id] ? [[field.id, fieldWidths[field.id]!] as const] : [],
+      ),
+    );
+    return {
+      visibleFieldIds: visibleFields.map((field) => field.id),
+      fieldWidths: widths,
+      filters:
+        filterField && (filterOperator === 'is_null' || filterValue)
+          ? [
+              {
+                fieldId: filterField,
+                operator: filterOperator,
+                ...(filterOperator === 'is_null' ? {} : { value: filterValue }),
+              },
+            ]
+          : [],
+      sorts:
+        sortField === 'displayName'
+          ? [{ systemField: 'displayName', direction: sortDirection }]
+          : [{ fieldId: sortField, direction: sortDirection }],
+      rowDensity,
+      pageSize,
+    };
+  }, [
+    fieldWidths,
+    filterField,
+    filterOperator,
+    filterValue,
+    orderedFields,
+    pageSize,
+    rowDensity,
+    sortDirection,
+    sortField,
+    visibleFields,
+  ]);
+  const viewDirty = Boolean(
+    selectedView && JSON.stringify(currentViewConfig) !== JSON.stringify(selectedView.config),
+  );
+
+  const applyViewConfig = useCallback(
+    (config?: RecordViewConfig) => {
+      const validFieldIds = new Set(fields.map((field) => field.id));
+      if (!config) {
+        setFieldOrderIds(fields.map((field) => field.id));
+        setHiddenFieldIds(new Set());
+        setFieldWidths({});
+        setFilterField('');
+        setFilterOperator('eq');
+        setFilterValue('');
+        setSortField('displayName');
+        setSortDirection('asc');
+        setRowDensity('compact');
+        setPageSize(25);
+        setPage(1);
+        return;
+      }
+      const visibleIds = config.visibleFieldIds.filter((fieldId) => validFieldIds.has(fieldId));
+      const visibleSet = new Set(visibleIds);
+      setFieldOrderIds([
+        ...visibleIds,
+        ...fields.map((field) => field.id).filter((fieldId) => !visibleSet.has(fieldId)),
+      ]);
+      setHiddenFieldIds(
+        new Set(fields.map((field) => field.id).filter((fieldId) => !visibleSet.has(fieldId))),
+      );
+      setFieldWidths(
+        Object.fromEntries(
+          Object.entries(config.fieldWidths).filter(([fieldId]) => validFieldIds.has(fieldId)),
+        ),
+      );
+      const filter = config.filters[0];
+      setFilterField(filter?.fieldId && validFieldIds.has(filter.fieldId) ? filter.fieldId : '');
+      setFilterOperator(filter?.operator ?? 'eq');
+      setFilterValue(filter?.value === undefined ? '' : String(filter.value));
+      const sort = config.sorts[0];
+      setSortField(
+        sort?.systemField ??
+          (sort?.fieldId && validFieldIds.has(sort.fieldId) ? sort.fieldId : 'displayName'),
+      );
+      setSortDirection(sort?.direction ?? 'asc');
+      setRowDensity(config.rowDensity);
+      setPageSize(config.pageSize);
+      setPage(1);
+    },
+    [fields],
   );
 
   const loadTypes = useCallback(async () => {
@@ -1077,17 +1218,77 @@ export function DataPage({ user }: { user: User }) {
 
   useEffect(() => void loadTypes(), [loadTypes]);
 
+  const loadDataContext = useCallback(async () => {
+    if (!selectedId) {
+      setFields([]);
+      setViews([]);
+      setContextObjectTypeId('');
+      return;
+    }
+    setViewsLoading(true);
+    try {
+      const [fieldResult, viewResult] = await Promise.all([
+        api<{ items: FieldDefinition[] }>(`${base}/object-types/${selectedId}/fields`),
+        api<{ items: RecordView[] }>(`${base}/object-types/${selectedId}/views`),
+      ]);
+      setFields(fieldResult.items);
+      setViews(viewResult.items);
+      setContextObjectTypeId(selectedId);
+    } catch (cause) {
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : 'Table context could not be loaded.');
+    } finally {
+      setViewsLoading(false);
+    }
+  }, [base, selectedId]);
+
+  useEffect(() => void loadDataContext(), [loadDataContext]);
+
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedFilterValue(filterValue), 250);
     return () => window.clearTimeout(timer);
   }, [filterValue]);
 
   useEffect(() => {
-    setHiddenFieldIds(new Set());
     setSelectedRows(new Set());
     setSelectedRecord(undefined);
     setActiveTool(null);
+    setShowCreateView(false);
+    setContextObjectTypeId('');
+    appliedViewKey.current = '';
+    pendingViewId.current = '';
   }, [selectedId]);
+
+  useLayoutEffect(() => {
+    if (!selectedId || contextObjectTypeId !== selectedId || viewsLoading) return;
+    if (pendingViewId.current && pendingViewId.current !== selectedViewId) return;
+    if (pendingViewId.current === selectedViewId) pendingViewId.current = '';
+    if (selectedViewId === 'all') {
+      const key = `${selectedId}:all:${fields.map((field) => field.id).join(',')}`;
+      if (appliedViewKey.current === key) return;
+      appliedViewKey.current = key;
+      applyViewConfig();
+      return;
+    }
+    const view = views.find((candidate) => candidate.id === selectedViewId);
+    if (view) {
+      const key = `${selectedId}:${view.id}:${view.rowVersion}:${fields.map((field) => field.id).join(',')}`;
+      if (appliedViewKey.current === key) return;
+      appliedViewKey.current = key;
+      applyViewConfig(view.config);
+      return;
+    }
+    setSearch({ type: selectedId }, { replace: true });
+  }, [
+    applyViewConfig,
+    contextObjectTypeId,
+    fields,
+    selectedId,
+    selectedViewId,
+    setSearch,
+    views,
+    viewsLoading,
+  ]);
 
   useEffect(() => {
     setSelectedRows(new Set());
@@ -1128,14 +1329,13 @@ export function DataPage({ user }: { user: User }) {
     if (!selectedId) return;
     setRecordsLoading(true);
     try {
-      const [fieldResult, recordResult] = await Promise.all([
-        api<{ items: FieldDefinition[] }>(`${base}/object-types/${selectedId}/fields`),
-        api<QueryResult>(`${base}/object-types/${selectedId}/records/query`, {
+      const recordResult = await api<QueryResult>(
+        `${base}/object-types/${selectedId}/records/query`,
+        {
           method: 'POST',
           body: JSON.stringify(queryBody),
-        }),
-      ]);
-      setFields(fieldResult.items);
+        },
+      );
       setRecords(recordResult);
       setMessage('');
     } catch (cause) {
@@ -1229,7 +1429,7 @@ export function DataPage({ user }: { user: User }) {
         }),
       });
       form.reset();
-      await loadRecords();
+      await Promise.all([loadDataContext(), loadRecords()]);
     } catch (cause) {
       setMessageTone('error');
       setMessage(cause instanceof Error ? cause.message : 'Field creation failed.');
@@ -1351,6 +1551,111 @@ export function DataPage({ user }: { user: User }) {
     setMessage(`${updated.displayName} saved.`);
   }
 
+  function chooseView(viewId: string) {
+    setSelectedRows(new Set());
+    setSelectedRecord(undefined);
+    const view = views.find((candidate) => candidate.id === viewId);
+    pendingViewId.current = viewId;
+    appliedViewKey.current =
+      viewId === 'all'
+        ? `${selectedId}:all:${fields.map((field) => field.id).join(',')}`
+        : `${selectedId}:${viewId}:${view?.rowVersion ?? 0}:${fields.map((field) => field.id).join(',')}`;
+    applyViewConfig(view?.config);
+    setSearch(viewId === 'all' ? { type: selectedId } : { type: selectedId, view: viewId });
+  }
+
+  function moveField(fieldId: string, direction: -1 | 1) {
+    setFieldOrderIds((current) => {
+      const order = current.length ? [...current] : fields.map((field) => field.id);
+      const index = order.indexOf(fieldId);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= order.length) return order;
+      [order[index], order[target]] = [order[target]!, order[index]!];
+      return order;
+    });
+  }
+
+  async function createView(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const name = String(new FormData(form).get('name') ?? '').trim();
+    if (!name) return;
+    setViewBusy(true);
+    try {
+      const created = await api<RecordView>(`${base}/object-types/${selectedId}/views`, {
+        method: 'POST',
+        body: JSON.stringify({ name, config: currentViewConfig }),
+      });
+      pendingViewId.current = created.id;
+      appliedViewKey.current = `${selectedId}:${created.id}:${created.rowVersion}:${fields.map((field) => field.id).join(',')}`;
+      setViews((current) =>
+        [...current, created].sort((left, right) => left.name.localeCompare(right.name)),
+      );
+      setShowCreateView(false);
+      form.reset();
+      setSearch({ type: selectedId, view: created.id });
+      setMessageTone('success');
+      setMessage(`View “${created.name}” created and shared with this project.`);
+    } catch (cause) {
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : 'View could not be created.');
+    } finally {
+      setViewBusy(false);
+    }
+  }
+
+  async function saveView() {
+    if (!selectedView) return;
+    setViewBusy(true);
+    try {
+      const updated = await api<RecordView>(
+        `${base}/object-types/${selectedId}/views/${selectedView.id}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
+            name: selectedView.name,
+            config: currentViewConfig,
+            rowVersion: selectedView.rowVersion,
+          }),
+        },
+      );
+      setViews((current) => current.map((view) => (view.id === updated.id ? updated : view)));
+      setMessageTone('success');
+      setMessage(`View “${updated.name}” saved.`);
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.code === 'VERSION_CONFLICT') await loadDataContext();
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : 'View could not be saved.');
+    } finally {
+      setViewBusy(false);
+    }
+  }
+
+  async function archiveView() {
+    if (!selectedView) return;
+    if (!window.confirm(`Archive the shared view “${selectedView.name}”?`)) return;
+    setViewBusy(true);
+    try {
+      await api(`${base}/object-types/${selectedId}/views/${selectedView.id}/archive`, {
+        method: 'POST',
+        body: JSON.stringify({
+          rowVersion: selectedView.rowVersion,
+          reason: 'Archived from the data workspace',
+        }),
+      });
+      setViews((current) => current.filter((view) => view.id !== selectedView.id));
+      chooseView('all');
+      setMessageTone('success');
+      setMessage(`View “${selectedView.name}” archived.`);
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.code === 'VERSION_CONFLICT') await loadDataContext();
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : 'View could not be archived.');
+    } finally {
+      setViewBusy(false);
+    }
+  }
+
   async function archiveSelectedRows() {
     if (!selectedRows.size) return;
     if (!window.confirm(`Archive ${selectedRows.size} selected record(s)? History is preserved.`))
@@ -1434,11 +1739,22 @@ export function DataPage({ user }: { user: User }) {
           ))}
           {selected && (
             <div className="mt-4 border-t border-slate-800 pt-3">
-              <p className="px-3 py-2 font-mono text-xs uppercase tracking-widest text-slate-500">
-                Views
-              </p>
+              <div className="flex items-center justify-between px-3 py-2">
+                <p className="font-mono text-xs uppercase tracking-widest text-slate-500">Views</p>
+                {allowed(user, 'schema.manage') && (
+                  <button
+                    aria-label="Create view"
+                    className="rounded px-1.5 text-lg leading-5 text-slate-500 hover:bg-slate-800 hover:text-sky-300"
+                    onClick={() => setShowCreateView((value) => !value)}
+                    type="button"
+                  >
+                    +
+                  </button>
+                )}
+              </div>
               <button
-                className="flex w-full items-center justify-between rounded-lg bg-slate-800/80 px-3 py-2 text-left text-sm text-slate-200"
+                className={`mb-1 flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm ${selectedViewId === 'all' ? 'bg-slate-800/80 text-slate-100' : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'}`}
+                onClick={() => chooseView('all')}
                 type="button"
               >
                 <span className="flex items-center gap-2">
@@ -1448,6 +1764,50 @@ export function DataPage({ user }: { user: User }) {
                   Grid
                 </span>
               </button>
+              {viewsLoading && <div className="mx-2 my-2 h-8 animate-pulse rounded bg-slate-800" />}
+              {!viewsLoading &&
+                views.map((view) => (
+                  <button
+                    className={`mb-1 flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm ${selectedViewId === view.id ? 'bg-sky-500/15 text-sky-200' : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'}`}
+                    key={view.id}
+                    onClick={() => chooseView(view.id)}
+                    type="button"
+                  >
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="text-sky-400">▦</span>
+                      <span className="truncate">{view.name}</span>
+                    </span>
+                    <span className="ml-2 text-[10px] uppercase text-slate-600">Shared</span>
+                  </button>
+                ))}
+              {showCreateView && allowed(user, 'schema.manage') && (
+                <form className="mt-2 space-y-2 px-2" onSubmit={(event) => void createView(event)}>
+                  <input
+                    aria-label="View name"
+                    autoFocus
+                    className={inputClass}
+                    maxLength={120}
+                    name="name"
+                    placeholder="View name"
+                    required
+                  />
+                  <div className="flex gap-2">
+                    <Button className="flex-1" disabled={viewBusy} variant="quiet" type="submit">
+                      {viewBusy ? 'Saving…' : 'Save view'}
+                    </Button>
+                    <button
+                      className="rounded-lg px-2 text-xs text-slate-500 hover:bg-slate-800"
+                      onClick={() => setShowCreateView(false)}
+                      type="button"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  <p className="px-1 text-[11px] leading-4 text-slate-600">
+                    Saves the current fields, filter, sort, density, and widths.
+                  </p>
+                </form>
+              )}
             </div>
           )}
           {allowed(user, 'schema.manage') && (
@@ -1582,6 +1942,16 @@ export function DataPage({ user }: { user: User }) {
 
               <div className="mt-5 overflow-hidden rounded-xl border border-slate-800 bg-slate-900/45 shadow-lg shadow-slate-950/10">
                 <div className="flex min-h-12 flex-wrap items-center gap-1 p-2">
+                  <div className="mr-1 flex items-center gap-2 border-r border-slate-800 pr-3">
+                    <span className="max-w-40 truncate px-2 text-sm font-medium text-slate-200">
+                      {selectedView?.name ?? 'All records'}
+                    </span>
+                    {viewDirty && (
+                      <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase text-amber-300">
+                        Unsaved
+                      </span>
+                    )}
+                  </div>
                   {(['fields', 'filter', 'sort'] as const).map((tool) => {
                     const active = activeTool === tool;
                     const label = tool[0]!.toUpperCase() + tool.slice(1);
@@ -1610,6 +1980,28 @@ export function DataPage({ user }: { user: User }) {
                       </button>
                     );
                   })}
+                  {selectedView && allowed(user, 'schema.manage') && (
+                    <>
+                      <button
+                        className={`rounded-lg px-3 py-2 text-sm ${viewDirty ? 'bg-sky-500/15 font-medium text-sky-300 hover:bg-sky-500/20' : 'text-slate-600'}`}
+                        disabled={!viewDirty || viewBusy}
+                        onClick={() => void saveView()}
+                        type="button"
+                      >
+                        {viewBusy ? 'Saving…' : 'Save view'}
+                      </button>
+                      <button
+                        aria-label={`Archive view ${selectedView.name}`}
+                        className="rounded-lg px-2 py-2 text-sm text-slate-500 hover:bg-rose-500/10 hover:text-rose-300"
+                        disabled={viewBusy}
+                        onClick={() => void archiveView()}
+                        title="Archive view"
+                        type="button"
+                      >
+                        ⋯
+                      </button>
+                    </>
+                  )}
                   <select
                     aria-label="Row density"
                     className="rounded-lg border border-transparent bg-transparent px-3 py-2 text-sm text-slate-300 outline-none hover:bg-slate-800 focus:border-sky-500"
@@ -1626,7 +2018,7 @@ export function DataPage({ user }: { user: User }) {
                     className="rounded-lg border border-transparent bg-transparent px-3 py-2 text-sm text-slate-300 outline-none hover:bg-slate-800 focus:border-sky-500"
                     value={pageSize}
                     onChange={(event) => {
-                      setPageSize(Number(event.target.value));
+                      setPageSize(Number(event.target.value) as 25 | 50 | 100);
                       setPage(1);
                     }}
                   >
@@ -1666,28 +2058,71 @@ export function DataPage({ user }: { user: User }) {
 
                 {activeTool === 'fields' && (
                   <div className="border-t border-slate-800 p-3">
-                    <div className="flex flex-wrap gap-2">
-                      {fields.map((field) => {
+                    <div className="grid gap-2 xl:grid-cols-2">
+                      {orderedFields.map((field, index) => {
                         const visible = !hiddenFieldIds.has(field.id);
                         return (
-                          <label
-                            className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs ${visible ? 'border-sky-500/30 bg-sky-500/10 text-sky-200' : 'border-slate-800 text-slate-500'}`}
+                          <div
+                            className={`flex min-w-0 items-center gap-2 rounded-lg border px-2 py-2 text-xs ${visible ? 'border-sky-500/30 bg-sky-500/10 text-sky-200' : 'border-slate-800 text-slate-500'}`}
                             key={field.id}
                           >
-                            <input
-                              checked={visible}
-                              type="checkbox"
-                              onChange={() =>
-                                setHiddenFieldIds((current) => {
-                                  const next = new Set(current);
-                                  if (next.has(field.id)) next.delete(field.id);
-                                  else next.add(field.id);
-                                  return next;
-                                })
-                              }
-                            />
-                            {field.name}
-                          </label>
+                            <label className="flex min-w-28 flex-1 cursor-pointer items-center gap-2">
+                              <input
+                                aria-label={field.name}
+                                checked={visible}
+                                type="checkbox"
+                                onChange={() =>
+                                  setHiddenFieldIds((current) => {
+                                    const next = new Set(current);
+                                    if (next.has(field.id)) next.delete(field.id);
+                                    else next.add(field.id);
+                                    return next;
+                                  })
+                                }
+                              />
+                              <span className="truncate">{field.name}</span>
+                            </label>
+                            {visible && (
+                              <label className="flex items-center gap-1 text-[10px] text-slate-500">
+                                Width
+                                <input
+                                  aria-label={`${field.name} column width`}
+                                  className="w-20 accent-sky-500"
+                                  max="480"
+                                  min="100"
+                                  step="8"
+                                  type="range"
+                                  value={fieldWidths[field.id] ?? 176}
+                                  onChange={(event) =>
+                                    setFieldWidths((current) => ({
+                                      ...current,
+                                      [field.id]: Number(event.target.value),
+                                    }))
+                                  }
+                                />
+                              </label>
+                            )}
+                            <div className="flex">
+                              <button
+                                aria-label={`Move ${field.name} left`}
+                                className="rounded px-1.5 py-1 text-slate-500 hover:bg-slate-800 hover:text-sky-300 disabled:opacity-30"
+                                disabled={index === 0}
+                                onClick={() => moveField(field.id, -1)}
+                                type="button"
+                              >
+                                ←
+                              </button>
+                              <button
+                                aria-label={`Move ${field.name} right`}
+                                className="rounded px-1.5 py-1 text-slate-500 hover:bg-slate-800 hover:text-sky-300 disabled:opacity-30"
+                                disabled={index === orderedFields.length - 1}
+                                onClick={() => moveField(field.id, 1)}
+                                type="button"
+                              >
+                                →
+                              </button>
+                            </div>
+                          </div>
                         );
                       })}
                     </div>
@@ -1827,10 +2262,19 @@ export function DataPage({ user }: { user: User }) {
                   </div>
                 )}
                 {!recordsLoading && (
-                  <table className="w-full min-w-[880px] border-separate border-spacing-0 text-left text-sm">
+                  <table className="w-full min-w-[880px] table-fixed border-separate border-spacing-0 text-left text-sm">
                     <caption className="sr-only">
                       Editable spreadsheet view for {selected.pluralName}
                     </caption>
+                    <colgroup>
+                      <col className="w-20" />
+                      <col className="w-52" />
+                      {visibleFields.map((field) => (
+                        <col key={field.id} style={{ width: fieldWidths[field.id] ?? 176 }} />
+                      ))}
+                      <col className="w-28" />
+                      <col className="w-20" />
+                    </colgroup>
                     <thead className="sticky top-0 z-20 bg-slate-900 text-xs uppercase tracking-wider text-slate-500">
                       <tr>
                         <th className="w-20 border-b border-r border-slate-800 px-3 py-3">
@@ -1861,12 +2305,15 @@ export function DataPage({ user }: { user: User }) {
                         </th>
                         {visibleFields.map((field) => (
                           <th
-                            className="min-w-44 border-b border-r border-slate-800 px-3 py-3"
+                            className="border-b border-r border-slate-800 px-3 py-3"
                             key={field.id}
+                            style={{ width: fieldWidths[field.id] ?? 176 }}
                           >
-                            {field.name}
-                            <span className="ml-2 font-normal normal-case text-slate-600">
-                              {field.fieldType}
+                            <span className="block truncate">
+                              {field.name}
+                              <span className="ml-2 font-normal normal-case text-slate-600">
+                                {field.fieldType}
+                              </span>
                             </span>
                           </th>
                         ))}
