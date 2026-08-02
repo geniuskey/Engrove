@@ -41,6 +41,12 @@ const recordViewConfig = z
     fieldWidths: z
       .record(id, z.number().int().min(80).max(800))
       .refine((widths) => Object.keys(widths).length <= 200),
+    systemFieldWidths: z
+      .record(
+        z.enum(['displayName', 'contextProject', 'updatedAt']),
+        z.number().int().min(80).max(800),
+      )
+      .optional(),
     filters: z.array(recordFilter).max(20),
     sorts: z.array(recordSort).max(5),
     rowDensity: z.enum(['compact', 'comfortable']),

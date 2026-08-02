@@ -130,6 +130,7 @@ export interface RecordQueryResult {
 export interface RecordViewConfig {
   visibleFieldIds: string[];
   fieldWidths: Record<string, number>;
+  systemFieldWidths?: Partial<Record<'displayName' | 'contextProject' | 'updatedAt', number>>;
   filters: RecordFilter[];
   sorts: RecordSort[];
   rowDensity: 'compact' | 'comfortable';

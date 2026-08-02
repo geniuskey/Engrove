@@ -95,6 +95,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const method = init.method ?? 'GET';
   const response = await fetch(`${apiBase}/api/v1${path}`, {
     ...init,
+    signal: init.signal ?? AbortSignal.timeout(15_000),
     credentials: 'include',
     headers: {
       ...(init.body ? { 'content-type': 'application/json' } : {}),
@@ -132,12 +133,15 @@ function useAsyncList<T>(load: () => Promise<{ items: T[] }>, dependencies: unkn
 }
 
 export function ApiStatus() {
+  const { t } = useI18n();
   const [state, setState] = useState<'loading' | 'available' | 'unavailable'>('loading');
   const [version, setVersion] = useState('');
   const check = useCallback(async () => {
     setState('loading');
     try {
-      const response = await fetch(`${apiBase}/health/ready`);
+      const response = await fetch(`${apiBase}/health/ready`, {
+        signal: AbortSignal.timeout(10_000),
+      });
       if (!response.ok) throw new Error('not ready');
       const health = (await response.json()) as HealthResponse;
       setVersion(health.version);
@@ -149,19 +153,25 @@ export function ApiStatus() {
   useEffect(() => void check(), [check]);
 
   return (
-    <div aria-live="polite" className="mt-8 rounded-xl border border-slate-800 bg-slate-900/70 p-4">
-      {state === 'loading' && <p className="text-sm text-slate-400">Checking the API…</p>}
+    <div
+      aria-live="polite"
+      className="mt-6 rounded-xl border border-slate-800/80 bg-slate-950/45 p-3.5"
+    >
+      {state === 'loading' && <p className="text-sm text-slate-400">{t('auth.apiChecking')}</p>}
       {state === 'available' && (
-        <p className="text-sm text-emerald-300">API ready · version {version}</p>
+        <p className="flex items-center gap-2 text-sm text-emerald-300">
+          <span aria-hidden="true" className="status-dot size-1.5 rounded-full bg-emerald-400" />
+          {t('auth.apiReady', { version })}
+        </p>
       )}
       {state === 'unavailable' && (
         <div className="flex items-center justify-between gap-4">
           <div>
-            <p className="font-medium text-amber-300">API unavailable</p>
-            <p className="text-sm text-slate-400">Start the local stack, then retry.</p>
+            <p className="font-medium text-amber-300">{t('auth.apiUnavailable')}</p>
+            <p className="text-sm text-slate-400">{t('auth.apiUnavailableHint')}</p>
           </div>
           <Button variant="quiet" onClick={() => void check()}>
-            Retry
+            {t('common.retry')}
           </Button>
         </div>
       )}
@@ -170,30 +180,78 @@ export function ApiStatus() {
 }
 
 function AuthCard({ title, children }: PropsWithChildren<{ title: string }>) {
+  const { t } = useI18n();
+  const strengths = [
+    ['01', t('auth.evidenceTitle'), t('auth.evidenceBody')],
+    ['02', t('auth.unitsTitle'), t('auth.unitsBody')],
+    ['03', t('auth.operationsTitle'), t('auth.operationsBody')],
+  ] as const;
   return (
-    <main className="relative isolate flex min-h-screen items-center overflow-hidden px-5 py-12 text-slate-100 sm:px-6">
+    <main className="relative isolate min-h-screen overflow-hidden px-5 py-8 text-slate-100 sm:px-8 lg:grid lg:place-items-center">
+      <div aria-hidden="true" className="product-grid absolute inset-0 -z-20" />
       <div
         aria-hidden="true"
-        className="absolute inset-x-0 top-0 -z-10 mx-auto h-96 max-w-5xl rounded-full bg-sky-500/10 blur-3xl"
+        className="absolute -left-32 top-10 -z-10 size-[34rem] rounded-full bg-cyan-500/10 blur-3xl"
       />
-      <div className="mx-auto w-full max-w-md">
-        <Link to="/" className="inline-flex items-center gap-3 text-slate-100">
-          <span className="grid size-10 place-items-center rounded-xl border border-sky-300/30 bg-gradient-to-br from-sky-300 to-cyan-500 font-mono text-sm font-bold text-slate-950 shadow-lg shadow-sky-950/40">
-            E
-          </span>
-          <span>
-            <span className="block font-semibold tracking-tight">Engrove</span>
-            <span className="block font-mono text-[10px] uppercase tracking-[0.2em] text-sky-400">
-              Community
-            </span>
-          </span>
-        </Link>
-        <h1 className="mt-10 text-3xl font-semibold tracking-tight">{title}</h1>
-        <p className="mt-2 text-sm text-slate-400">Your traceable engineering workspace.</p>
-        <div className="mt-6 rounded-2xl border border-slate-700/70 bg-slate-900/75 p-6 shadow-2xl shadow-slate-950/40 backdrop-blur-xl">
-          {children}
-        </div>
-        <ApiStatus />
+      <div className="mx-auto grid w-full max-w-6xl overflow-hidden rounded-3xl border border-slate-800/80 bg-slate-950/55 shadow-2xl shadow-slate-950/25 backdrop-blur-xl lg:grid-cols-[1.15fr_0.85fr]">
+        <section className="relative hidden min-h-[600px] overflow-hidden border-r border-slate-800/80 p-10 lg:flex lg:flex-col lg:justify-between">
+          <div
+            aria-hidden="true"
+            className="absolute -right-40 -top-24 size-96 rounded-full bg-sky-400/10 blur-3xl"
+          />
+          <div>
+            <Link to="/" className="relative inline-flex items-center gap-3 text-slate-100">
+              <span className="grid size-10 place-items-center rounded-xl bg-gradient-to-br from-sky-300 to-cyan-500 font-mono text-sm font-black text-[#082f49] shadow-lg shadow-sky-950/30">
+                E
+              </span>
+              <span>
+                <span className="block font-semibold tracking-tight">Engrove</span>
+                <span className="block font-mono text-[10px] uppercase tracking-[0.2em] text-sky-400">
+                  Community
+                </span>
+              </span>
+            </Link>
+            <p className="mt-20 max-w-xl break-keep text-4xl font-semibold leading-tight tracking-[-0.035em] xl:text-5xl">
+              {t('auth.promise')}
+            </p>
+            <p className="mt-5 font-mono text-xs uppercase tracking-[0.16em] text-sky-400">
+              {t('auth.flow')}
+            </p>
+          </div>
+          <div className="relative grid gap-3">
+            {strengths.map(([number, heading, body]) => (
+              <div
+                className="grid grid-cols-[2rem_1fr] gap-3 rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4"
+                key={number}
+              >
+                <span className="font-mono text-xs text-sky-400">{number}</span>
+                <span>
+                  <strong className="block text-sm text-slate-200">{heading}</strong>
+                  <span className="mt-1 block text-xs leading-relaxed text-slate-500">{body}</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+        <section className="flex min-h-[600px] items-center p-6 sm:p-10 lg:p-12">
+          <div className="mx-auto w-full max-w-md">
+            <Link to="/" className="inline-flex items-center gap-3 text-slate-100 lg:hidden">
+              <span className="grid size-10 place-items-center rounded-xl bg-gradient-to-br from-sky-300 to-cyan-500 font-mono text-sm font-black text-[#082f49]">
+                E
+              </span>
+              <span className="font-semibold">Engrove</span>
+            </Link>
+            <p className="mt-10 font-mono text-[10px] uppercase tracking-[0.2em] text-sky-400 lg:mt-0">
+              Engrove Community
+            </p>
+            <h1 className="mt-3 text-3xl font-semibold tracking-tight">{title}</h1>
+            <p className="mt-2 text-sm text-slate-400">{t('auth.promise')}</p>
+            <div className="mt-7 rounded-2xl border border-slate-700/70 bg-slate-900/55 p-5 shadow-xl shadow-slate-950/15 sm:p-6">
+              {children}
+            </div>
+            <ApiStatus />
+          </div>
+        </section>
       </div>
     </main>
   );
@@ -202,16 +260,27 @@ function AuthCard({ title, children }: PropsWithChildren<{ title: string }>) {
 export const inputClass =
   'mt-1 min-h-8 w-full rounded-lg border border-slate-700/80 bg-slate-950/80 px-2.5 py-1.5 text-sm text-slate-100 shadow-sm outline-none transition placeholder:text-slate-600 hover:border-slate-600 focus:border-sky-400 focus:ring-2 focus:ring-sky-400/15 disabled:cursor-not-allowed disabled:opacity-50';
 
-function Field({ label, name, type = 'text' }: { label: string; name: string; type?: string }) {
+function Field({
+  autoComplete,
+  label,
+  name,
+  type = 'text',
+}: {
+  autoComplete?: string;
+  label: string;
+  name: string;
+  type?: string;
+}) {
   return (
     <label className="block text-sm text-slate-300">
       {label}
-      <input className={inputClass} required name={name} type={type} />
+      <input autoComplete={autoComplete} className={inputClass} required name={name} type={type} />
     </label>
   );
 }
 
 function SetupPage() {
+  const { t } = useI18n();
   const [search] = useSearchParams();
   const navigate = useNavigate();
   const [message, setMessage] = useState('');
@@ -234,7 +303,7 @@ function SetupPage() {
     }
   }
   return (
-    <AuthCard title="Create the first Owner">
+    <AuthCard title={t('auth.setup')}>
       <form className="space-y-4" onSubmit={(event) => void submit(event)}>
         <label className="block text-sm text-slate-300">
           Setup token
@@ -258,8 +327,10 @@ function SetupPage() {
 }
 
 function SignInPage({ onSignedIn }: { onSignedIn: (user: User) => void }) {
+  const { t } = useI18n();
   const navigate = useNavigate();
   const [message, setMessage] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   const [oidcEnabled, setOidcEnabled] = useState(false);
   useEffect(() => {
     void api<{ enabled: boolean }>('/auth/oidc/status')
@@ -269,6 +340,7 @@ function SignInPage({ onSignedIn }: { onSignedIn: (user: User) => void }) {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
+    setSubmitting(true);
     try {
       const result = await api<{ user: User }>('/auth/sign-in', {
         method: 'POST',
@@ -278,10 +350,12 @@ function SignInPage({ onSignedIn }: { onSignedIn: (user: User) => void }) {
       navigate('/workspaces', { replace: true });
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : 'Sign in failed.');
+    } finally {
+      setSubmitting(false);
     }
   }
   return (
-    <AuthCard title="Sign in">
+    <AuthCard title={t('auth.signIn')}>
       <form className="space-y-4" onSubmit={(event) => void submit(event)}>
         {oidcEnabled && (
           <a
@@ -291,11 +365,16 @@ function SignInPage({ onSignedIn }: { onSignedIn: (user: User) => void }) {
             Sign in with OpenID Connect
           </a>
         )}
-        <Field label="Email" name="email" type="email" />
-        <Field label="Password" name="password" type="password" />
+        <Field autoComplete="email" label={t('auth.email')} name="email" type="email" />
+        <Field
+          autoComplete="current-password"
+          label={t('auth.password')}
+          name="password"
+          type="password"
+        />
         {message && <p className="text-sm text-rose-300">{message}</p>}
-        <Button className="w-full" type="submit">
-          Sign in
+        <Button className="w-full" disabled={submitting} type="submit">
+          {submitting ? t('auth.signingIn') : t('auth.signIn')}
         </Button>
       </form>
     </AuthCard>
@@ -303,6 +382,7 @@ function SignInPage({ onSignedIn }: { onSignedIn: (user: User) => void }) {
 }
 
 function TokenPasswordPage({ invitation }: { invitation: boolean }) {
+  const { t } = useI18n();
   const [search] = useSearchParams();
   const navigate = useNavigate();
   const [message, setMessage] = useState('');
@@ -324,7 +404,7 @@ function TokenPasswordPage({ invitation }: { invitation: boolean }) {
     }
   }
   return (
-    <AuthCard title={invitation ? 'Accept invitation' : 'Reset password'}>
+    <AuthCard title={invitation ? t('auth.acceptInvitation') : t('auth.resetPassword')}>
       <form className="space-y-4" onSubmit={(event) => void submit(event)}>
         <label className="block text-sm text-slate-300">
           Token
@@ -382,7 +462,11 @@ function WorkspacesPage({ user }: { user: User }) {
     try {
       await api('/workspaces', {
         method: 'POST',
-        body: JSON.stringify({ name: data.get('name'), slug: data.get('slug'), description: '' }),
+        body: JSON.stringify({
+          name: data.get('name'),
+          slug: data.get('slug'),
+          description: data.get('description'),
+        }),
       });
       form.reset();
       await refresh();
@@ -402,7 +486,13 @@ function WorkspacesPage({ user }: { user: User }) {
         <p className="mt-3 text-slate-400">{t('workspaces.description')}</p>
       </div>
       <ErrorText>{error}</ErrorText>
-      <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      <div className="mt-7 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-2xl border border-slate-800/80 bg-slate-900/35 px-4 py-3 text-xs text-slate-400">
+        <strong className="text-slate-200">{t('workspaces.count', { count: items.length })}</strong>
+        <span>◆ {t('workspaces.traceable')}</span>
+        <span>◇ {t('workspaces.engineeringReady')}</span>
+        <span>⌂ {t('workspaces.selfHosted')}</span>
+      </div>
+      <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {items.map((workspace) => (
           <Link
             className="group rounded-2xl border border-slate-800/90 bg-slate-900/60 p-6 shadow-lg shadow-slate-950/15 hover:-translate-y-0.5 hover:border-sky-500/60 hover:bg-slate-900/90"
@@ -447,6 +537,14 @@ function WorkspacesPage({ user }: { user: User }) {
               <input className={inputClass} name="slug" placeholder="materials-rd" required />
             </label>
           </div>
+          <label className="mt-4 block text-sm text-slate-300">
+            {t('workspaces.descriptionLabel')}
+            <textarea
+              className={`${inputClass} min-h-20 resize-y`}
+              name="description"
+              placeholder={t('workspaces.descriptionPlaceholder')}
+            />
+          </label>
           <Button className="mt-5" type="submit">
             {t('workspaces.create')}
           </Button>
@@ -585,7 +683,14 @@ function WorkspaceDataPage({ user }: { user: User }) {
         </Button>
       </div>
     );
-  if (!context) return <p className="text-sm text-slate-400">Opening workspace data…</p>;
+  if (!context)
+    return (
+      <div aria-label="Opening workspace data" className="animate-pulse space-y-3 p-2">
+        <div className="h-8 w-52 rounded-lg bg-slate-800/80" />
+        <div className="h-10 rounded-xl bg-slate-900/70" />
+        <div className="h-64 rounded-2xl border border-slate-800 bg-slate-900/35" />
+      </div>
+    );
   return <DataPage user={user} workspaceData={context} />;
 }
 
@@ -1190,7 +1295,14 @@ function AppContent() {
 
   if (state === 'loading') {
     return (
-      <main className="min-h-screen bg-slate-950 p-10 text-slate-300">{t('app.loading')}</main>
+      <main className="product-grid grid min-h-screen place-items-center bg-slate-950 p-10 text-slate-300">
+        <div className="text-center">
+          <span className="mx-auto grid size-12 animate-pulse place-items-center rounded-2xl bg-gradient-to-br from-sky-300 to-cyan-500 font-mono font-black text-[#082f49]">
+            E
+          </span>
+          <p className="mt-4 text-sm text-slate-400">{t('app.loading')}</p>
+        </div>
+      </main>
     );
   }
 
@@ -1225,7 +1337,7 @@ function AppContent() {
           </select>
           <button
             aria-label={t('sidebar.switchTheme', {
-              theme: theme === 'dark' ? 'light' : 'dark',
+              theme: t(theme === 'dark' ? 'theme.light' : 'theme.dark'),
             })}
             className="fixed right-4 top-4 z-[80] grid size-9 place-items-center rounded-lg border border-slate-700 bg-slate-900 text-slate-300 shadow-sm"
             onClick={toggleTheme}
@@ -1240,12 +1352,16 @@ function AppContent() {
         <Route
           path="/sign-in"
           element={
-            <SignInPage
-              onSignedIn={(next) => {
-                setUser(next);
-                setState('signed-in');
-              }}
-            />
+            state === 'signed-in' ? (
+              <Navigate replace to="/workspaces" />
+            ) : (
+              <SignInPage
+                onSignedIn={(next) => {
+                  setUser(next);
+                  setState('signed-in');
+                }}
+              />
+            )
           }
         />
         <Route path="/accept-invitation" element={<TokenPasswordPage invitation />} />

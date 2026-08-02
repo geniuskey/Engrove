@@ -309,9 +309,58 @@ describe('DataPage', () => {
     fireEvent.click(serialVisibility);
     expect(screen.getByRole('columnheader', { name: /Serial/ })).toBeInTheDocument();
 
+    const serialOrderHandle = screen.getByRole('button', {
+      name: 'Reorder Serial column',
+    });
+    fireEvent.keyDown(serialOrderHandle, { key: 'ArrowRight' });
+    let customHeaderNames = screen
+      .getAllByRole('columnheader')
+      .map((header) => header.getAttribute('aria-label'));
+    expect(customHeaderNames.indexOf('State')).toBeLessThan(customHeaderNames.indexOf('Serial'));
+    expect(screen.getByText('Serial moved next to State')).toHaveClass('sr-only');
+    fireEvent.keyDown(serialOrderHandle, { key: 'ArrowLeft' });
+    customHeaderNames = screen
+      .getAllByRole('columnheader')
+      .map((header) => header.getAttribute('aria-label'));
+    expect(customHeaderNames.indexOf('Serial')).toBeLessThan(customHeaderNames.indexOf('State'));
+
+    const serialResizeHandle = screen.getByRole('separator', {
+      name: 'Resize Serial column',
+    });
+    fireEvent.pointerDown(serialResizeHandle, { button: 0, clientX: 200, pointerId: 1 });
+    expect(document.body).toHaveStyle({ cursor: 'col-resize', userSelect: 'none' });
+    fireEvent.pointerMove(serialResizeHandle, { clientX: 264, pointerId: 1 });
+    fireEvent.pointerUp(serialResizeHandle, { clientX: 264, pointerId: 1 });
+    expect(document.body.style.cursor).toBe('');
+    expect(serialResizeHandle).toHaveAttribute('aria-valuenow', '240');
+    expect(screen.getByText('Serial width: 240 pixels')).toHaveClass('sr-only');
+    expect(
+      document.querySelector('col[data-column-id="019fbcf9-e020-71da-935a-6a6a728b3794"]'),
+    ).toHaveStyle({ width: '240px' });
+
+    fireEvent.keyDown(serialResizeHandle, { key: 'ArrowRight' });
+    expect(serialResizeHandle).toHaveAttribute('aria-valuenow', '248');
+    fireEvent.doubleClick(serialResizeHandle);
+    expect(serialResizeHandle).toHaveAttribute('aria-valuenow', '176');
     fireEvent.change(screen.getByRole('slider', { name: 'Serial column width' }), {
       target: { value: '240' },
     });
+    fireEvent.click(screen.getByRole('button', { name: /Reset widths/ }));
+    expect(serialResizeHandle).toHaveAttribute('aria-valuenow', '176');
+    fireEvent.change(screen.getByRole('slider', { name: 'Serial column width' }), {
+      target: { value: '240' },
+    });
+    await waitFor(() =>
+      expect(
+        JSON.parse(
+          window.localStorage.getItem(
+            'engrove:table-layout:019fbcf9-e020-71da-935a-6a6a728b3700:019fbcf9-e020-71da-935a-6a6a728b3701:019fbcf9-e020-71da-935a-6a6a728b3792',
+          ) ?? '{}',
+        ),
+      ).toMatchObject({
+        fieldWidths: { '019fbcf9-e020-71da-935a-6a6a728b3794': 240 },
+      }),
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Create view' }));
     fireEvent.change(screen.getByRole('textbox', { name: 'View name' }), {
       target: { value: 'Review queue' },

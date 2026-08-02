@@ -265,11 +265,38 @@ test('filters and edits project context while preserving legacy engineering data
   await page.goto(`/workspaces/${workspaceId}/data`);
 
   await expect(page.getByRole('heading', { name: 'Workspace data' })).toBeVisible();
+  expect(
+    await page.getByRole('button', { name: 'New record' }).evaluate((element) => {
+      return getComputedStyle(element).backgroundColor;
+    }),
+  ).not.toBe('rgba(0, 0, 0, 0)');
   await expect(page.getByRole('link', { name: 'Legacy evidence' })).toHaveAttribute(
     'href',
     `/workspaces/${workspaceId}/projects/${legacyProjectId}/data`,
   );
   await expect(page.getByRole('columnheader', { name: 'Project' })).toBeVisible();
+
+  const stateResizeHandle = page.getByRole('separator', { name: 'Resize State column' });
+  await expect(stateResizeHandle).toHaveAttribute('aria-valuenow', '176');
+  const resizeBox = await stateResizeHandle.boundingBox();
+  expect(resizeBox).not.toBeNull();
+  await page.mouse.move(resizeBox!.x + resizeBox!.width / 2, resizeBox!.y + resizeBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(
+    resizeBox!.x + resizeBox!.width / 2 + 64,
+    resizeBox!.y + resizeBox!.height / 2,
+  );
+  await page.mouse.up();
+  await expect(stateResizeHandle).toHaveAttribute('aria-valuenow', '240');
+
+  const stateOrderHandle = page.getByRole('button', { name: 'Reorder State column' });
+  const scheduledHeader = page.getByRole('columnheader', { name: 'Scheduled' });
+  await stateOrderHandle.dragTo(scheduledHeader);
+  const stateHeaderBox = await page.getByRole('columnheader', { name: 'State' }).boundingBox();
+  const scheduledHeaderBox = await scheduledHeader.boundingBox();
+  expect(stateHeaderBox).not.toBeNull();
+  expect(scheduledHeaderBox).not.toBeNull();
+  expect(scheduledHeaderBox!.x).toBeLessThan(stateHeaderBox!.x);
 
   await page.getByRole('combobox', { name: 'Project filter' }).selectOption(linkedProjectId);
   await expect

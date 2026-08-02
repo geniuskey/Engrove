@@ -31,7 +31,7 @@ describe('App', () => {
     render(<ApiStatus />);
     expect(await screen.findByText('API unavailable')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    expect(await screen.findByText(/API ready/)).toBeInTheDocument();
+    expect(await screen.findByText(/All systems ready/)).toBeInTheDocument();
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
   });
 

@@ -2,7 +2,9 @@ import { Button } from '@engrove/ui';
 import {
   type FocusEvent,
   type FormEvent,
+  type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -112,6 +114,7 @@ type RecordViewType = 'grid' | 'form' | 'gallery' | 'kanban' | 'calendar';
 interface RecordViewConfig {
   visibleFieldIds: string[];
   fieldWidths: Record<string, number>;
+  systemFieldWidths?: Partial<Record<SystemFieldWidthKey, number>>;
   filters: Array<{
     fieldId: string;
     operator: string;
@@ -129,6 +132,195 @@ interface RecordViewConfig {
     dateFieldId?: string;
     contextProjectId?: string | null;
   };
+}
+
+type SystemFieldWidthKey = 'displayName' | 'contextProject' | 'updatedAt';
+
+const DEFAULT_FIELD_WIDTH = 176;
+const DEFAULT_SYSTEM_FIELD_WIDTHS: Record<SystemFieldWidthKey, number> = {
+  displayName: 208,
+  contextProject: 192,
+  updatedAt: 112,
+};
+const MIN_COLUMN_WIDTH = 100;
+const MAX_COLUMN_WIDTH = 480;
+const COLUMN_KEYBOARD_STEP = 8;
+
+interface TableLayoutPreference {
+  fieldOrderIds: string[];
+  hiddenFieldIds: string[];
+  fieldWidths: Record<string, number>;
+  systemFieldWidths: Partial<Record<SystemFieldWidthKey, number>>;
+}
+
+function clampColumnWidth(width: number) {
+  return Math.min(MAX_COLUMN_WIDTH, Math.max(MIN_COLUMN_WIDTH, Math.round(width)));
+}
+
+function readTableLayoutPreference(
+  key: string,
+  fields: FieldDefinition[],
+): TableLayoutPreference | undefined {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return undefined;
+    const parsed = JSON.parse(raw) as Partial<TableLayoutPreference>;
+    const validIds = new Set(fields.map((field) => field.id));
+    const preferredOrder = Array.isArray(parsed.fieldOrderIds)
+      ? [
+          ...new Set(
+            parsed.fieldOrderIds.filter(
+              (fieldId): fieldId is string => typeof fieldId === 'string' && validIds.has(fieldId),
+            ),
+          ),
+        ]
+      : [];
+    const orderedSet = new Set(preferredOrder);
+    const fieldOrderIds = [
+      ...preferredOrder,
+      ...fields.map((field) => field.id).filter((fieldId) => !orderedSet.has(fieldId)),
+    ];
+    const hiddenFieldIds = Array.isArray(parsed.hiddenFieldIds)
+      ? parsed.hiddenFieldIds.filter(
+          (fieldId): fieldId is string => typeof fieldId === 'string' && validIds.has(fieldId),
+        )
+      : [];
+    const fieldWidths = Object.fromEntries(
+      Object.entries(parsed.fieldWidths ?? {}).flatMap(([fieldId, width]) =>
+        validIds.has(fieldId) && typeof width === 'number' && Number.isFinite(width)
+          ? [[fieldId, clampColumnWidth(width)]]
+          : [],
+      ),
+    );
+    const systemFieldWidths = Object.fromEntries(
+      (Object.keys(DEFAULT_SYSTEM_FIELD_WIDTHS) as SystemFieldWidthKey[]).flatMap((fieldId) => {
+        const width = parsed.systemFieldWidths?.[fieldId];
+        return typeof width === 'number' && Number.isFinite(width)
+          ? [[fieldId, clampColumnWidth(width)]]
+          : [];
+      }),
+    );
+    return { fieldOrderIds, hiddenFieldIds, fieldWidths, systemFieldWidths };
+  } catch {
+    return undefined;
+  }
+}
+
+function ColumnResizeHandle({
+  columnName,
+  resetWidth,
+  width,
+  onResize,
+  onReset,
+}: {
+  columnName: string;
+  resetWidth: number;
+  width: number;
+  onResize: (width: number) => void;
+  onReset: () => void;
+}) {
+  const { t } = useI18n();
+  const drag = useRef<
+    { pointerId: number; startX: number; startWidth: number; lastWidth: number } | undefined
+  >(undefined);
+  const [dragging, setDragging] = useState(false);
+  const [announcement, setAnnouncement] = useState('');
+
+  useEffect(() => {
+    if (!dragging) return;
+    const bodyCursor = document.body.style.cursor;
+    const bodyUserSelect = document.body.style.userSelect;
+    const rootCursor = document.documentElement.style.cursor;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    document.documentElement.style.cursor = 'col-resize';
+    return () => {
+      document.body.style.cursor = bodyCursor;
+      document.body.style.userSelect = bodyUserSelect;
+      document.documentElement.style.cursor = rootCursor;
+    };
+  }, [dragging]);
+
+  function finishDrag(event: ReactPointerEvent<HTMLSpanElement>) {
+    if (drag.current?.pointerId !== event.pointerId) return;
+    const finalWidth = drag.current.lastWidth;
+    drag.current = undefined;
+    setDragging(false);
+    setAnnouncement(t('data.widthChanged', { column: columnName, width: finalWidth }));
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }
+
+  return (
+    <span
+      aria-label={t('data.resizeColumn', { column: columnName })}
+      aria-orientation="vertical"
+      aria-valuemax={MAX_COLUMN_WIDTH}
+      aria-valuemin={MIN_COLUMN_WIDTH}
+      aria-valuenow={width}
+      aria-valuetext={`${width} px`}
+      className={`group absolute -right-1.5 inset-y-0 z-40 flex w-3 cursor-col-resize touch-none select-none items-center justify-center outline-none ${dragging ? 'bg-sky-500/10' : ''}`}
+      role="separator"
+      tabIndex={0}
+      title={t('data.resizeColumnHint')}
+      onDoubleClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onReset();
+        setAnnouncement(t('data.widthChanged', { column: columnName, width: resetWidth }));
+      }}
+      onKeyDown={(event) => {
+        let nextWidth: number | undefined;
+        if (event.key === 'ArrowLeft') nextWidth = width - COLUMN_KEYBOARD_STEP;
+        if (event.key === 'ArrowRight') nextWidth = width + COLUMN_KEYBOARD_STEP;
+        if (event.key === 'Home') nextWidth = MIN_COLUMN_WIDTH;
+        if (event.key === 'End') nextWidth = MAX_COLUMN_WIDTH;
+        if (nextWidth === undefined) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const clampedWidth = clampColumnWidth(nextWidth);
+        onResize(clampedWidth);
+        setAnnouncement(t('data.widthChanged', { column: columnName, width: clampedWidth }));
+      }}
+      onLostPointerCapture={() => {
+        drag.current = undefined;
+        setDragging(false);
+      }}
+      onPointerCancel={finishDrag}
+      onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        drag.current = {
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startWidth: width,
+          lastWidth: width,
+        };
+        setDragging(true);
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+      }}
+      onPointerMove={(event) => {
+        if (!drag.current || drag.current.pointerId !== event.pointerId) return;
+        event.preventDefault();
+        const nextWidth = clampColumnWidth(
+          drag.current.startWidth + event.clientX - drag.current.startX,
+        );
+        drag.current.lastWidth = nextWidth;
+        onResize(nextWidth);
+      }}
+      onPointerUp={finishDrag}
+    >
+      <span
+        aria-hidden="true"
+        className={`h-full w-px transition-colors ${dragging ? 'bg-sky-400' : 'bg-transparent group-hover:bg-sky-400 group-focus:bg-sky-400'}`}
+      />
+      <span aria-live="polite" className="sr-only">
+        {announcement}
+      </span>
+    </span>
+  );
 }
 
 interface RecordView {
@@ -1713,6 +1905,15 @@ export function DataPage({
   const [hiddenFieldIds, setHiddenFieldIds] = useState<Set<string>>(() => new Set());
   const [fieldOrderIds, setFieldOrderIds] = useState<string[]>([]);
   const [fieldWidths, setFieldWidths] = useState<Record<string, number>>({});
+  const [systemFieldWidths, setSystemFieldWidths] = useState<
+    Partial<Record<SystemFieldWidthKey, number>>
+  >({});
+  const [draggedFieldId, setDraggedFieldId] = useState('');
+  const [dragTarget, setDragTarget] = useState<{
+    fieldId: string;
+    position: 'before' | 'after';
+  }>();
+  const [layoutAnnouncement, setLayoutAnnouncement] = useState('');
   const [rowDensity, setRowDensity] = useState<'compact' | 'comfortable'>('compact');
   const [selectedRows, setSelectedRows] = useState<Set<string>>(() => new Set());
   const [selectedRecord, setSelectedRecord] = useState<DynamicRecord>();
@@ -1732,12 +1933,14 @@ export function DataPage({
   const [csvResult, setCsvResult] = useState<CsvResult>();
   const appliedViewKey = useRef('');
   const pendingViewId = useRef('');
+  const layoutPreferenceReadyKey = useRef('');
   const recordsRequestId = useRef(0);
   const sidebarPortal = useServiceSidebarPortal();
   const selectedId = search.get('type') ?? objectTypes[0]?.id ?? '';
   const selectedViewId = search.get('view') ?? 'all';
   const selected = objectTypes.find((objectType) => objectType.id === selectedId);
   const selectedView = views.find((view) => view.id === selectedViewId);
+  const layoutPreferenceKey = `engrove:table-layout:${workspaceId}:${projectId}:${selectedId}`;
   const activeViewType = selectedView?.viewType ?? 'grid';
   const kanbanField = fields.find(
     (field) => field.id === selectedView?.config.viewOptions?.groupFieldId,
@@ -1763,6 +1966,24 @@ export function DataPage({
   const visibleFields = useMemo(
     () => orderedFields.filter((field) => !hiddenFieldIds.has(field.id)),
     [hiddenFieldIds, orderedFields],
+  );
+  const displayNameWidth = systemFieldWidths.displayName ?? DEFAULT_SYSTEM_FIELD_WIDTHS.displayName;
+  const contextProjectWidth =
+    systemFieldWidths.contextProject ?? DEFAULT_SYSTEM_FIELD_WIDTHS.contextProject;
+  const updatedAtWidth = systemFieldWidths.updatedAt ?? DEFAULT_SYSTEM_FIELD_WIDTHS.updatedAt;
+  const adjustedWidthCount =
+    Object.keys(fieldWidths).length + Object.keys(systemFieldWidths).length;
+  const gridTableWidth = Math.max(
+    880,
+    80 +
+      displayNameWidth +
+      (workspaceMode ? contextProjectWidth : 0) +
+      visibleFields.reduce(
+        (total, field) => total + (fieldWidths[field.id] ?? DEFAULT_FIELD_WIDTH),
+        0,
+      ) +
+      updatedAtWidth +
+      80,
   );
   const hiddenRequiredFields = useMemo(
     () =>
@@ -1809,6 +2030,7 @@ export function DataPage({
     return {
       visibleFieldIds: visibleFields.map((field) => field.id),
       fieldWidths: widths,
+      ...(Object.keys(systemFieldWidths).length ? { systemFieldWidths } : {}),
       filters:
         filterField && (filterOperator === 'is_null' || filterValue)
           ? [
@@ -1836,6 +2058,7 @@ export function DataPage({
     selectedView?.config.viewOptions,
     sortDirection,
     sortField,
+    systemFieldWidths,
     visibleFields,
     workspaceMode,
   ]);
@@ -1860,9 +2083,12 @@ export function DataPage({
     (config?: RecordViewConfig) => {
       const validFieldIds = new Set(fields.map((field) => field.id));
       if (!config) {
-        setFieldOrderIds(fields.map((field) => field.id));
-        setHiddenFieldIds(new Set());
-        setFieldWidths({});
+        const preference = readTableLayoutPreference(layoutPreferenceKey, fields);
+        setFieldOrderIds(preference?.fieldOrderIds ?? fields.map((field) => field.id));
+        setHiddenFieldIds(new Set(preference?.hiddenFieldIds ?? []));
+        setFieldWidths(preference?.fieldWidths ?? {});
+        setSystemFieldWidths(preference?.systemFieldWidths ?? {});
+        layoutPreferenceReadyKey.current = layoutPreferenceKey;
         setFilterField('');
         setFilterOperator('eq');
         setFilterValue('');
@@ -1875,6 +2101,7 @@ export function DataPage({
         return;
       }
       const visibleIds = config.visibleFieldIds.filter((fieldId) => validFieldIds.has(fieldId));
+      layoutPreferenceReadyKey.current = '';
       const visibleSet = new Set(visibleIds);
       setFieldOrderIds([
         ...visibleIds,
@@ -1889,6 +2116,7 @@ export function DataPage({
           Object.entries(config.fieldWidths).filter(([fieldId]) => validFieldIds.has(fieldId)),
         ),
       );
+      setSystemFieldWidths(config.systemFieldWidths ?? {});
       const filter = config.filters[0];
       setFilterField(filter?.fieldId && validFieldIds.has(filter.fieldId) ? filter.fieldId : '');
       setFilterOperator(filter?.operator ?? 'eq');
@@ -1907,8 +2135,38 @@ export function DataPage({
       );
       setPage(1);
     },
-    [fields],
+    [fields, layoutPreferenceKey],
   );
+
+  useEffect(() => {
+    if (
+      !selectedId ||
+      selectedViewId !== 'all' ||
+      layoutPreferenceReadyKey.current !== layoutPreferenceKey
+    )
+      return;
+    try {
+      window.localStorage.setItem(
+        layoutPreferenceKey,
+        JSON.stringify({
+          fieldOrderIds,
+          hiddenFieldIds: [...hiddenFieldIds],
+          fieldWidths,
+          systemFieldWidths,
+        } satisfies TableLayoutPreference),
+      );
+    } catch {
+      // Local preferences are optional; table editing must continue if storage is unavailable.
+    }
+  }, [
+    fieldOrderIds,
+    fieldWidths,
+    hiddenFieldIds,
+    layoutPreferenceKey,
+    selectedId,
+    selectedViewId,
+    systemFieldWidths,
+  ]);
 
   const loadTypes = useCallback(async () => {
     setTypesLoading(true);
@@ -1975,6 +2233,9 @@ export function DataPage({
     setDebouncedSearchValue('');
     setContextProjectFilter('all');
     setContextObjectTypeId('');
+    setDraggedFieldId('');
+    setDragTarget(undefined);
+    setLayoutAnnouncement('');
     appliedViewKey.current = '';
     pendingViewId.current = '';
   }, [selectedId]);
@@ -2389,6 +2650,10 @@ export function DataPage({
   }
 
   function moveField(fieldId: string, direction: -1 | 1) {
+    const currentIndex = orderedFields.findIndex((field) => field.id === fieldId);
+    const targetField = orderedFields[currentIndex + direction];
+    const movingField = orderedFields[currentIndex];
+    if (!movingField || !targetField) return;
     setFieldOrderIds((current) => {
       const order = current.length ? [...current] : fields.map((field) => field.id);
       const index = order.indexOf(fieldId);
@@ -2397,6 +2662,33 @@ export function DataPage({
       [order[index], order[target]] = [order[target]!, order[index]!];
       return order;
     });
+    setLayoutAnnouncement(
+      t('data.columnMoved', { column: movingField.name, target: targetField.name }),
+    );
+  }
+
+  function reorderField(
+    sourceFieldId: string,
+    targetFieldId: string,
+    position: 'before' | 'after',
+  ) {
+    if (sourceFieldId === targetFieldId) return;
+    const sourceField = fields.find((field) => field.id === sourceFieldId);
+    const targetField = fields.find((field) => field.id === targetFieldId);
+    if (!sourceField || !targetField) return;
+    setFieldOrderIds((current) => {
+      const order = current.length ? [...current] : fields.map((field) => field.id);
+      const sourceIndex = order.indexOf(sourceFieldId);
+      if (sourceIndex < 0) return order;
+      order.splice(sourceIndex, 1);
+      const targetIndex = order.indexOf(targetFieldId);
+      if (targetIndex < 0) return order;
+      order.splice(targetIndex + (position === 'after' ? 1 : 0), 0, sourceFieldId);
+      return order;
+    });
+    setLayoutAnnouncement(
+      t('data.columnMoved', { column: sourceField.name, target: targetField.name }),
+    );
   }
 
   async function createView(event: FormEvent<HTMLFormElement>) {
@@ -2887,8 +3179,27 @@ export function DataPage({
 
       <section className="min-w-0 bg-slate-950/20 p-2.5">
         {!selected ? (
-          <div className="rounded-2xl border border-dashed border-slate-700 p-10 text-center text-slate-400">
-            Choose or create an object type.
+          <div className="relative isolate overflow-hidden rounded-2xl border border-dashed border-slate-700 p-10 text-center">
+            <div aria-hidden="true" className="product-grid absolute inset-0 -z-10 opacity-60" />
+            <span className="mx-auto grid size-12 place-items-center rounded-2xl border border-sky-400/20 bg-sky-400/10 text-xl text-sky-300">
+              ▦
+            </span>
+            <h2 className="mt-5 text-xl font-semibold text-slate-200">{t('data.emptyTitle')}</h2>
+            <p className="mx-auto mt-2 max-w-xl text-sm leading-relaxed text-slate-500">
+              {t('data.emptyBody')}
+            </p>
+            <div className="mx-auto mt-5 flex max-w-2xl flex-wrap justify-center gap-2 text-xs text-slate-400">
+              {['Typed fields', 'Saved views', 'CSV import & export', 'Audit history'].map(
+                (capability) => (
+                  <span
+                    className="rounded-full border border-slate-800 bg-slate-900/60 px-3 py-1.5"
+                    key={capability}
+                  >
+                    {capability}
+                  </span>
+                ),
+              )}
+            </div>
           </div>
         ) : (
           <>
@@ -3184,15 +3495,32 @@ export function DataPage({
                         hidden: hiddenFieldIds.size,
                       })}
                     </p>
-                    {hiddenFieldIds.size > 0 && (
-                      <button
-                        className="rounded-md px-2 py-1 text-xs font-medium text-sky-300 hover:bg-sky-500/10"
-                        onClick={() => setHiddenFieldIds(new Set())}
-                        type="button"
-                      >
-                        {t('data.showAllColumns')}
-                      </button>
-                    )}
+                    <div className="flex items-center gap-1">
+                      {adjustedWidthCount > 0 && (
+                        <button
+                          className="rounded-md px-2 py-1 text-xs font-medium text-slate-400 hover:bg-slate-800 hover:text-sky-300"
+                          onClick={() => {
+                            setFieldWidths({});
+                            setSystemFieldWidths({});
+                          }}
+                          type="button"
+                        >
+                          {t('data.resetWidths')}
+                          <span className="ml-1 text-[10px] text-slate-600">
+                            {adjustedWidthCount}
+                          </span>
+                        </button>
+                      )}
+                      {hiddenFieldIds.size > 0 && (
+                        <button
+                          className="rounded-md px-2 py-1 text-xs font-medium text-sky-300 hover:bg-sky-500/10"
+                          onClick={() => setHiddenFieldIds(new Set())}
+                          type="button"
+                        >
+                          {t('data.showAllColumns')}
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <div className="grid gap-2 xl:grid-cols-2">
                     {orderedFields.map((field, index) => {
@@ -3219,16 +3547,16 @@ export function DataPage({
                             <span className="truncate">{field.name}</span>
                           </label>
                           {visible && (
-                            <label className="flex items-center gap-1 text-[10px] text-slate-500">
-                              Width
+                            <label className="flex items-center gap-1.5 text-[10px] text-slate-500">
+                              <span>{t('data.width')}</span>
                               <input
-                                aria-label={`${field.name} column width`}
+                                aria-label={t('data.columnWidth', { column: field.name })}
                                 className="w-20 accent-sky-500"
-                                max="480"
-                                min="100"
-                                step="8"
+                                max={MAX_COLUMN_WIDTH}
+                                min={MIN_COLUMN_WIDTH}
+                                step={COLUMN_KEYBOARD_STEP}
                                 type="range"
-                                value={fieldWidths[field.id] ?? 176}
+                                value={fieldWidths[field.id] ?? DEFAULT_FIELD_WIDTH}
                                 onChange={(event) =>
                                   setFieldWidths((current) => ({
                                     ...current,
@@ -3236,6 +3564,9 @@ export function DataPage({
                                   }))
                                 }
                               />
+                              <output className="w-9 text-right font-mono text-slate-400">
+                                {fieldWidths[field.id] ?? DEFAULT_FIELD_WIDTH}px
+                              </output>
                             </label>
                           )}
                           <div className="flex">
@@ -3394,6 +3725,9 @@ export function DataPage({
             </div>
 
             <div className="mt-1.5 max-w-full overflow-x-auto rounded-md border border-slate-800">
+              <p aria-live="polite" className="sr-only">
+                {layoutAnnouncement}
+              </p>
               {recordsLoading && (
                 <div className="space-y-3 p-5" aria-label="Loading records">
                   <div className="h-10 animate-pulse rounded bg-slate-900" />
@@ -3402,18 +3736,25 @@ export function DataPage({
                 </div>
               )}
               {!recordsLoading && activeViewType === 'grid' && (
-                <table className="w-full min-w-[880px] table-fixed border-separate border-spacing-0 text-left text-sm">
+                <table
+                  className="min-w-full table-fixed border-separate border-spacing-0 text-left text-sm"
+                  style={{ width: gridTableWidth }}
+                >
                   <caption className="sr-only">
                     Editable spreadsheet view for {selected.pluralName}
                   </caption>
                   <colgroup>
                     <col className="w-20" />
-                    <col className="w-52" />
-                    {workspaceMode && <col className="w-48" />}
+                    <col style={{ width: displayNameWidth }} />
+                    {workspaceMode && <col style={{ width: contextProjectWidth }} />}
                     {visibleFields.map((field) => (
-                      <col key={field.id} style={{ width: fieldWidths[field.id] ?? 176 }} />
+                      <col
+                        data-column-id={field.id}
+                        key={field.id}
+                        style={{ width: fieldWidths[field.id] ?? DEFAULT_FIELD_WIDTH }}
+                      />
                     ))}
-                    <col className="w-28" />
+                    <col style={{ width: updatedAtWidth }} />
                     <col className="w-20" />
                   </colgroup>
                   <thead className="sticky top-0 z-20 bg-slate-900 text-xs uppercase tracking-wider text-slate-500">
@@ -3441,7 +3782,11 @@ export function DataPage({
                           #
                         </span>
                       </th>
-                      <th className="sticky left-0 z-30 min-w-52 border-b border-r border-slate-800 bg-slate-900 px-1.5 py-1">
+                      <th
+                        aria-label={t('data.name')}
+                        className="sticky left-0 z-30 border-b border-r border-slate-800 bg-slate-900 px-1.5 py-1"
+                        style={{ width: displayNameWidth }}
+                      >
                         <button
                           aria-label={t('data.sortByColumn', { column: t('data.name') })}
                           className="flex w-full items-center rounded px-1 py-1 text-left hover:bg-slate-800"
@@ -3456,19 +3801,108 @@ export function DataPage({
                             </span>
                           )}
                         </button>
+                        <ColumnResizeHandle
+                          columnName={t('data.name')}
+                          resetWidth={DEFAULT_SYSTEM_FIELD_WIDTHS.displayName}
+                          width={displayNameWidth}
+                          onResize={(width) =>
+                            setSystemFieldWidths((current) => ({
+                              ...current,
+                              displayName: width,
+                            }))
+                          }
+                          onReset={() =>
+                            setSystemFieldWidths((current) => {
+                              const next = { ...current };
+                              delete next.displayName;
+                              return next;
+                            })
+                          }
+                        />
                       </th>
                       {workspaceMode && (
-                        <th className="min-w-48 border-b border-r border-slate-800 px-2.5 py-2">
+                        <th
+                          aria-label={t('data.project')}
+                          className="relative border-b border-r border-slate-800 px-2.5 py-2"
+                          style={{ width: contextProjectWidth }}
+                        >
                           {t('data.project')}
+                          <ColumnResizeHandle
+                            columnName={t('data.project')}
+                            resetWidth={DEFAULT_SYSTEM_FIELD_WIDTHS.contextProject}
+                            width={contextProjectWidth}
+                            onResize={(width) =>
+                              setSystemFieldWidths((current) => ({
+                                ...current,
+                                contextProject: width,
+                              }))
+                            }
+                            onReset={() =>
+                              setSystemFieldWidths((current) => {
+                                const next = { ...current };
+                                delete next.contextProject;
+                                return next;
+                              })
+                            }
+                          />
                         </th>
                       )}
                       {visibleFields.map((field) => (
                         <th
-                          className="border-b border-r border-slate-800 px-1.5 py-1"
+                          aria-label={field.name}
+                          className={`relative border-b border-r border-slate-800 px-1.5 py-1 ${dragTarget?.fieldId === field.id ? (dragTarget.position === 'before' ? 'border-l-2 border-l-sky-400' : 'border-r-2 border-r-sky-400') : ''}`}
                           key={field.id}
-                          style={{ width: fieldWidths[field.id] ?? 176 }}
+                          style={{ width: fieldWidths[field.id] ?? DEFAULT_FIELD_WIDTH }}
+                          onDragOver={(event: ReactDragEvent<HTMLTableCellElement>) => {
+                            if (!draggedFieldId || draggedFieldId === field.id) return;
+                            event.preventDefault();
+                            event.dataTransfer.dropEffect = 'move';
+                            const bounds = event.currentTarget.getBoundingClientRect();
+                            setDragTarget({
+                              fieldId: field.id,
+                              position:
+                                event.clientX < bounds.left + bounds.width / 2 ? 'before' : 'after',
+                            });
+                          }}
+                          onDrop={(event: ReactDragEvent<HTMLTableCellElement>) => {
+                            if (!draggedFieldId || draggedFieldId === field.id) return;
+                            event.preventDefault();
+                            const bounds = event.currentTarget.getBoundingClientRect();
+                            reorderField(
+                              draggedFieldId,
+                              field.id,
+                              event.clientX < bounds.left + bounds.width / 2 ? 'before' : 'after',
+                            );
+                            setDraggedFieldId('');
+                            setDragTarget(undefined);
+                          }}
                         >
                           <div className="flex min-w-0 items-center gap-1">
+                            <span
+                              aria-label={t('data.reorderColumn', { column: field.name })}
+                              className="shrink-0 cursor-grab rounded px-0.5 py-1 text-sm leading-none text-slate-600 hover:bg-slate-800 hover:text-sky-300 active:cursor-grabbing"
+                              draggable
+                              role="button"
+                              tabIndex={0}
+                              title={t('data.reorderColumnHint')}
+                              onDragEnd={() => {
+                                setDraggedFieldId('');
+                                setDragTarget(undefined);
+                              }}
+                              onDragStart={(event: ReactDragEvent<HTMLSpanElement>) => {
+                                event.dataTransfer.effectAllowed = 'move';
+                                event.dataTransfer.setData('text/plain', field.id);
+                                setDraggedFieldId(field.id);
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+                                event.preventDefault();
+                                event.stopPropagation();
+                                moveField(field.id, event.key === 'ArrowLeft' ? -1 : 1);
+                              }}
+                            >
+                              ⠿
+                            </span>
                             <button
                               aria-label={t('data.sortByColumn', { column: field.name })}
                               className="flex min-w-0 flex-1 items-center rounded px-1 py-1 text-left hover:bg-slate-800"
@@ -3589,9 +4023,28 @@ export function DataPage({
                               </div>
                             </details>
                           </div>
+                          <ColumnResizeHandle
+                            columnName={field.name}
+                            resetWidth={DEFAULT_FIELD_WIDTH}
+                            width={fieldWidths[field.id] ?? DEFAULT_FIELD_WIDTH}
+                            onResize={(width) =>
+                              setFieldWidths((current) => ({ ...current, [field.id]: width }))
+                            }
+                            onReset={() =>
+                              setFieldWidths((current) => {
+                                const next = { ...current };
+                                delete next[field.id];
+                                return next;
+                              })
+                            }
+                          />
                         </th>
                       ))}
-                      <th className="min-w-28 border-b border-r border-slate-800 px-1.5 py-1">
+                      <th
+                        aria-label={t('data.updated')}
+                        className="relative border-b border-r border-slate-800 px-1.5 py-1"
+                        style={{ width: updatedAtWidth }}
+                      >
                         <button
                           aria-label={t('data.sortByColumn', { column: t('data.updated') })}
                           className="flex w-full items-center rounded px-1 py-1 text-left hover:bg-slate-800"
@@ -3606,6 +4059,24 @@ export function DataPage({
                             </span>
                           )}
                         </button>
+                        <ColumnResizeHandle
+                          columnName={t('data.updated')}
+                          resetWidth={DEFAULT_SYSTEM_FIELD_WIDTHS.updatedAt}
+                          width={updatedAtWidth}
+                          onResize={(width) =>
+                            setSystemFieldWidths((current) => ({
+                              ...current,
+                              updatedAt: width,
+                            }))
+                          }
+                          onReset={() =>
+                            setSystemFieldWidths((current) => {
+                              const next = { ...current };
+                              delete next.updatedAt;
+                              return next;
+                            })
+                          }
+                        />
                       </th>
                       <th className="w-20 border-b border-slate-800 px-2.5 py-2">
                         {t('data.detail')}
@@ -3870,9 +4341,17 @@ export function DataPage({
                 activeViewType !== 'form' &&
                 records.items.length === 0 &&
                 !showInlineRecord && (
-                  <p className="p-10 text-center text-slate-400">
-                    No matching records. Create the first one or adjust the filter.
-                  </p>
+                  <div className="p-10 text-center">
+                    <span className="mx-auto grid size-10 place-items-center rounded-xl bg-sky-400/10 text-sky-300">
+                      ＋
+                    </span>
+                    <h3 className="mt-4 font-semibold text-slate-200">
+                      {t('data.emptyRecordsTitle')}
+                    </h3>
+                    <p className="mx-auto mt-1 max-w-xl text-sm text-slate-500">
+                      {t('data.emptyRecordsBody')}
+                    </p>
+                  </div>
                 )}
             </div>
             <div className="mt-2 flex items-center justify-between text-xs text-slate-400">
