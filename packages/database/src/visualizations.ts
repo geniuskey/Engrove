@@ -17,9 +17,17 @@ export interface ChartSourceInput {
 }
 
 export interface DashboardCardInput {
-  cardType: 'chart' | 'kpi' | 'specification_status' | 'recent_dataset' | 'overdue_task';
+  cardType:
+    | 'chart'
+    | 'kpi'
+    | 'specification_status'
+    | 'recent_dataset'
+    | 'overdue_task'
+    | 'record_kpi'
+    | 'record_chart'
+    | 'record_list';
   chartRevisionId?: string | undefined;
-  configVersion: 1;
+  configVersion: 1 | 2;
   config: Record<string, unknown>;
   x: number;
   y: number;
@@ -479,6 +487,74 @@ export class ScopedVisualizationRepository {
             404,
             'Pinned chart revision was not found.',
           );
+      }
+      if (['record_kpi', 'record_chart', 'record_list'].includes(card.cardType)) {
+        const config = card.config as {
+          source?: {
+            objectTypeId?: string;
+            viewId?: string;
+            filters?: Array<{ fieldId?: string }>;
+            sorts?: Array<{ fieldId?: string }>;
+          };
+          groupByFieldId?: string;
+          columns?: Array<{ fieldId?: string }>;
+        };
+        const objectTypeId = config.source?.objectTypeId;
+        const objectType = await client.query(
+          'select 1 from object_types where project_id=$1 and id=$2',
+          [this.scope.projectId, objectTypeId],
+        );
+        if (!objectType.rowCount)
+          throw new RepositoryError(
+            'DASHBOARD_RECORD_SOURCE_NOT_FOUND',
+            404,
+            'A dashboard record source was not found.',
+          );
+        if (config.source?.viewId) {
+          const view = await client.query(
+            'select 1 from record_views where project_id=$1 and object_type_id=$2 and id=$3 and archived_at is null',
+            [this.scope.projectId, objectTypeId, config.source.viewId],
+          );
+          if (!view.rowCount)
+            throw new RepositoryError(
+              'DASHBOARD_RECORD_VIEW_NOT_FOUND',
+              404,
+              'A dashboard source view was not found.',
+            );
+        }
+        const referencedFieldIds = new Set([
+          ...(config.source?.filters ?? []).flatMap((filter) =>
+            filter.fieldId ? [filter.fieldId] : [],
+          ),
+          ...(config.source?.sorts ?? []).flatMap((sort) => (sort.fieldId ? [sort.fieldId] : [])),
+          ...(config.groupByFieldId ? [config.groupByFieldId] : []),
+          ...(config.columns ?? []).flatMap((column) => (column.fieldId ? [column.fieldId] : [])),
+        ]);
+        if (referencedFieldIds.size) {
+          const found = await client.query<{ id: string; field_type: string }>(
+            'select id,field_type from field_definitions where project_id=$1 and object_type_id=$2 and id=any($3::uuid[])',
+            [this.scope.projectId, objectTypeId, [...referencedFieldIds]],
+          );
+          if (found.rowCount !== referencedFieldIds.size)
+            throw new RepositoryError(
+              'DASHBOARD_RECORD_FIELD_NOT_FOUND',
+              404,
+              'A dashboard card references a field outside its source table.',
+            );
+          const groupField = found.rows.find((field) => field.id === config.groupByFieldId);
+          if (
+            card.cardType === 'record_chart' &&
+            (!groupField ||
+              !['single_select', 'multi_select', 'boolean', 'date', 'datetime'].includes(
+                groupField.field_type,
+              ))
+          )
+            throw new RepositoryError(
+              'DASHBOARD_GROUP_FIELD_UNSUPPORTED',
+              400,
+              'Dashboard charts require a select, boolean, or date grouping field.',
+            );
+        }
       }
     }
   }

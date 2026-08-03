@@ -180,6 +180,32 @@ const cardBase = {
   height: z.number().int().min(1).max(12),
   position: z.number().int().min(0).max(100),
 };
+const recordFilter = z
+  .object({
+    fieldId: id,
+    operator: z.enum(['eq', 'ne', 'contains', 'gt', 'gte', 'lt', 'lte', 'in', 'is_null']),
+    value: z.unknown().optional(),
+  })
+  .strict();
+const recordSort = z
+  .object({
+    fieldId: id.optional(),
+    systemField: z.enum(['displayName', 'createdAt', 'updatedAt']).optional(),
+    direction: z.enum(['asc', 'desc']),
+  })
+  .strict()
+  .refine((sort) => Number(Boolean(sort.fieldId)) + Number(Boolean(sort.systemField)) === 1);
+const recordSource = z
+  .object({
+    objectTypeId: id,
+    tableName: safeText,
+    viewId: id.optional(),
+    viewName: safeText.optional(),
+    filters: z.array(recordFilter).max(20),
+    sorts: z.array(recordSort).max(5),
+  })
+  .strict();
+const recordColumn = z.object({ fieldId: id, key, label: safeText }).strict();
 const card = z.discriminatedUnion('cardType', [
   z
     .object({
@@ -220,6 +246,50 @@ const card = z.discriminatedUnion('cardType', [
       ...cardBase,
       cardType: z.literal('overdue_task'),
       config: z.object({ title: safeText }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...cardBase,
+      cardType: z.literal('record_kpi'),
+      configVersion: z.literal(2),
+      config: z
+        .object({ title: safeText, source: recordSource, metric: z.literal('count') })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...cardBase,
+      cardType: z.literal('record_chart'),
+      configVersion: z.literal(2),
+      config: z
+        .object({
+          title: safeText,
+          source: recordSource,
+          groupByFieldId: id,
+          groupByLabel: safeText,
+          groupLabels: z
+            .record(z.string().max(200), safeText)
+            .refine((labels) => Object.keys(labels).length <= 100),
+          chartType: z.enum(['bar', 'donut']),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...cardBase,
+      cardType: z.literal('record_list'),
+      configVersion: z.literal(2),
+      config: z
+        .object({
+          title: safeText,
+          source: recordSource,
+          columns: z.array(recordColumn).max(6),
+          limit: z.number().int().min(1).max(20),
+        })
+        .strict(),
     })
     .strict(),
 ]);

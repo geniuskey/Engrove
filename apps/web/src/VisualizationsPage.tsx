@@ -1,5 +1,5 @@
 import { Button } from '@engrove/ui';
-import { BarChart, BoxplotChart, LineChart, ScatterChart } from 'echarts/charts';
+import { BarChart, BoxplotChart, LineChart, PieChart, ScatterChart } from 'echarts/charts';
 import {
   GridComponent,
   LegendComponent,
@@ -9,7 +9,15 @@ import {
 import * as echarts from 'echarts/core';
 import { SVGRenderer } from 'echarts/renderers';
 import type { EChartsOption } from 'echarts';
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  type CSSProperties,
+  type FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Link, useParams } from 'react-router';
 import { allowed, api, ErrorText, inputClass, type User } from './App.js';
 
@@ -17,6 +25,7 @@ echarts.use([
   BarChart,
   BoxplotChart,
   LineChart,
+  PieChart,
   ScatterChart,
   GridComponent,
   LegendComponent,
@@ -123,12 +132,80 @@ interface DashboardCard {
   id: string;
   card_type: string;
   chart_revision_id: string | null;
-  config: { title?: string; metric?: string };
+  config: DashboardCardConfig;
   x: number;
   y: number;
   width: number;
   height: number;
   position: number;
+}
+
+interface ObjectType {
+  id: string;
+  name: string;
+  pluralName: string;
+}
+interface RecordField {
+  id: string;
+  name: string;
+  key: string;
+  fieldType: string;
+  projectionStatus: string;
+  config: { options?: Array<{ key: string; label: string }> };
+}
+interface RecordViewConfig {
+  visibleFieldIds: string[];
+  filters: Array<{ fieldId: string; operator: string; value?: unknown }>;
+  sorts: Array<{
+    fieldId?: string;
+    systemField?: 'displayName' | 'createdAt' | 'updatedAt';
+    direction: 'asc' | 'desc';
+  }>;
+}
+interface RecordView {
+  id: string;
+  name: string;
+  viewType: string;
+  config: RecordViewConfig;
+}
+interface RecordSourceConfig {
+  objectTypeId: string;
+  tableName: string;
+  viewId?: string;
+  viewName?: string;
+  filters: RecordViewConfig['filters'];
+  sorts: RecordViewConfig['sorts'];
+}
+interface RecordKpiConfig {
+  title: string;
+  source: RecordSourceConfig;
+  metric: 'count';
+}
+interface RecordChartConfig {
+  title: string;
+  source: RecordSourceConfig;
+  groupByFieldId: string;
+  groupByLabel: string;
+  groupLabels: Record<string, string>;
+  chartType: 'bar' | 'donut';
+}
+interface RecordListConfig {
+  title: string;
+  source: RecordSourceConfig;
+  columns: Array<{ fieldId: string; key: string; label: string }>;
+  limit: number;
+}
+type DashboardCardConfig =
+  { title?: string; metric?: string } | RecordKpiConfig | RecordChartConfig | RecordListConfig;
+interface DynamicRecord {
+  id: string;
+  displayName: string;
+  values: Record<string, unknown>;
+}
+interface RecordQueryResult {
+  items: DynamicRecord[];
+  total: number;
+  groups?: Array<{ value: string | null; count: number }>;
 }
 interface Dashboard {
   id: string;
@@ -365,6 +442,186 @@ function ChartView({
   );
 }
 
+function displayRecordValue(value: unknown) {
+  if (value === null || value === undefined || value === '') return '—';
+  if (Array.isArray(value)) return value.map(String).join(', ');
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+function RecordCardView({ base, card }: { base: string; card: DashboardCard }) {
+  const config = card.config as RecordKpiConfig | RecordChartConfig | RecordListConfig;
+  const [result, setResult] = useState<RecordQueryResult>();
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    void api<RecordQueryResult>(
+      `${base}/object-types/${config.source.objectTypeId}/records/query`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          filters: config.source.filters,
+          sorts: config.source.sorts,
+          page: 1,
+          pageSize: card.card_type === 'record_list' ? (config as RecordListConfig).limit : 1,
+          ...(card.card_type === 'record_chart'
+            ? { groupByFieldId: (config as RecordChartConfig).groupByFieldId }
+            : {}),
+        }),
+      },
+    )
+      .then((response) => {
+        if (!active) return;
+        setResult(response);
+        setError('');
+      })
+      .catch((cause: unknown) => {
+        if (!active) return;
+        setError(cause instanceof Error ? cause.message : 'Card data could not be loaded.');
+        setResult(undefined);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [base, card.card_type, config]);
+
+  if (loading) return <div className="mt-4 h-16 animate-pulse rounded-lg bg-slate-800/70" />;
+  if (error)
+    return (
+      <p className="mt-4 rounded-lg border border-rose-500/20 bg-rose-500/5 p-3 text-xs text-rose-300">
+        {error}
+      </p>
+    );
+  if (card.card_type === 'record_kpi')
+    return (
+      <div className="mt-3">
+        <p className="text-4xl font-semibold tracking-tight text-sky-300">
+          {result?.total.toLocaleString() ?? '—'}
+        </p>
+        <p className="mt-1 text-xs text-slate-500">
+          {(config as RecordKpiConfig).source.tableName}
+          {(config as RecordKpiConfig).source.viewName
+            ? ` · ${(config as RecordKpiConfig).source.viewName}`
+            : ''}
+        </p>
+      </div>
+    );
+  if (card.card_type === 'record_chart') {
+    const chart = config as RecordChartConfig;
+    const groups = result?.groups ?? [];
+    const data = groups.map((group) => ({
+      name: group.value === null ? 'Empty' : (chart.groupLabels[group.value] ?? group.value),
+      value: group.count,
+    }));
+    const option: EChartsOption =
+      chart.chartType === 'donut'
+        ? {
+            tooltip: { trigger: 'item' },
+            legend: { bottom: 0 },
+            series: [
+              {
+                type: 'pie',
+                radius: ['45%', '72%'],
+                avoidLabelOverlap: true,
+                data,
+              },
+            ],
+          }
+        : {
+            tooltip: { trigger: 'axis' },
+            grid: { left: 40, right: 16, top: 16, bottom: 50 },
+            xAxis: {
+              type: 'category',
+              name: chart.groupByLabel,
+              data: data.map((item) => item.name),
+              axisLabel: { interval: 0, rotate: data.length > 5 ? 25 : 0 },
+            },
+            yAxis: { type: 'value', minInterval: 1 },
+            series: [{ type: 'bar', data: data.map((item) => item.value) }],
+          };
+    return data.length ? (
+      <EChart option={option} />
+    ) : (
+      <p className="mt-4 text-sm text-slate-500">No grouped records match this card.</p>
+    );
+  }
+  const list = config as RecordListConfig;
+  return (
+    <div className="mt-3 overflow-x-auto">
+      <table className="w-full text-left text-xs">
+        <thead className="text-slate-500">
+          <tr>
+            <th className="border-b border-slate-800 px-2 py-2 font-medium">Name</th>
+            {list.columns.map((column) => (
+              <th className="border-b border-slate-800 px-2 py-2 font-medium" key={column.fieldId}>
+                {column.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {(result?.items ?? []).map((record) => (
+            <tr key={record.id}>
+              <td className="border-b border-slate-800/70 px-2 py-2 font-medium text-slate-200">
+                {record.displayName}
+              </td>
+              {list.columns.map((column) => (
+                <td
+                  className="max-w-56 truncate border-b border-slate-800/70 px-2 py-2 text-slate-400"
+                  key={column.fieldId}
+                >
+                  {displayRecordValue(record.values[column.key])}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {!result?.items.length && <p className="p-3 text-sm text-slate-500">No records found.</p>}
+      {(result?.total ?? 0) > list.limit && (
+        <p className="mt-2 text-right text-[11px] text-slate-500">
+          Showing {list.limit} of {result?.total.toLocaleString()}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function dashboardCardInput(card: DashboardCard) {
+  return {
+    cardType: card.card_type,
+    ...(card.chart_revision_id ? { chartRevisionId: card.chart_revision_id } : {}),
+    configVersion: ['record_kpi', 'record_chart', 'record_list'].includes(card.card_type) ? 2 : 1,
+    config: card.config,
+    x: card.x,
+    y: card.y,
+    width: card.width,
+    height: card.height,
+    position: card.position,
+  };
+}
+
+function nextCardPlacement(cards: DashboardCard[], width: number, height: number) {
+  for (let y = 0; y <= 1_000 - height; y += 1) {
+    for (let x = 0; x <= 12 - width; x += 1) {
+      const overlaps = cards.some(
+        (card) =>
+          x < card.x + card.width &&
+          x + width > card.x &&
+          y < card.y + card.height &&
+          y + height > card.y,
+      );
+      if (!overlaps) return { x, y };
+    }
+  }
+  throw new Error('The dashboard layout is full.');
+}
+
 export function VisualizationsPage({ user }: { user: User }) {
   const { workspaceId, projectId } = useParams();
   const base = `/workspaces/${workspaceId}/projects/${projectId}`;
@@ -374,6 +631,17 @@ export function VisualizationsPage({ user }: { user: User }) {
   const [metrics, setMetrics] = useState<Metrics>(),
     [message, setMessage] = useState(''),
     [selectedDashboard, setSelectedDashboard] = useState('');
+  const [recordTables, setRecordTables] = useState<ObjectType[]>([]);
+  const [recordFields, setRecordFields] = useState<RecordField[]>([]);
+  const [recordViews, setRecordViews] = useState<RecordView[]>([]);
+  const [recordSourceId, setRecordSourceId] = useState('');
+  const [recordViewId, setRecordViewId] = useState('');
+  const [recordCardType, setRecordCardType] = useState<
+    'record_kpi' | 'record_chart' | 'record_list'
+  >('record_kpi');
+  const [recordChartType, setRecordChartType] = useState<'bar' | 'donut'>('bar');
+  const [recordGroupFieldId, setRecordGroupFieldId] = useState('');
+  const [recordListFieldIds, setRecordListFieldIds] = useState<string[]>([]);
   const refresh = useCallback(async () => {
     try {
       const [d, c, b, m] = await Promise.all([
@@ -392,6 +660,60 @@ export function VisualizationsPage({ user }: { user: User }) {
     }
   }, [base]);
   useEffect(() => void refresh(), [refresh]);
+  useEffect(() => {
+    let active = true;
+    void api<{ items: ObjectType[] }>(`${base}/object-types`)
+      .then((response) => {
+        if (!active) return;
+        setRecordTables(response.items);
+        setRecordSourceId((current) => current || response.items[0]?.id || '');
+      })
+      .catch((cause: unknown) => {
+        if (active)
+          setMessage(cause instanceof Error ? cause.message : 'Record tables could not be loaded.');
+      });
+    return () => {
+      active = false;
+    };
+  }, [base]);
+  useEffect(() => {
+    if (!recordSourceId) {
+      setRecordFields([]);
+      setRecordViews([]);
+      return;
+    }
+    let active = true;
+    void Promise.all([
+      api<{ items: RecordField[] }>(`${base}/object-types/${recordSourceId}/fields`),
+      api<{ items: RecordView[] }>(`${base}/object-types/${recordSourceId}/views`),
+    ])
+      .then(([fieldResponse, viewResponse]) => {
+        if (!active) return;
+        const usableFields = fieldResponse.items.filter(
+          (field) =>
+            field.projectionStatus === 'ready' &&
+            !['measurement', 'range', 'file', 'dataset'].includes(field.fieldType),
+        );
+        setRecordFields(usableFields);
+        setRecordViews(viewResponse.items);
+        setRecordViewId('');
+        setRecordGroupFieldId(
+          usableFields.find((field) =>
+            ['single_select', 'multi_select', 'boolean', 'date', 'datetime'].includes(
+              field.fieldType,
+            ),
+          )?.id ?? '',
+        );
+        setRecordListFieldIds(usableFields.slice(0, 4).map((field) => field.id));
+      })
+      .catch((cause: unknown) => {
+        if (!active) return;
+        setMessage(cause instanceof Error ? cause.message : 'Table fields could not be loaded.');
+      });
+    return () => {
+      active = false;
+    };
+  }, [base, recordSourceId]);
   const xy = useMemo(
     () => datasets.filter((dataset) => dataset.status === 'ready' && dataset.dataset_type === 'xy'),
     [datasets],
@@ -408,6 +730,11 @@ export function VisualizationsPage({ user }: { user: User }) {
     [datasets],
   );
   const dashboard = dashboards.find((item) => item.id === selectedDashboard) ?? dashboards[0];
+  const selectedRecordTable = recordTables.find((item) => item.id === recordSourceId);
+  const selectedRecordView = recordViews.find((item) => item.id === recordViewId);
+  const recordGroupFields = recordFields.filter((field) =>
+    ['single_select', 'multi_select', 'boolean', 'date', 'datetime'].includes(field.fieldType),
+  );
   async function mutate(operation: () => Promise<unknown>) {
     try {
       await operation();
@@ -586,25 +913,106 @@ export function VisualizationsPage({ user }: { user: User }) {
           name: dashboard.name,
           description: dashboard.description,
           changeNote: 'Explicit layout publication',
-          cards: dashboard.cards.map((card) => ({
-            cardType: card.card_type,
-            ...(card.chart_revision_id ? { chartRevisionId: card.chart_revision_id } : {}),
-            configVersion: 1,
-            config: card.config,
-            x: card.x,
-            y: card.y,
-            width: card.width,
-            height: card.height,
-            position: card.position,
-          })),
+          cards: dashboard.cards.map(dashboardCardInput),
+        }),
+      }),
+    );
+  }
+  async function addRecordCard(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    if (!dashboard || !selectedRecordTable) {
+      setMessage('Create a dashboard and select a source table first.');
+      return;
+    }
+    const form = new FormData(formElement);
+    const title = String(form.get('title') ?? '').trim();
+    const source: RecordSourceConfig = {
+      objectTypeId: selectedRecordTable.id,
+      tableName: selectedRecordTable.pluralName,
+      ...(selectedRecordView
+        ? { viewId: selectedRecordView.id, viewName: selectedRecordView.name }
+        : {}),
+      filters: selectedRecordView?.config.filters ?? [],
+      sorts: selectedRecordView?.config.sorts ?? [
+        { systemField: 'updatedAt' as const, direction: 'desc' as const },
+      ],
+    };
+    const dimensions =
+      recordCardType === 'record_kpi'
+        ? { width: 4, height: 3 }
+        : recordCardType === 'record_chart'
+          ? { width: 6, height: 6 }
+          : { width: 12, height: 5 };
+    const placement = nextCardPlacement(dashboard.cards, dimensions.width, dimensions.height);
+    let config: RecordKpiConfig | RecordChartConfig | RecordListConfig;
+    if (recordCardType === 'record_kpi') {
+      config = { title, source, metric: 'count' };
+    } else if (recordCardType === 'record_chart') {
+      const groupField = recordFields.find((field) => field.id === recordGroupFieldId);
+      if (!groupField) {
+        setMessage('Select a field to group the chart by.');
+        return;
+      }
+      config = {
+        title,
+        source,
+        groupByFieldId: groupField.id,
+        groupByLabel: groupField.name,
+        groupLabels: Object.fromEntries(
+          (groupField.config.options ?? []).map((option) => [option.key, option.label]),
+        ),
+        chartType: recordChartType,
+      };
+    } else {
+      const columns = recordListFieldIds
+        .map((fieldId) => recordFields.find((field) => field.id === fieldId))
+        .filter((field): field is RecordField => Boolean(field))
+        .slice(0, 6)
+        .map((field) => ({ fieldId: field.id, key: field.key, label: field.name }));
+      config = { title, source, columns, limit: 10 };
+    }
+    await mutate(() =>
+      api(`${base}/dashboards/${dashboard.id}/revisions`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: dashboard.name,
+          description: dashboard.description,
+          changeNote: `Added ${title} from ${selectedRecordTable.pluralName}`,
+          cards: [
+            ...dashboard.cards.map(dashboardCardInput),
+            {
+              cardType: recordCardType,
+              configVersion: 2,
+              config,
+              ...placement,
+              ...dimensions,
+              position: Math.max(-1, ...dashboard.cards.map((card) => card.position)) + 1,
+            },
+          ],
+        }),
+      }),
+    );
+    formElement.reset();
+  }
+  async function removeDashboardCard(cardId: string) {
+    if (!dashboard) return;
+    await mutate(() =>
+      api(`${base}/dashboards/${dashboard.id}/revisions`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: dashboard.name,
+          description: dashboard.description,
+          changeNote: 'Removed a dashboard card',
+          cards: dashboard.cards.filter((card) => card.id !== cardId).map(dashboardCardInput),
         }),
       }),
     );
   }
   const metricValue = (card: DashboardCard) =>
-    card.config.metric === 'total_samples'
+    (card.config as { metric?: string }).metric === 'total_samples'
       ? metrics?.total_samples
-      : card.config.metric === 'pass_rate'
+      : (card.config as { metric?: string }).metric === 'pass_rate'
         ? metrics?.pass_rate === null
           ? '—'
           : `${metrics?.pass_rate}%`
@@ -770,20 +1178,162 @@ export function VisualizationsPage({ user }: { user: User }) {
             </button>
           )}
         </div>
-        {dashboard ? (
-          <div className="mt-5 grid grid-cols-12 gap-4">
-            {dashboard.cards.map((card) => (
-              <article
-                className="rounded-xl border border-slate-800 bg-slate-900/60 p-4"
-                key={card.id}
-                style={{
-                  gridColumn: `span ${card.width} / span ${card.width}`,
-                  minHeight: `${Math.max(8, card.height * 3)}rem`,
+        {dashboard && allowed(user, 'dashboard.manage') && (
+          <form
+            className="mt-5 rounded-2xl border border-slate-800 bg-slate-900/40 p-5"
+            onSubmit={(event) => void addRecordCard(event)}
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="font-semibold">Compose from record tables</h3>
+                <p className="mt-1 text-xs text-slate-500">
+                  Mix cards from different tables. Saved-view filters and sorts are pinned into the
+                  next dashboard revision.
+                </p>
+              </div>
+              <Button disabled={!recordTables.length} type="submit">
+                Add card
+              </Button>
+            </div>
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <input className={inputClass} name="title" placeholder="Card title" required />
+              <select
+                className={inputClass}
+                value={recordCardType}
+                onChange={(event) =>
+                  setRecordCardType(
+                    event.target.value as 'record_kpi' | 'record_chart' | 'record_list',
+                  )
+                }
+              >
+                <option value="record_kpi">Record count KPI</option>
+                <option value="record_chart">Grouped chart</option>
+                <option value="record_list">Record list</option>
+              </select>
+              <select
+                className={inputClass}
+                value={recordSourceId}
+                onChange={(event) => setRecordSourceId(event.target.value)}
+                required
+              >
+                <option value="">Select a source table</option>
+                {recordTables.map((table) => (
+                  <option key={table.id} value={table.id}>
+                    {table.pluralName}
+                  </option>
+                ))}
+              </select>
+              <select
+                className={inputClass}
+                value={recordViewId}
+                onChange={(event) => {
+                  const viewId = event.target.value;
+                  const view = recordViews.find((item) => item.id === viewId);
+                  setRecordViewId(viewId);
+                  if (view) {
+                    const visible = view.config.visibleFieldIds.filter((fieldId) =>
+                      recordFields.some((field) => field.id === fieldId),
+                    );
+                    if (visible.length) setRecordListFieldIds(visible.slice(0, 6));
+                  }
                 }}
               >
-                <h3 className="text-sm font-medium text-slate-300">{card.config.title}</h3>
+                <option value="">All records (no saved view)</option>
+                {recordViews.map((view) => (
+                  <option key={view.id} value={view.id}>
+                    {view.name} · {view.viewType}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {recordCardType === 'record_chart' && (
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                <select
+                  className={inputClass}
+                  value={recordChartType}
+                  onChange={(event) => setRecordChartType(event.target.value as 'bar' | 'donut')}
+                >
+                  <option value="bar">Bar chart</option>
+                  <option value="donut">Donut chart</option>
+                </select>
+                <select
+                  className={inputClass}
+                  value={recordGroupFieldId}
+                  onChange={(event) => setRecordGroupFieldId(event.target.value)}
+                  required
+                >
+                  <option value="">Group by field</option>
+                  {recordGroupFields.map((field) => (
+                    <option key={field.id} value={field.id}>
+                      {field.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {recordCardType === 'record_list' && (
+              <fieldset className="mt-3">
+                <legend className="text-xs font-medium text-slate-400">
+                  Visible columns · up to 6
+                </legend>
+                <div className="mt-2 flex max-h-28 flex-wrap gap-x-4 gap-y-2 overflow-auto">
+                  {recordFields.map((field) => {
+                    const checked = recordListFieldIds.includes(field.id);
+                    return (
+                      <label className="text-xs text-slate-300" key={field.id}>
+                        <input
+                          checked={checked}
+                          className="mr-2"
+                          disabled={!checked && recordListFieldIds.length >= 6}
+                          onChange={() =>
+                            setRecordListFieldIds((current) =>
+                              current.includes(field.id)
+                                ? current.filter((fieldId) => fieldId !== field.id)
+                                : [...current, field.id].slice(0, 6),
+                            )
+                          }
+                          type="checkbox"
+                        />
+                        {field.name}
+                      </label>
+                    );
+                  })}
+                </div>
+              </fieldset>
+            )}
+          </form>
+        )}
+        {dashboard ? (
+          <div className="dashboard-grid mt-5 grid grid-cols-12 gap-4">
+            {dashboard.cards.map((card) => (
+              <article
+                className="dashboard-card relative rounded-xl border border-slate-800 bg-slate-900/60 p-4"
+                key={card.id}
+                style={
+                  {
+                    '--dashboard-column': `${card.x + 1} / span ${card.width}`,
+                    '--dashboard-row': `${card.y + 1} / span ${card.height}`,
+                    '--dashboard-height': card.height,
+                  } as CSSProperties
+                }
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <h3 className="text-sm font-medium text-slate-300">{card.config.title}</h3>
+                  {allowed(user, 'dashboard.manage') && (
+                    <button
+                      aria-label={`Remove ${card.config.title ?? 'card'}`}
+                      className="text-xs text-slate-500 hover:text-rose-300"
+                      onClick={() => void removeDashboardCard(card.id)}
+                      type="button"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
                 {card.card_type === 'chart' && card.chart_revision_id ? (
                   <ChartView base={base} revisionId={card.chart_revision_id} />
+                ) : ['record_kpi', 'record_chart', 'record_list'].includes(card.card_type) ? (
+                  <RecordCardView base={base} card={card} />
                 ) : card.card_type === 'kpi' ? (
                   <p className="mt-4 text-4xl font-semibold text-sky-300">
                     {metricValue(card) ?? '—'}

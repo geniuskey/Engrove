@@ -177,6 +177,28 @@ a {
   scroll-margin: 7rem;
 }
 
+.dashboard-grid {
+  grid-auto-rows: auto;
+}
+
+.dashboard-card {
+  grid-column: 1 / -1;
+  grid-row: auto;
+  min-height: calc(var(--dashboard-height, 3) * 3rem);
+}
+
+@media (min-width: 48rem) {
+  .dashboard-grid {
+    grid-auto-rows: 3rem;
+  }
+
+  .dashboard-card {
+    grid-column: var(--dashboard-column);
+    grid-row: var(--dashboard-row);
+    min-height: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
