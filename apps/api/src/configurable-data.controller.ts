@@ -179,6 +179,29 @@ export class ConfigurableDataController {
     });
   }
 
+  @Patch('object-types/:objectTypeId/fields-order')
+  async reorderFields(
+    @Req() request: Request,
+    @Param('workspaceId') workspaceId: string,
+    @Param('projectId') projectId: string,
+    @Param('objectTypeId') objectTypeId: string,
+    @Body() unparsed: unknown,
+  ) {
+    const body = z
+      .object({ fieldIds: z.array(id).min(1).max(1_000) })
+      .strict()
+      .parse(unparsed);
+    return {
+      items: await (
+        await repository(request, workspaceId, projectId, 'schema.manage', true)
+      ).reorderFields({
+        objectTypeId: id.parse(objectTypeId),
+        fieldIds: body.fieldIds,
+        requestId: requestId(request),
+      }),
+    };
+  }
+
   @Patch('object-types/:objectTypeId/fields/:fieldId')
   async updateField(
     @Req() request: Request,

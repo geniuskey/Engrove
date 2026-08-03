@@ -1402,6 +1402,65 @@ export class ScopedProjectRepository {
     return result.rows.map(mapField);
   }
 
+  async reorderFields(input: {
+    objectTypeId: string;
+    fieldIds: string[];
+    requestId: string;
+  }): Promise<FieldDefinitionRow[]> {
+    return transaction(this.pool, async (client) => {
+      const objectType = await client.query(
+        'select 1 from object_types where project_id = $1 and id = $2 for update',
+        [this.scope.projectId, input.objectTypeId],
+      );
+      if (!objectType.rowCount) {
+        throw new RepositoryError('OBJECT_TYPE_NOT_FOUND', 404, 'Object type was not found.');
+      }
+      const current = await client.query<{ id: string }>(
+        `select id from field_definitions
+         where project_id = $1 and object_type_id = $2 order by position, id for update`,
+        [this.scope.projectId, input.objectTypeId],
+      );
+      const requested = new Set(input.fieldIds);
+      if (
+        requested.size !== input.fieldIds.length ||
+        current.rows.length !== input.fieldIds.length ||
+        current.rows.some((field) => !requested.has(field.id))
+      ) {
+        throw new RepositoryError(
+          'FIELD_ORDER_INVALID',
+          409,
+          'Field order must include every field exactly once.',
+        );
+      }
+      await client.query(
+        `update field_definitions as field
+         set position = (ordering.ordinality - 1)::integer, updated_at = now()
+         from unnest($3::uuid[]) with ordinality as ordering(id, ordinality)
+         where field.project_id = $1 and field.object_type_id = $2 and field.id = ordering.id`,
+        [this.scope.projectId, input.objectTypeId, input.fieldIds],
+      );
+      await appendAudit(
+        client,
+        this.audit({
+          actorId: this.scope.actor.actorId,
+          action: 'schema.fields_reordered',
+          targetType: 'object_type',
+          targetId: input.objectTypeId,
+          requestId: input.requestId,
+          payload: { fieldIds: input.fieldIds },
+        }),
+      );
+      const updated = await client.query<DbFieldRow>(
+        `select id, project_id, object_type_id, name, key, description, field_type, required,
+                "unique", position, config, default_value, system, projection_status, projection_version
+         from field_definitions where project_id = $1 and object_type_id = $2
+         order by position, id`,
+        [this.scope.projectId, input.objectTypeId],
+      );
+      return updated.rows.map(mapField);
+    });
+  }
+
   async createField(input: {
     objectTypeId: string;
     name: string;
@@ -1450,7 +1509,7 @@ export class ScopedProjectRepository {
     }
     return transaction(this.pool, async (client) => {
       const objectType = await client.query(
-        'select 1 from object_types where project_id = $1 and id = $2',
+        'select 1 from object_types where project_id = $1 and id = $2 for update',
         [this.scope.projectId, input.objectTypeId],
       );
       if (!objectType.rowCount)

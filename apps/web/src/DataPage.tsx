@@ -439,27 +439,6 @@ interface LinkedTask {
   archived_at: string | null;
 }
 
-const fieldTypes: FieldType[] = [
-  'text',
-  'long_text',
-  'integer',
-  'decimal',
-  'boolean',
-  'date',
-  'datetime',
-  'single_select',
-  'multi_select',
-  'user',
-  'relation',
-  'quantity',
-  'measurement',
-  'range',
-  'spectral_data',
-  'tabular_data',
-  'file',
-  'dataset',
-];
-
 const fieldTypeMeta: Record<
   FieldType,
   {
@@ -543,6 +522,13 @@ const fieldTypeMeta: Record<
     group: 'Structured',
   },
 };
+
+const fieldTypes = Object.keys(fieldTypeMeta) as FieldType[];
+const fieldLabelClass = 'text-xs font-medium text-slate-300';
+const wideFieldLabelClass = `${fieldLabelClass} sm:col-span-2`;
+const checkboxLabelClass = 'flex cursor-pointer items-center gap-2';
+const fieldHintClass = 'mt-1 block text-[10px] font-normal text-slate-600';
+const compactMenuItemClass = 'rounded px-2 py-1.5 text-left hover:bg-slate-800';
 
 function schemaFieldKey(name: string): string {
   return name
@@ -2310,6 +2296,14 @@ function fieldHasUsableDefault(field: FieldDefinition): boolean {
   );
 }
 
+function reorderIds(ids: string[], sourceId: string, targetId: string, after: boolean): string[] {
+  const order = ids.filter((id) => id !== sourceId);
+  const target = order.indexOf(targetId);
+  if (target < 0 || order.length === ids.length) return ids;
+  order.splice(target + Number(after), 0, sourceId);
+  return order;
+}
+
 export function DataPage({
   user,
   workspaceData,
@@ -2377,6 +2371,8 @@ export function DataPage({
   const [schemaFieldKeyValue, setSchemaFieldKeyValue] = useState('');
   const [schemaKeyEdited, setSchemaKeyEdited] = useState(false);
   const [schemaBusy, setSchemaBusy] = useState(false);
+  const [schemaDraggedFieldId, setSchemaDraggedFieldId] = useState('');
+  const [schemaDragTargetId, setSchemaDragTargetId] = useState('');
   const [showNewRecord, setShowNewRecord] = useState(false);
   const [showInlineRecord, setShowInlineRecord] = useState(false);
   const [typesLoading, setTypesLoading] = useState(true);
@@ -2422,16 +2418,20 @@ export function DataPage({
       );
     });
   }, [fieldOrderIds, fields]);
+  const schemaFields = useMemo(
+    () => [...fields].sort((a, b) => a.position - b.position || a.id.localeCompare(b.id)),
+    [fields],
+  );
   const filteredSchemaFields = useMemo(() => {
     const query = schemaSearch.trim().toLowerCase();
-    if (!query) return orderedFields;
-    return orderedFields.filter(
+    if (!query) return schemaFields;
+    return schemaFields.filter(
       (field) =>
         field.name.toLowerCase().includes(query) ||
         field.key.toLowerCase().includes(query) ||
         fieldTypeMeta[field.fieldType].label.toLowerCase().includes(query),
     );
-  }, [orderedFields, schemaSearch]);
+  }, [schemaFields, schemaSearch]);
   const selectedSchemaField = fields.find((field) => field.id === schemaSelection);
   const visibleFields = useMemo(
     () => orderedFields.filter((field) => !hiddenFieldIds.has(field.id)),
@@ -3564,17 +3564,53 @@ export function DataPage({
     if (!sourceField || !targetField) return;
     setFieldOrderIds((current) => {
       const order = current.length ? [...current] : fields.map((field) => field.id);
-      const sourceIndex = order.indexOf(sourceFieldId);
-      if (sourceIndex < 0) return order;
-      order.splice(sourceIndex, 1);
-      const targetIndex = order.indexOf(targetFieldId);
-      if (targetIndex < 0) return order;
-      order.splice(targetIndex + (position === 'after' ? 1 : 0), 0, sourceFieldId);
-      return order;
+      return reorderIds(order, sourceFieldId, targetFieldId, position === 'after');
     });
     setLayoutAnnouncement(
       t('data.columnMoved', { column: sourceField.name, target: targetField.name }),
     );
+  }
+
+  async function reorderSchemaField(
+    sourceFieldId: string,
+    targetFieldId: string,
+    position: 'before' | 'after',
+  ) {
+    if (schemaBusy || sourceFieldId === targetFieldId || !selectedId) return;
+    const previous = fields;
+    const previousOrder = fieldOrderIds;
+    const fieldIds = reorderIds(
+      schemaFields.map((field) => field.id),
+      sourceFieldId,
+      targetFieldId,
+      position === 'after',
+    );
+    if (fieldIds.every((id, index) => id === schemaFields[index]?.id)) return;
+    const positions = new Map(fieldIds.map((id, index) => [id, index]));
+    setFields((current) =>
+      current.map((field) => ({ ...field, position: positions.get(field.id) ?? field.position })),
+    );
+    setFieldOrderIds(fieldIds);
+    setSchemaBusy(true);
+    try {
+      const result = await api<{ items: FieldDefinition[] }>(
+        `${base}/object-types/${selectedId}/fields-order`,
+        { method: 'PATCH', body: JSON.stringify({ fieldIds }) },
+      );
+      setFields(result.items);
+      setMessageTone('success');
+      setMessage('Order saved.');
+      setLayoutAnnouncement('Order saved.');
+    } catch (error) {
+      setFields(previous);
+      setFieldOrderIds(previousOrder);
+      setMessageTone('error');
+      setMessage(error instanceof ApiError ? error.message : 'Could not reorder columns.');
+    } finally {
+      setSchemaBusy(false);
+      setSchemaDraggedFieldId('');
+      setSchemaDragTargetId('');
+    }
   }
 
   async function createView(event: FormEvent<HTMLFormElement>) {
@@ -4431,7 +4467,7 @@ export function DataPage({
                       )}
                     </div>
                     <p className="mt-1 text-xs text-slate-500">
-                      Manage the structure and validation rules for {selected.pluralName}.
+                      Drag fields to set the shared order for {selected.pluralName}.
                     </p>
                   </div>
                   <button
@@ -4477,63 +4513,127 @@ export function DataPage({
                     <div
                       aria-label="Field definitions"
                       className="mt-2 overflow-y-auto pr-1"
+                      role="list"
                       style={{ maxHeight: '16rem' }}
                     >
                       {filteredSchemaFields.map((field) => {
                         const meta = fieldTypeMeta[field.fieldType];
                         const active = schemaSelection === field.id;
                         return (
-                          <button
-                            aria-label={`Edit field ${field.name}`}
+                          <div
+                            aria-label={`Field ${field.name}`}
                             className={`group flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors ${
-                              active
+                              active || schemaDragTargetId === field.id
                                 ? 'border-sky-400/30 bg-sky-400/10'
                                 : 'border-transparent hover:border-slate-800 hover:bg-slate-900'
                             }`}
                             key={field.id}
-                            onClick={() => setSchemaSelection(field.id)}
-                            type="button"
+                            role="listitem"
+                            onDragOver={(event: ReactDragEvent<HTMLDivElement>) => {
+                              if (
+                                !schemaDraggedFieldId ||
+                                schemaDraggedFieldId === field.id ||
+                                schemaSearch.trim()
+                              )
+                                return;
+                              event.preventDefault();
+                              event.dataTransfer.dropEffect = 'move';
+                              setSchemaDragTargetId(field.id);
+                            }}
+                            onDrop={(event: ReactDragEvent<HTMLDivElement>) => {
+                              if (!schemaDraggedFieldId || schemaDraggedFieldId === field.id)
+                                return;
+                              event.preventDefault();
+                              const bounds = event.currentTarget.getBoundingClientRect();
+                              void reorderSchemaField(
+                                schemaDraggedFieldId,
+                                field.id,
+                                event.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after',
+                              );
+                            }}
                           >
-                            <span
-                              aria-hidden="true"
-                              className={`grid size-6 shrink-0 place-items-center rounded-md border font-mono text-[9px] ${
-                                active
-                                  ? 'border-sky-400/25 bg-sky-400/10 text-sky-300'
-                                  : 'border-slate-800 bg-slate-950/50 text-slate-500'
-                              }`}
+                            <button
+                              aria-label={`Reorder field ${field.name}`}
+                              className="shrink-0 cursor-grab rounded px-0.5 py-1 text-sm leading-none text-slate-600 hover:bg-slate-800 hover:text-sky-300 active:cursor-grabbing"
+                              disabled={schemaBusy || Boolean(schemaSearch.trim())}
+                              draggable={!schemaBusy && !schemaSearch.trim()}
+                              title={
+                                schemaSearch.trim()
+                                  ? 'Clear search to reorder fields.'
+                                  : 'Drag to reorder. Arrow keys also work.'
+                              }
+                              type="button"
+                              onDragEnd={() => {
+                                setSchemaDraggedFieldId('');
+                                setSchemaDragTargetId('');
+                              }}
+                              onDragStart={(event: ReactDragEvent<HTMLButtonElement>) => {
+                                event.dataTransfer.effectAllowed = 'move';
+                                event.dataTransfer.setData('text/plain', field.id);
+                                setSchemaDraggedFieldId(field.id);
+                              }}
+                              onKeyDown={(event) => {
+                                const offset =
+                                  event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0;
+                                const target = schemaFields[schemaFields.indexOf(field) + offset];
+                                if (!offset || !target) return;
+                                event.preventDefault();
+                                void reorderSchemaField(
+                                  field.id,
+                                  target.id,
+                                  offset < 0 ? 'before' : 'after',
+                                );
+                              }}
                             >
-                              {meta.icon}
-                            </span>
-                            <span className="min-w-0 flex-1">
-                              <span className="flex items-center gap-1.5">
-                                <span className="truncate text-xs font-medium text-slate-200">
-                                  {field.name}
-                                </span>
-                                {field.required && (
-                                  <span
-                                    aria-label="Required"
-                                    className="text-[10px] text-amber-300"
-                                  >
-                                    *
+                              ⠿
+                            </button>
+                            <button
+                              aria-label={`Edit field ${field.name}`}
+                              className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                              onClick={() => setSchemaSelection(field.id)}
+                              type="button"
+                            >
+                              <span
+                                aria-hidden="true"
+                                className={`grid size-6 shrink-0 place-items-center rounded-md border font-mono text-[9px] ${
+                                  active
+                                    ? 'border-sky-400/25 bg-sky-400/10 text-sky-300'
+                                    : 'border-slate-800 bg-slate-950/50 text-slate-500'
+                                }`}
+                              >
+                                {meta.icon}
+                              </span>
+                              <span className="min-w-0 flex-1">
+                                <span className="flex items-center gap-1.5">
+                                  <span className="truncate text-xs font-medium text-slate-200">
+                                    {field.name}
                                   </span>
-                                )}
+                                  {field.required && (
+                                    <span
+                                      aria-label="Required"
+                                      className="text-[10px] text-amber-300"
+                                    >
+                                      *
+                                    </span>
+                                  )}
+                                </span>
+                                <span className="block truncate font-mono text-[9px] leading-tight text-slate-600">
+                                  {field.key} · {meta.label}
+                                </span>
                               </span>
-                              <span className="block truncate font-mono text-[9px] leading-tight text-slate-600">
-                                {field.key} · {meta.label}
-                              </span>
-                            </span>
-                            <span
-                              aria-label={`Projection ${field.projectionStatus}`}
-                              className={`mt-1 size-1.5 shrink-0 rounded-full ${
-                                field.projectionStatus === 'ready'
-                                  ? 'bg-emerald-400'
-                                  : field.projectionStatus === 'failed'
-                                    ? 'bg-rose-400'
-                                    : 'animate-pulse bg-amber-400'
-                              }`}
-                              title={`Projection ${field.projectionStatus}`}
-                            />
-                          </button>
+                              <span
+                                aria-label={`Projection ${field.projectionStatus}`}
+                                className={`mt-1 size-1.5 shrink-0 rounded-full ${
+                                  field.projectionStatus === 'ready'
+                                    ? 'bg-emerald-400'
+                                    : field.projectionStatus === 'failed'
+                                      ? 'bg-rose-400'
+                                      : 'animate-pulse bg-amber-400'
+                                }`}
+                                title={`Projection ${field.projectionStatus}`}
+                              />
+                            </button>
+                          </div>
                         );
                       })}
                       {filteredSchemaFields.length === 0 && (
@@ -4572,7 +4672,7 @@ export function DataPage({
                         </div>
 
                         <div className="mt-5 grid gap-4 sm:grid-cols-2">
-                          <label className="text-xs font-medium text-slate-300">
+                          <label className={fieldLabelClass}>
                             Field name
                             <input
                               aria-label="Field name"
@@ -4594,7 +4694,7 @@ export function DataPage({
                               }}
                             />
                           </label>
-                          <label className="text-xs font-medium text-slate-300">
+                          <label className={fieldLabelClass}>
                             Stable field key
                             <input
                               aria-label="Stable field key"
@@ -4610,11 +4710,11 @@ export function DataPage({
                                 setSchemaFieldKeyValue(event.target.value.toLowerCase());
                               }}
                             />
-                            <span className="mt-1 block text-[10px] font-normal text-slate-600">
+                            <span className={fieldHintClass}>
                               Used by imports and API integrations; it cannot change later.
                             </span>
                           </label>
-                          <label className="text-xs font-medium text-slate-300 sm:col-span-2">
+                          <label className={wideFieldLabelClass}>
                             Field type
                             <select
                               aria-label="Field type"
@@ -4645,7 +4745,7 @@ export function DataPage({
                               })}
                             </select>
                           </label>
-                          <label className="text-xs font-medium text-slate-300 sm:col-span-2">
+                          <label className={wideFieldLabelClass}>
                             Description <span className="font-normal text-slate-600">Optional</span>
                             <textarea
                               aria-label="Field description"
@@ -4657,7 +4757,7 @@ export function DataPage({
                           </label>
 
                           {['single_select', 'multi_select'].includes(schemaFieldType) && (
-                            <label className="text-xs font-medium text-slate-300 sm:col-span-2">
+                            <label className={wideFieldLabelClass}>
                               Options
                               <textarea
                                 aria-label="Select options"
@@ -4666,7 +4766,7 @@ export function DataPage({
                                 placeholder={'ready: Ready\nblocked: Blocked\napproved: Approved'}
                                 required
                               />
-                              <span className="mt-1 block text-[10px] font-normal text-slate-600">
+                              <span className={fieldHintClass}>
                                 One option per line. Use “stable-key: Display label” to preserve API
                                 values.
                               </span>
@@ -4674,7 +4774,7 @@ export function DataPage({
                           )}
 
                           {schemaFieldType === 'relation' && (
-                            <label className="text-xs font-medium text-slate-300 sm:col-span-2">
+                            <label className={wideFieldLabelClass}>
                               Related table
                               <select
                                 aria-label="Related table"
@@ -4697,7 +4797,7 @@ export function DataPage({
 
                           {['quantity', 'measurement', 'range'].includes(schemaFieldType) && (
                             <>
-                              <label className="text-xs font-medium text-slate-300">
+                              <label className={fieldLabelClass}>
                                 Dimension
                                 <input
                                   aria-label="Engineering dimension"
@@ -4707,7 +4807,7 @@ export function DataPage({
                                   required
                                 />
                               </label>
-                              <label className="text-xs font-medium text-slate-300">
+                              <label className={fieldLabelClass}>
                                 Canonical unit
                                 <input
                                   aria-label="Canonical unit"
@@ -4717,7 +4817,7 @@ export function DataPage({
                                   required
                                 />
                               </label>
-                              <label className="text-xs font-medium text-slate-300 sm:col-span-2">
+                              <label className={wideFieldLabelClass}>
                                 Allowed units
                                 <input
                                   aria-label="Allowed units"
@@ -4727,7 +4827,7 @@ export function DataPage({
                                   required
                                 />
                               </label>
-                              <label className="text-xs font-medium text-slate-300">
+                              <label className={fieldLabelClass}>
                                 Display precision
                                 <input
                                   aria-label="Display precision"
@@ -4749,7 +4849,7 @@ export function DataPage({
                                 more signal series in the remaining columns. The first row may
                                 contain headers.
                               </div>
-                              <label className="text-xs font-medium text-slate-300">
+                              <label className={fieldLabelClass}>
                                 X-axis label
                                 <input
                                   aria-label="X-axis label"
@@ -4758,7 +4858,7 @@ export function DataPage({
                                   name="xLabel"
                                 />
                               </label>
-                              <label className="text-xs font-medium text-slate-300">
+                              <label className={fieldLabelClass}>
                                 X-axis unit
                                 <input
                                   aria-label="X-axis unit"
@@ -4767,7 +4867,7 @@ export function DataPage({
                                   name="xUnit"
                                 />
                               </label>
-                              <label className="text-xs font-medium text-slate-300">
+                              <label className={fieldLabelClass}>
                                 Signal label
                                 <input
                                   aria-label="Signal label"
@@ -4776,7 +4876,7 @@ export function DataPage({
                                   name="yLabel"
                                 />
                               </label>
-                              <label className="text-xs font-medium text-slate-300">
+                              <label className={fieldLabelClass}>
                                 Signal unit
                                 <input
                                   aria-label="Signal unit"
@@ -4808,7 +4908,7 @@ export function DataPage({
                         </div>
 
                         <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-3 rounded-lg border border-slate-800 bg-slate-900/45 px-3 py-2.5 text-xs text-slate-300">
-                          <label className="flex cursor-pointer items-center gap-2">
+                          <label className={checkboxLabelClass}>
                             <input
                               className="accent-sky-500"
                               disabled={records.total > 0}
@@ -4823,13 +4923,13 @@ export function DataPage({
                             Required value
                           </label>
                           {fieldSupportsUnique(schemaFieldType) && (
-                            <label className="flex cursor-pointer items-center gap-2">
+                            <label className={checkboxLabelClass}>
                               <input className="accent-sky-500" name="unique" type="checkbox" />
                               Unique values
                             </label>
                           )}
                           {schemaFieldType === 'relation' && (
-                            <label className="flex cursor-pointer items-center gap-2">
+                            <label className={checkboxLabelClass}>
                               <input className="accent-sky-500" name="multiple" type="checkbox" />
                               Allow multiple records
                             </label>
@@ -4913,7 +5013,7 @@ export function DataPage({
                         </div>
 
                         <div className="mt-5 grid gap-4 sm:grid-cols-2">
-                          <label className="text-xs font-medium text-slate-300 sm:col-span-2">
+                          <label className={wideFieldLabelClass}>
                             Field name
                             <input
                               aria-label="Field name"
@@ -4924,7 +5024,7 @@ export function DataPage({
                               required
                             />
                           </label>
-                          <label className="text-xs font-medium text-slate-300 sm:col-span-2">
+                          <label className={wideFieldLabelClass}>
                             Description <span className="font-normal text-slate-600">Optional</span>
                             <textarea
                               aria-label="Field description"
@@ -4939,7 +5039,7 @@ export function DataPage({
                           {['single_select', 'multi_select'].includes(
                             selectedSchemaField.fieldType,
                           ) && (
-                            <label className="text-xs font-medium text-slate-300 sm:col-span-2">
+                            <label className={wideFieldLabelClass}>
                               Options
                               <textarea
                                 aria-label="Select options"
@@ -4950,7 +5050,7 @@ export function DataPage({
                                 name="options"
                                 required
                               />
-                              <span className="mt-1 block text-[10px] font-normal text-slate-600">
+                              <span className={fieldHintClass}>
                                 Changing stable option keys can invalidate existing values. Prefer
                                 editing labels only.
                               </span>
@@ -4959,7 +5059,7 @@ export function DataPage({
 
                           {selectedSchemaField.fieldType === 'relation' && (
                             <>
-                              <label className="text-xs font-medium text-slate-300 sm:col-span-2">
+                              <label className={wideFieldLabelClass}>
                                 Related table
                                 <select
                                   aria-label="Related table"
@@ -4979,7 +5079,7 @@ export function DataPage({
                                   type="hidden"
                                   value={selectedSchemaField.config.targetObjectTypeId ?? ''}
                                 />
-                                <span className="mt-1 block text-[10px] font-normal text-slate-600">
+                                <span className={fieldHintClass}>
                                   The target is locked after creation to protect linked records.
                                 </span>
                               </label>
@@ -4990,7 +5090,7 @@ export function DataPage({
                             selectedSchemaField.fieldType,
                           ) && (
                             <>
-                              <label className="text-xs font-medium text-slate-300">
+                              <label className={fieldLabelClass}>
                                 Dimension
                                 <input
                                   aria-label="Engineering dimension"
@@ -5000,7 +5100,7 @@ export function DataPage({
                                   readOnly
                                 />
                               </label>
-                              <label className="text-xs font-medium text-slate-300">
+                              <label className={fieldLabelClass}>
                                 Canonical unit
                                 <input
                                   aria-label="Canonical unit"
@@ -5010,7 +5110,7 @@ export function DataPage({
                                   readOnly
                                 />
                               </label>
-                              <label className="text-xs font-medium text-slate-300 sm:col-span-2">
+                              <label className={wideFieldLabelClass}>
                                 Allowed units
                                 <input
                                   aria-label="Allowed units"
@@ -5020,7 +5120,7 @@ export function DataPage({
                                   required
                                 />
                               </label>
-                              <label className="text-xs font-medium text-slate-300">
+                              <label className={fieldLabelClass}>
                                 Display precision
                                 <input
                                   aria-label="Display precision"
@@ -5037,7 +5137,7 @@ export function DataPage({
 
                           {selectedSchemaField.fieldType === 'spectral_data' && (
                             <>
-                              <label className="text-xs font-medium text-slate-300">
+                              <label className={fieldLabelClass}>
                                 X-axis label
                                 <input
                                   aria-label="X-axis label"
@@ -5046,7 +5146,7 @@ export function DataPage({
                                   name="xLabel"
                                 />
                               </label>
-                              <label className="text-xs font-medium text-slate-300">
+                              <label className={fieldLabelClass}>
                                 X-axis unit
                                 <input
                                   aria-label="X-axis unit"
@@ -5055,7 +5155,7 @@ export function DataPage({
                                   name="xUnit"
                                 />
                               </label>
-                              <label className="text-xs font-medium text-slate-300">
+                              <label className={fieldLabelClass}>
                                 Signal label
                                 <input
                                   aria-label="Signal label"
@@ -5064,7 +5164,7 @@ export function DataPage({
                                   name="yLabel"
                                 />
                               </label>
-                              <label className="text-xs font-medium text-slate-300">
+                              <label className={fieldLabelClass}>
                                 Signal unit
                                 <input
                                   aria-label="Signal unit"
@@ -5088,7 +5188,7 @@ export function DataPage({
                             </label>
                           )}
 
-                          <label className="text-xs font-medium text-slate-300">
+                          <label className={fieldLabelClass}>
                             Order
                             <input
                               aria-label="Field order"
@@ -5102,7 +5202,7 @@ export function DataPage({
                         </div>
 
                         <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-3 rounded-lg border border-slate-800 bg-slate-900/45 px-3 py-2.5 text-xs text-slate-300">
-                          <label className="flex cursor-pointer items-center gap-2">
+                          <label className={checkboxLabelClass}>
                             <input
                               className="accent-sky-500"
                               defaultChecked={selectedSchemaField.required}
@@ -5112,7 +5212,7 @@ export function DataPage({
                             Required value
                           </label>
                           {fieldSupportsUnique(selectedSchemaField.fieldType) && (
-                            <label className="flex cursor-pointer items-center gap-2">
+                            <label className={checkboxLabelClass}>
                               <input
                                 className="accent-sky-500"
                                 defaultChecked={selectedSchemaField.unique}
@@ -5123,7 +5223,7 @@ export function DataPage({
                             </label>
                           )}
                           {selectedSchemaField.fieldType === 'relation' && (
-                            <label className="flex cursor-pointer items-center gap-2">
+                            <label className={checkboxLabelClass}>
                               <input
                                 className="accent-sky-500"
                                 defaultChecked={selectedSchemaField.config.multiple}
@@ -5868,7 +5968,7 @@ export function DataPage({
                                   <>
                                     <button
                                       aria-label={`Sort ${field.name} ascending`}
-                                      className="rounded px-2 py-1.5 text-left hover:bg-slate-800"
+                                      className={compactMenuItemClass}
                                       onClick={() => {
                                         setSortField(field.id);
                                         setSortDirection('asc');
@@ -5881,7 +5981,7 @@ export function DataPage({
                                     </button>
                                     <button
                                       aria-label={`Sort ${field.name} descending`}
-                                      className="rounded px-2 py-1.5 text-left hover:bg-slate-800"
+                                      className={compactMenuItemClass}
                                       onClick={() => {
                                         setSortField(field.id);
                                         setSortDirection('desc');
@@ -5895,7 +5995,7 @@ export function DataPage({
                                     {sortField === field.id && (
                                       <button
                                         aria-label={`Remove sorting from ${field.name}`}
-                                        className="rounded px-2 py-1.5 text-left hover:bg-slate-800"
+                                        className={compactMenuItemClass}
                                         onClick={() => {
                                           setSortField('');
                                           setSortDirection('asc');
@@ -5912,7 +6012,7 @@ export function DataPage({
                                 {!['measurement', 'range'].includes(field.fieldType) && (
                                   <button
                                     aria-label={`Filter ${field.name}`}
-                                    className="rounded px-2 py-1.5 text-left hover:bg-slate-800"
+                                    className={compactMenuItemClass}
                                     onClick={() => {
                                       setFilterField(field.id);
                                       setFilterOperator('eq');
@@ -5929,7 +6029,7 @@ export function DataPage({
                                 )}
                                 <button
                                   aria-label={`Hide ${field.name} column`}
-                                  className="rounded px-2 py-1.5 text-left hover:bg-slate-800"
+                                  className={compactMenuItemClass}
                                   onClick={() =>
                                     setHiddenFieldIds((current) => new Set([...current, field.id]))
                                   }

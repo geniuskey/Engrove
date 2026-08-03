@@ -49,6 +49,7 @@ describe('DataPage', () => {
     let createViewBody: Record<string, unknown> | undefined;
     let updateViewBody: Record<string, unknown> | undefined;
     let schemaUpdateBody: Record<string, unknown> | undefined;
+    let schemaOrderBody: Record<string, unknown> | undefined;
     let inlineCreateBody: Record<string, unknown> | undefined;
     let createdViewCount = 0;
     const recordQueryBodies: Array<Record<string, unknown>> = [];
@@ -133,6 +134,40 @@ describe('DataPage', () => {
                 yLabel: 'Absorbance',
                 yUnit: 'a.u.',
               },
+              projectionStatus: 'ready',
+            },
+          ],
+        });
+      }
+      if (url.endsWith('/fields-order')) {
+        schemaOrderBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return json({
+          items: [
+            {
+              id: '019fbcf9-e020-71da-935a-6a6a728b3798',
+              objectTypeId: '019fbcf9-e020-71da-935a-6a6a728b3792',
+              name: 'State',
+              key: 'state',
+              description: '',
+              fieldType: 'single_select',
+              required: true,
+              unique: false,
+              position: 0,
+              config: { options: [{ key: 'ready', label: 'Ready' }] },
+              defaultValue: 'ready',
+              projectionStatus: 'ready',
+            },
+            {
+              id: '019fbcf9-e020-71da-935a-6a6a728b3794',
+              objectTypeId: '019fbcf9-e020-71da-935a-6a6a728b3792',
+              name: 'Serial',
+              key: 'serial',
+              description: 'A durable sample identifier.',
+              fieldType: 'decimal',
+              required: true,
+              unique: true,
+              position: 1,
+              config: {},
               projectionStatus: 'ready',
             },
           ],
@@ -296,7 +331,7 @@ describe('DataPage', () => {
       'style',
       'max-height: 16rem;',
     );
-    expect(screen.getByRole('button', { name: 'Edit field Serial' })).toHaveClass('py-1.5');
+    expect(screen.getByRole('listitem', { name: 'Field Serial' })).toHaveClass('py-1.5');
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search fields' }), {
       target: { value: 'state' },
     });
@@ -649,6 +684,36 @@ describe('DataPage', () => {
     expect(screen.getByRole('dialog')).toHaveAccessibleName('Sample Two');
     expect(screen.getByRole('link', { name: 'Full record' })).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole('button', { name: 'Close quick record view' })[0]!);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Schema' }));
+    const dataTransfer = {
+      dropEffect: 'none',
+      effectAllowed: 'none',
+      getData: () => '',
+      setData: vi.fn(),
+    };
+    fireEvent.dragStart(screen.getByRole('button', { name: 'Reorder field Serial' }), {
+      dataTransfer,
+    });
+    const stateField = screen.getByRole('listitem', { name: 'Field State' });
+    fireEvent.dragOver(stateField, { clientY: 1, dataTransfer });
+    fireEvent.drop(stateField, { clientY: 1, dataTransfer });
+    await waitFor(() =>
+      expect(schemaOrderBody).toEqual({
+        fieldIds: [
+          '019fbcf9-e020-71da-935a-6a6a728b3798',
+          '019fbcf9-e020-71da-935a-6a6a728b3794',
+          '019fbcf9-e020-71da-935a-6a6a728b3799',
+          '019fbcf9-e020-71da-935a-6a6a728b379b',
+        ],
+      }),
+    );
+    expect(
+      [...screen.getByLabelText('Field definitions').querySelectorAll('[role="listitem"]')].map(
+        (item) => item.getAttribute('aria-label'),
+      ),
+    ).toEqual(['Field State', 'Field Serial']);
+    fireEvent.click(screen.getByRole('button', { name: 'Close schema editor' }));
 
     fireEvent.click(screen.getByRole('button', { name: 'Create view' }));
     fireEvent.change(screen.getByRole('textbox', { name: 'View name' }), {

@@ -182,6 +182,67 @@ describe.sequential('workspace data with PostgreSQL', () => {
     expect(unassigned.items.map((item) => item.displayName)).toEqual(['Unassigned run']);
   });
 
+  it('reorders every schema field atomically', async () => {
+    const workspace = await createWorkspace(pool, actor, {
+      name: 'Schema workspace',
+      slug: 'schema-workspace',
+      requestId: 'workspace-create',
+    });
+    const project = await ensureWorkspaceDataProject(pool, actor, workspace.id, 'data-context');
+    const data = await ScopedProjectRepository.open(pool, actor, workspace.id, project.id);
+    const objectType = await data.createObjectType({
+      name: 'Sample',
+      pluralName: 'Samples',
+      key: 'sample',
+      requestId: 'object-create',
+    });
+    const first = await data.createField({
+      objectTypeId: objectType.id,
+      name: 'First',
+      key: 'first',
+      fieldType: 'text',
+      requestId: 'first-field',
+    });
+    const second = await data.createField({
+      objectTypeId: objectType.id,
+      name: 'Second',
+      key: 'second',
+      fieldType: 'text',
+      requestId: 'second-field',
+    });
+    const third = await data.createField({
+      objectTypeId: objectType.id,
+      name: 'Third',
+      key: 'third',
+      fieldType: 'text',
+      requestId: 'third-field',
+    });
+
+    await expect(
+      data.reorderFields({
+        objectTypeId: objectType.id,
+        fieldIds: [third.id, first.id],
+        requestId: 'invalid-order',
+      }),
+    ).rejects.toMatchObject({ code: 'FIELD_ORDER_INVALID' });
+    const reordered = await data.reorderFields({
+      objectTypeId: objectType.id,
+      fieldIds: [third.id, first.id, second.id],
+      requestId: 'valid-order',
+    });
+
+    expect(reordered.map((field) => [field.name, field.position])).toEqual([
+      ['Third', 0],
+      ['First', 1],
+      ['Second', 2],
+    ]);
+    expect((await data.listFields(objectType.id)).map((field) => field.id)).toEqual([
+      third.id,
+      first.id,
+      second.id,
+    ]);
+  });
+
   it('rolls back invalid forms, empty defaults, and cross-workspace saved filters', async () => {
     const workspace = await createWorkspace(pool, actor, {
       name: 'Workspace',
