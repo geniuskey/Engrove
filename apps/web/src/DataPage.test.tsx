@@ -242,6 +242,12 @@ describe('DataPage', () => {
     expect(screen.getByText('1 records · page 1 of 1')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'New record' })).toBeInTheDocument();
     expect(screen.getByRole('navigation', { name: 'Data navigation' })).toBeInTheDocument();
+    const moreTableActions = screen.getByText('⋯').closest('details');
+    expect(moreTableActions).not.toHaveAttribute('open');
+    fireEvent.click(screen.getByText('⋯'));
+    expect(moreTableActions).toHaveAttribute('open');
+    expect(screen.getByRole('heading', { name: 'Import CSV' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Import records' })).toBeInTheDocument();
     const nameCell = screen.getByRole('button', { name: 'Edit Name for Sample Two' }).closest('td');
     const serialCell = screen
       .getByRole('button', { name: 'Edit Serial for Sample Two' })

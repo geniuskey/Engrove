@@ -3928,6 +3928,49 @@ export function DataPage({
                     {t('data.newRecord')}
                   </Button>
                 )}
+                {allowed(user, 'record.create') && (
+                  <details className="group relative">
+                    <summary
+                      aria-label="More table actions"
+                      className="grid size-8 cursor-pointer list-none place-items-center rounded-lg border border-slate-800 text-base text-slate-500 marker:content-none hover:border-slate-700 hover:bg-slate-900 hover:text-slate-200"
+                      title="More table actions"
+                    >
+                      ⋯
+                    </summary>
+                    <div className="absolute right-0 top-10 z-50 w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-slate-700 bg-slate-950 p-4 shadow-2xl shadow-black/40">
+                      <h3 className="text-sm font-semibold text-slate-200">Import CSV</h3>
+                      <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                        Use displayName and stable field keys as headers. Relations use
+                        semicolon-separated record UUIDs.
+                      </p>
+                      <form className="mt-3" onSubmit={(event) => void importCsv(event)}>
+                        <input
+                          accept=".csv,text/csv"
+                          className="block w-full text-xs text-slate-400 file:mr-3 file:rounded-md file:border-0 file:bg-slate-800 file:px-3 file:py-2 file:text-xs file:font-medium file:text-slate-200 hover:file:bg-slate-700"
+                          name="csv"
+                          required
+                          type="file"
+                        />
+                        <Button className="mt-3 w-full" variant="quiet" type="submit">
+                          Import records
+                        </Button>
+                      </form>
+                      {csvResult && (
+                        <p className="mt-3 text-xs text-slate-300">
+                          Imported {csvResult.imported}; {csvResult.failed} failed.
+                        </p>
+                      )}
+                      {csvResult?.errors.map((error) => (
+                        <p
+                          className="mt-1 text-xs text-rose-300"
+                          key={`${error.row}:${error.reason}`}
+                        >
+                          Row {error.row}: {error.reason}
+                        </p>
+                      ))}
+                    </div>
+                  </details>
+                )}
               </div>
             </div>
 
@@ -5228,38 +5271,6 @@ export function DataPage({
               </div>
             </div>
 
-            {allowed(user, 'record.create') && (
-              <details className="mt-6 rounded-xl border border-slate-800 bg-slate-900/25">
-                <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium text-slate-300 hover:text-sky-300">
-                  Import records from CSV
-                </summary>
-                <form
-                  className="border-t border-slate-800 p-4"
-                  onSubmit={(event) => void importCsv(event)}
-                >
-                  <p className="text-xs text-slate-500">
-                    Use displayName and stable field keys as headers. Relations use
-                    semicolon-separated record UUIDs.
-                  </p>
-                  <div className="mt-3 flex flex-wrap items-center gap-3">
-                    <input accept=".csv,text/csv" name="csv" required type="file" />
-                    <Button variant="quiet" type="submit">
-                      Import
-                    </Button>
-                  </div>
-                  {csvResult && (
-                    <p className="mt-3 text-sm text-slate-300">
-                      Imported {csvResult.imported}; {csvResult.failed} failed.
-                    </p>
-                  )}
-                  {csvResult?.errors.map((error) => (
-                    <p className="mt-1 text-xs text-rose-300" key={`${error.row}:${error.reason}`}>
-                      Row {error.row}: {error.reason}
-                    </p>
-                  ))}
-                </form>
-              </details>
-            )}
             <SpecificationsPanel base={base} fields={fields} user={user} />
           </>
         )}
