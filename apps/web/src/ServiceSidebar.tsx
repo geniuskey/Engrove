@@ -56,15 +56,16 @@ export function ServiceShell({
   const projectId = location.pathname.match(/^\/workspaces\/[^/]+\/projects\/([^/]+)/)?.[1];
   const workspaceBase = workspaceId ? `/workspaces/${workspaceId}` : undefined;
   const projectBase = workspaceBase && projectId ? `${workspaceBase}/projects/${projectId}` : null;
+  const inWorkspaceTable = /^\/workspaces\/[^/]+\/[mt][0-9a-z]{14}(?:\/|$)/.test(location.pathname);
   const inWorkspaceData = Boolean(
-    workspaceBase && location.pathname.startsWith(`${workspaceBase}/data`),
+    workspaceBase && (location.pathname.startsWith(`${workspaceBase}/data`) || inWorkspaceTable),
   );
   const inProjects = Boolean(
     workspaceBase && location.pathname.startsWith(`${workspaceBase}/projects`),
   );
-  const dataWorkspace = /^\/workspaces\/[^/]+\/(?:data|projects\/[^/]+\/data)(?:\/|$)/.test(
-    location.pathname,
-  );
+  const dataWorkspace =
+    inWorkspaceTable ||
+    /^\/workspaces\/[^/]+\/(?:data|projects\/[^/]+\/data)(?:\/|$)/.test(location.pathname);
   const [expanded, setExpanded] = useState(
     () => window.localStorage.getItem('engrove-service-sidebar') !== 'collapsed',
   );

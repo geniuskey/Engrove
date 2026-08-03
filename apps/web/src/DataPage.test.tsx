@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { type ComponentProps, useState } from 'react';
-import { MemoryRouter, Route, Routes } from 'react-router';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DataPage } from './DataPage.js';
 import { ServiceSidebarPortalContext } from './ServiceSidebar.js';
@@ -40,6 +40,11 @@ function DataPageHarness({
       <DataPage user={user} {...(workspaceData ? { workspaceData } : {})} />
     </ServiceSidebarPortalContext.Provider>
   );
+}
+
+function LocationProbe() {
+  const location = useLocation();
+  return <output aria-label="Current location">{`${location.pathname}${location.search}`}</output>;
 }
 
 describe('DataPage', () => {
@@ -816,34 +821,49 @@ describe('DataPage', () => {
       throw new Error(`Unexpected fetch ${url}`);
     });
 
+    const workspaceId = 'w1234567890abcd';
+    const workspaceData = {
+      workspaceId,
+      backingProjectId,
+      projects: [
+        {
+          id: linkedProjectId,
+          name: 'Motor program',
+          key: 'MOTOR',
+          archivedAt: null,
+        },
+      ],
+      legacyProjects: [{ id: 'legacy-project', name: 'force' }],
+    };
+    const workspaceDataPage = (
+      <>
+        <LocationProbe />
+        <DataPageHarness workspaceData={workspaceData} />
+      </>
+    );
+
     render(
-      <MemoryRouter initialEntries={['/workspaces/workspace-id/data']}>
-        <DataPageHarness
-          workspaceData={{
-            workspaceId: '019fbcf9-e020-71da-935a-6a6a728b3700',
-            backingProjectId,
-            projects: [
-              {
-                id: linkedProjectId,
-                name: 'Motor program',
-                key: 'MOTOR',
-                archivedAt: null,
-              },
-            ],
-            legacyProjects: [{ id: 'legacy-project', name: 'force' }],
-          }}
-        />
+      <MemoryRouter initialEntries={[`/workspaces/${workspaceId}/data?type=t1234567890abce`]}>
+        <Routes>
+          <Route path="/workspaces/:workspaceId/data" element={workspaceDataPage} />
+          <Route path="/workspaces/:workspaceId/:objectTypeId" element={workspaceDataPage} />
+        </Routes>
       </MemoryRouter>,
     );
 
     expect(await screen.findByRole('heading', { name: 'Workspace data' })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByLabelText('Current location')).toHaveTextContent(
+        `/workspaces/${workspaceId}/t1234567890abce`,
+      ),
+    );
     const legacyHelp = screen.getByLabelText('Legacy engineering tables');
     expect(legacyHelp.closest('details')).not.toHaveAttribute('open');
     fireEvent.click(legacyHelp);
     expect(legacyHelp.closest('details')).toHaveAttribute('open');
     expect(screen.getByRole('link', { name: 'force' })).toHaveAttribute(
       'href',
-      '/workspaces/019fbcf9-e020-71da-935a-6a6a728b3700/projects/legacy-project/data',
+      `/workspaces/${workspaceId}/projects/legacy-project/data`,
     );
     expect(screen.getByRole('columnheader', { name: 'Project' })).toBeInTheDocument();
     await screen.findByRole('button', { name: 'Quick view Motor redesign' });

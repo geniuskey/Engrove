@@ -1974,6 +1974,10 @@ function AppContent() {
           element={protectedElement(user && <WorkspaceDataPage user={user} />)}
         />
         <Route
+          path="/workspaces/:workspaceId/:objectTypeId"
+          element={protectedElement(user && <WorkspaceDataPage user={user} />)}
+        />
+        <Route
           path="/workspaces/:workspaceId/projects"
           element={protectedElement(user && <WorkspacePage user={user} />)}
         />

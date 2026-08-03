@@ -2593,6 +2593,7 @@ export function DataPage({
   const workspaceId = workspaceData?.workspaceId ?? params.workspaceId ?? '';
   const projectId = workspaceData?.backingProjectId ?? params.projectId ?? '';
   const workspaceMode = Boolean(workspaceData);
+  const routeObjectTypeId = workspaceMode ? params.objectTypeId : undefined;
   const [search, setSearch] = useSearchParams();
   const navigate = useNavigate();
   const base = projectPath(workspaceId, projectId);
@@ -2670,7 +2671,7 @@ export function DataPage({
   const recordsRequestId = useRef(0);
   const sidebarPortal = useServiceSidebarPortal();
   const selectedIdentifier = canonicalTableIdentifier(
-    search.get('type') ?? objectTypes[0]?.publicId ?? objectTypes[0]?.id ?? '',
+    routeObjectTypeId ?? search.get('type') ?? objectTypes[0]?.publicId ?? objectTypes[0]?.id ?? '',
   );
   const selectedViewId = search.get('view') ?? 'all';
   const selected = objectTypes.find(
@@ -2692,8 +2693,46 @@ export function DataPage({
   const availableFieldTypes = workspaceMode
     ? fieldTypes.filter((type) => !['measurement', 'file', 'dataset'].includes(type))
     : fieldTypes;
+  const selectDataLocation = useCallback(
+    (objectTypeIdentifier: string, viewId = 'all', replace = false) => {
+      const canonicalIdentifier = canonicalTableIdentifier(objectTypeIdentifier);
+      if (workspaceMode) {
+        const nextSearch = new URLSearchParams();
+        if (viewId !== 'all') nextSearch.set('view', viewId);
+        void navigate(
+          {
+            pathname: `/workspaces/${workspaceId}/${canonicalIdentifier}`,
+            search: nextSearch.toString(),
+          },
+          { replace },
+        );
+        return;
+      }
+      setSearch(
+        viewId === 'all'
+          ? { type: canonicalIdentifier }
+          : { type: canonicalIdentifier, view: viewId },
+        { replace },
+      );
+    },
+    [navigate, setSearch, workspaceId, workspaceMode],
+  );
   useEffect(() => {
-    if (!selected?.publicId || search.get('type') === selected.publicId) return;
+    if (!selected?.publicId) return;
+    if (workspaceMode) {
+      if (routeObjectTypeId === selected.publicId && !search.has('type')) return;
+      const canonical = new URLSearchParams(search);
+      canonical.delete('type');
+      void navigate(
+        {
+          pathname: `/workspaces/${workspaceId}/${selected.publicId}`,
+          search: canonical.toString(),
+        },
+        { replace: true },
+      );
+      return;
+    }
+    if (search.get('type') === selected.publicId) return;
     setSearch(
       (current) => {
         const canonical = new URLSearchParams(current);
@@ -2702,7 +2741,7 @@ export function DataPage({
       },
       { replace: true },
     );
-  }, [search, selected, setSearch]);
+  }, [navigate, routeObjectTypeId, search, selected, setSearch, workspaceId, workspaceMode]);
   const orderedFields = useMemo(() => {
     const position = new Map(fieldOrderIds.map((fieldId, index) => [fieldId, index]));
     return [...fields].sort((left, right) => {
@@ -3005,8 +3044,8 @@ export function DataPage({
     try {
       const result = await api<{ items: ObjectType[] }>(`${base}/object-types`);
       setObjectTypes(result.items);
-      if (!search.get('type') && result.items[0])
-        setSearch({ type: result.items[0].publicId ?? result.items[0].id }, { replace: true });
+      if (!routeObjectTypeId && !search.get('type') && result.items[0])
+        selectDataLocation(result.items[0].publicId ?? result.items[0].id, 'all', true);
       setMessage('');
     } catch (cause) {
       setMessageTone('error');
@@ -3014,7 +3053,7 @@ export function DataPage({
     } finally {
       setTypesLoading(false);
     }
-  }, [base, search, setSearch]);
+  }, [base, routeObjectTypeId, search, selectDataLocation]);
 
   useEffect(() => void loadTypes(), [loadTypes]);
 
@@ -3091,7 +3130,7 @@ export function DataPage({
       applyViewConfig(view.config);
       return;
     }
-    setSearch({ type: selectedPublicId }, { replace: true });
+    selectDataLocation(selectedPublicId, 'all', true);
   }, [
     applyViewConfig,
     contextObjectTypeId,
@@ -3099,7 +3138,7 @@ export function DataPage({
     selectedId,
     selectedPublicId,
     selectedViewId,
-    setSearch,
+    selectDataLocation,
     views,
     viewsLoading,
   ]);
@@ -3256,7 +3295,7 @@ export function DataPage({
       });
       form.reset();
       await loadTypes();
-      setSearch({ type: created.id });
+      selectDataLocation(created.publicId ?? created.id);
     } catch (cause) {
       setMessageTone('error');
       setMessage(cause instanceof Error ? cause.message : 'Object type creation failed.');
@@ -3831,7 +3870,7 @@ export function DataPage({
     setSortDirection('asc');
     setFilterField('');
     setFilterValue('');
-    setSearch({ type: routeId });
+    selectDataLocation(routeId);
   }
 
   function chooseView(viewId: string, force = false) {
@@ -3845,9 +3884,7 @@ export function DataPage({
         ? `${selectedId}:all:${fields.map((field) => field.id).join(',')}`
         : `${selectedId}:${viewId}:${view?.rowVersion ?? 0}:${fields.map((field) => field.id).join(',')}`;
     applyViewConfig(view?.config);
-    setSearch(
-      viewId === 'all' ? { type: selectedPublicId } : { type: selectedPublicId, view: viewId },
-    );
+    selectDataLocation(selectedPublicId, viewId);
   }
 
   function moveField(fieldId: string, direction: -1 | 1) {
@@ -3969,7 +4006,7 @@ export function DataPage({
       setShowCreateView(false);
       setNewViewType('grid');
       form.reset();
-      setSearch({ type: selectedPublicId, view: created.id });
+      selectDataLocation(selectedPublicId, created.id);
       setMessageTone('success');
       setMessage(`View “${created.name}” created and shared with this project.`);
     } catch (cause) {
