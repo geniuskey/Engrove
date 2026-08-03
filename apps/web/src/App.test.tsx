@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiStatus, App, MembersPage } from './App.js';
@@ -155,6 +155,79 @@ describe('App', () => {
     expect(screen.getByRole('link', { name: '프로젝트' })).toBeInTheDocument();
     expect(document.documentElement).toHaveAttribute('lang', 'ko');
     expect(window.localStorage.getItem('engrove-locale')).toBe('ko');
+  });
+
+  it('edits a workspace name and key without changing its public route', async () => {
+    let workspace = {
+      id: 'workspace-id',
+      publicId: 'w1234567890abcd',
+      name: 'Alpha workspace',
+      slug: 'alpha',
+      description: 'Initial purpose',
+      archivedAt: null,
+    };
+    let updateBody: Record<string, unknown> | undefined;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/setup/status')) return json({ available: false });
+      if (url.endsWith('/auth/me')) {
+        return json({
+          user: {
+            id: '019fbcf9-e020-71da-935a-6a6a728b3790',
+            email: 'owner@example.com',
+            displayName: 'Owner',
+            organizationId: '019fbcf9-e020-71da-935a-6a6a728b3791',
+            role: 'owner',
+          },
+        });
+      }
+      if (url.endsWith('/workspaces/w1234567890abcd') && init?.method === 'PATCH') {
+        updateBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+        workspace = {
+          ...workspace,
+          name: String(updateBody.name),
+          slug: String(updateBody.key),
+          description: String(updateBody.description),
+        };
+        return json(workspace);
+      }
+      if (url.endsWith('/workspaces')) return json({ items: [workspace] });
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/workspaces']}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit workspace Alpha workspace' }));
+    const editor = screen.getByRole('heading', { name: 'Edit workspace' }).closest('form');
+    expect(editor).not.toBeNull();
+    const form = within(editor!);
+    fireEvent.change(form.getByRole('textbox', { name: 'Workspace name' }), {
+      target: { value: 'Materials workspace' },
+    });
+    fireEvent.change(form.getByRole('textbox', { name: 'Workspace key' }), {
+      target: { value: 'materials-lab' },
+    });
+    fireEvent.change(form.getByRole('textbox', { name: /Purpose/ }), {
+      target: { value: 'Materials engineering records' },
+    });
+    fireEvent.click(form.getByRole('button', { name: 'Save workspace' }));
+
+    await waitFor(() =>
+      expect(updateBody).toEqual({
+        name: 'Materials workspace',
+        key: 'materials-lab',
+        description: 'Materials engineering records',
+      }),
+    );
+    expect(await screen.findByRole('heading', { name: 'Materials workspace' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Materials workspace/ })).toHaveAttribute(
+      'href',
+      '/workspaces/w1234567890abcd',
+    );
   });
 
   it('bulk changes roles and drags selected members into a group', async () => {

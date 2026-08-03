@@ -18,6 +18,7 @@ import {
   ScopedVisualizationRepository,
   updateMemberGroup,
   updateMemberRoles,
+  updateWorkspace,
   createPool,
   type ActorSession,
 } from '../src/index.js';
@@ -71,6 +72,58 @@ afterAll(async () => {
 });
 
 describe.sequential('workspace data with PostgreSQL', () => {
+  it('updates workspace and table names and keys without changing public IDs', async () => {
+    const workspace = await createWorkspace(pool, actor, {
+      name: 'Original workspace',
+      slug: 'original-workspace',
+      requestId: 'workspace-create',
+    });
+    const updatedWorkspace = await updateWorkspace(pool, actor, {
+      workspaceId: workspace.id,
+      name: 'Materials workspace',
+      slug: 'materials-workspace',
+      description: 'Updated purpose',
+      requestId: 'workspace-update',
+    });
+    expect(updatedWorkspace).toMatchObject({
+      id: workspace.id,
+      publicId: workspace.publicId,
+      name: 'Materials workspace',
+      slug: 'materials-workspace',
+      description: 'Updated purpose',
+    });
+
+    const systemProject = await ensureWorkspaceDataProject(
+      pool,
+      actor,
+      workspace.id,
+      'data-context',
+    );
+    const data = await ScopedProjectRepository.open(pool, actor, workspace.id, systemProject.id);
+    const table = await data.createObjectType({
+      name: 'Sample',
+      pluralName: 'Samples',
+      key: 'sample',
+      requestId: 'table-create',
+    });
+    const updatedTable = await data.updateObjectType({
+      objectTypeId: table.id,
+      name: 'Specimen',
+      pluralName: 'Specimens',
+      key: 'specimen',
+      description: 'Prepared specimens',
+      requestId: 'table-update',
+    });
+    expect(updatedTable).toMatchObject({
+      id: table.id,
+      publicId: table.publicId,
+      name: 'Specimen',
+      pluralName: 'Specimens',
+      key: 'specimen',
+      description: 'Prepared specimens',
+    });
+  });
+
   it('creates saved views with canonical public IDs while retaining UUID lookup', async () => {
     const workspace = await createWorkspace(pool, actor, {
       name: 'View workspace',

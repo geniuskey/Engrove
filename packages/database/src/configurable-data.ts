@@ -977,6 +977,24 @@ function mapRecordViewUniqueViolation(error: unknown): never {
   throw error;
 }
 
+function mapObjectTypeUniqueViolation(error: unknown): never {
+  if (
+    typeof error === 'object' &&
+    error &&
+    'code' in error &&
+    error.code === '23505' &&
+    'constraint' in error &&
+    error.constraint === 'object_types_project_key_key'
+  ) {
+    throw new RepositoryError(
+      'OBJECT_TYPE_KEY_CONFLICT',
+      409,
+      'Another table already uses this key.',
+    );
+  }
+  throw error;
+}
+
 interface TemplateField {
   key: string;
   name: string;
@@ -1206,7 +1224,74 @@ export class ScopedProjectRepository {
         }),
       );
       return mapObjectType(result.rows[0]);
-    });
+    }).catch(mapObjectTypeUniqueViolation);
+  }
+
+  async updateObjectType(input: {
+    objectTypeId: string;
+    name: string;
+    pluralName: string;
+    key: string;
+    description: string;
+    requestId: string;
+  }): Promise<ObjectTypeRow> {
+    return transaction(this.pool, async (client) => {
+      const previous = await client.query<{
+        name: string;
+        plural_name: string;
+        key: string;
+        description: string;
+        system: boolean;
+      }>(
+        `select name, plural_name, key, description, system from object_types
+         where project_id = $1 and id = $2 for update`,
+        [this.scope.projectId, input.objectTypeId],
+      );
+      const current = previous.rows[0];
+      if (!current)
+        throw new RepositoryError('OBJECT_TYPE_NOT_FOUND', 404, 'Object type was not found.');
+      if (current.system && current.key !== input.key) {
+        throw new RepositoryError(
+          'OBJECT_TYPE_KEY_PROTECTED',
+          409,
+          'The key of a system table cannot be changed.',
+        );
+      }
+      const result = await client.query(
+        `update object_types set name = $3, plural_name = $4, key = $5,
+             description = $6, updated_at = now()
+         where project_id = $1 and id = $2
+         returning id, public_id, project_id, name, plural_name, key, icon, description, system`,
+        [
+          this.scope.projectId,
+          input.objectTypeId,
+          input.name.trim(),
+          input.pluralName.trim(),
+          input.key,
+          input.description,
+        ],
+      );
+      await appendAudit(
+        client,
+        this.audit({
+          actorId: this.scope.actor.actorId,
+          action: 'schema.object_type_updated',
+          targetType: 'object_type',
+          targetId: input.objectTypeId,
+          requestId: input.requestId,
+          payload: {
+            from: current,
+            to: {
+              name: input.name.trim(),
+              pluralName: input.pluralName.trim(),
+              key: input.key,
+              description: input.description,
+            },
+          },
+        }),
+      );
+      return mapObjectType(result.rows[0]);
+    }).catch(mapObjectTypeUniqueViolation);
   }
 
   private async validateRecordViewConfig(

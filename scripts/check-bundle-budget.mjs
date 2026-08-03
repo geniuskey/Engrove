@@ -4,9 +4,9 @@ import { resolve } from 'node:path';
 const kibibyte = 1024;
 const budgets = {
   maxJavaScriptChunk: 450 * kibibyte,
-  // Calculated fields, revision history, and the command surface are product-level capabilities.
+  // Calculated fields, revision history, metadata editing, and the command surface are product-level capabilities.
   // Keep the post-expansion baseline tight while leaving only modest regression headroom.
-  totalJavaScript: 1_120 * kibibyte,
+  totalJavaScript: 1_124 * kibibyte,
   maxCssAsset: 66 * kibibyte,
 };
 

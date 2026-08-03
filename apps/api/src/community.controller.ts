@@ -44,6 +44,7 @@ import {
   updateMemberRoles,
   updateMemberGroup,
   updateProject,
+  updateWorkspace,
   verifyCsrf,
   type ActorSession,
 } from '@engrove/database';
@@ -353,6 +354,32 @@ export class CommunityController {
       name: body.name,
       slug: body.slug,
       description: body.description ?? '',
+      requestId: requestId(request),
+    });
+  }
+
+  @Patch('workspaces/:workspaceId')
+  async editWorkspace(
+    @Req() request: Request,
+    @Param('workspaceId') unparsedWorkspaceId: string,
+    @Body() unparsed: unknown,
+  ) {
+    const actor = await requireActor(request, 'workspace.manage', true);
+    const body = z
+      .object({
+        name: z.string().trim().min(1).max(120),
+        key: z
+          .string()
+          .trim()
+          .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+        description: z.string().max(2000),
+      })
+      .parse(unparsed);
+    return updateWorkspace(appRuntime().pool, actor, {
+      workspaceId: await resolveWorkspaceIdentifier(appRuntime().pool, unparsedWorkspaceId),
+      name: body.name,
+      slug: body.key,
+      description: body.description,
       requestId: requestId(request),
     });
   }

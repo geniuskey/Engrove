@@ -529,6 +529,9 @@ function WorkspacesPage({ user }: { user: User }) {
   const { t } = useI18n();
   const { items, error, refresh } = useAsyncList<Workspace>(() => api('/workspaces'), []);
   const [formError, setFormError] = useState('');
+  const [editingWorkspaceId, setEditingWorkspaceId] = useState('');
+  const [editError, setEditError] = useState('');
+  const editingWorkspace = items.find((workspace) => workspace.id === editingWorkspaceId);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
@@ -546,6 +549,26 @@ function WorkspacesPage({ user }: { user: User }) {
       await refresh();
     } catch (cause) {
       setFormError(cause instanceof Error ? cause.message : 'Workspace creation failed.');
+    }
+  }
+  async function editWorkspace(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editingWorkspace) return;
+    const data = new FormData(event.currentTarget);
+    try {
+      await api(`/workspaces/${editingWorkspace.publicId ?? editingWorkspace.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: data.get('name'),
+          key: data.get('key'),
+          description: data.get('description'),
+        }),
+      });
+      await refresh();
+      setEditingWorkspaceId('');
+      setEditError('');
+    } catch (cause) {
+      setEditError(cause instanceof Error ? cause.message : 'Workspace update failed.');
     }
   }
   return (
@@ -570,27 +593,41 @@ function WorkspacesPage({ user }: { user: User }) {
       </div>
       <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {items.map((workspace) => (
-          <Link
-            className="group rounded-2xl border border-slate-800/90 bg-slate-900/60 p-6 shadow-lg shadow-slate-950/15 hover:-translate-y-0.5 hover:border-sky-500/60 hover:bg-slate-900/90"
+          <article
+            className="group relative rounded-2xl border border-slate-800/90 bg-slate-900/60 shadow-lg shadow-slate-950/15 hover:-translate-y-0.5 hover:border-sky-500/60 hover:bg-slate-900/90"
             key={workspace.id}
-            to={`/workspaces/${workspace.publicId ?? workspace.id}`}
           >
-            <div className="flex items-start justify-between gap-4">
-              <span className="grid size-10 place-items-center rounded-xl border border-slate-700 bg-slate-800 font-mono text-sm text-sky-300">
-                {workspace.name.slice(0, 1).toUpperCase()}
-              </span>
-              <span className="text-slate-600 transition group-hover:translate-x-1 group-hover:text-sky-300">
-                →
-              </span>
-            </div>
-            <h2 className="mt-5 text-xl font-semibold tracking-tight">{workspace.name}</h2>
-            <p className="mt-1 font-mono text-xs text-slate-500">
-              {workspace.slug} · {workspace.publicId ?? workspace.id}
-            </p>
-            <p className="mt-3 line-clamp-2 text-sm text-slate-400">
-              {workspace.description || t('workspaces.open')}
-            </p>
-          </Link>
+            <Link className="block p-6" to={`/workspaces/${workspace.publicId ?? workspace.id}`}>
+              <div className="flex items-start justify-between gap-4">
+                <span className="grid size-10 place-items-center rounded-xl border border-slate-700 bg-slate-800 font-mono text-sm text-sky-300">
+                  {workspace.name.slice(0, 1).toUpperCase()}
+                </span>
+                <span className="text-slate-600 transition group-hover:translate-x-1 group-hover:text-sky-300">
+                  →
+                </span>
+              </div>
+              <h2 className="mt-5 text-xl font-semibold tracking-tight">{workspace.name}</h2>
+              <p className="mt-1 font-mono text-xs text-slate-500">
+                {workspace.slug} · {workspace.publicId ?? workspace.id}
+              </p>
+              <p className="mt-3 line-clamp-2 text-sm text-slate-400">
+                {workspace.description || t('workspaces.open')}
+              </p>
+            </Link>
+            {allowed(user, 'workspace.manage') && (
+              <button
+                aria-label={`${t('workspaces.edit')} ${workspace.name}`}
+                className="absolute right-11 top-5 rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-slate-800 hover:text-sky-300 sm:opacity-0 sm:group-hover:opacity-100 sm:focus:opacity-100"
+                onClick={() => {
+                  setEditingWorkspaceId(workspace.id);
+                  setEditError('');
+                }}
+                type="button"
+              >
+                {t('workspaces.edit')}
+              </button>
+            )}
+          </article>
         ))}
         {items.length === 0 && !error && (
           <p className="rounded-2xl border border-dashed border-slate-700 p-8 text-slate-400">
@@ -598,6 +635,66 @@ function WorkspacesPage({ user }: { user: User }) {
           </p>
         )}
       </div>
+      {editingWorkspace && allowed(user, 'workspace.manage') && (
+        <form
+          className="mt-6 max-w-2xl rounded-2xl border border-sky-800/50 bg-slate-900/60 p-5 shadow-lg shadow-slate-950/10 sm:p-6"
+          key={editingWorkspace.id}
+          onSubmit={(event) => void editWorkspace(event)}
+        >
+          <div className="flex items-center justify-between gap-4">
+            <h2 className="text-lg font-semibold">{t('workspaces.edit')}</h2>
+            <button
+              aria-label="Close workspace editor"
+              className="rounded-md px-2 py-1 text-sm text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+              onClick={() => setEditingWorkspaceId('')}
+              type="button"
+            >
+              ×
+            </button>
+          </div>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <label className={formLabelClass}>
+              {t('workspaces.name')}
+              <input
+                className={inputClass}
+                defaultValue={editingWorkspace.name}
+                name="name"
+                required
+              />
+            </label>
+            <label className={formLabelClass}>
+              {t('workspaces.key')}
+              <input
+                className={inputClass}
+                defaultValue={editingWorkspace.slug}
+                name="key"
+                pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
+                required
+                title="Use lowercase letters, numbers, and single hyphens."
+              />
+            </label>
+          </div>
+          <label className="mt-4 block text-sm text-slate-300">
+            {t('workspaces.descriptionLabel')}
+            <textarea
+              className={`${inputClass} min-h-20 resize-y`}
+              defaultValue={editingWorkspace.description}
+              name="description"
+            />
+          </label>
+          <div className="mt-5 flex items-center gap-3">
+            <Button type="submit">{t('workspaces.save')}</Button>
+            <button
+              className="rounded-lg px-3 py-2 text-sm text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+              onClick={() => setEditingWorkspaceId('')}
+              type="button"
+            >
+              Cancel
+            </button>
+          </div>
+          <ErrorText>{editError}</ErrorText>
+        </form>
+      )}
       {allowed(user, 'workspace.manage') && (
         <form
           className="mt-10 max-w-2xl rounded-2xl border border-slate-800 bg-slate-900/40 p-5 shadow-lg shadow-slate-950/10 sm:p-6"
@@ -613,8 +710,15 @@ function WorkspacesPage({ user }: { user: User }) {
               <input className={inputClass} name="name" placeholder="Materials R&D" required />
             </label>
             <label className={formLabelClass}>
-              {t('workspaces.urlSlug')}
-              <input className={inputClass} name="slug" placeholder="materials-rd" required />
+              {t('workspaces.key')}
+              <input
+                className={inputClass}
+                name="slug"
+                pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
+                placeholder="materials-rd"
+                required
+                title="Use lowercase letters, numbers, and single hyphens."
+              />
             </label>
           </div>
           <label className="mt-4 block text-sm text-slate-300">

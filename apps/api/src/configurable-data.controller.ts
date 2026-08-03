@@ -139,6 +139,34 @@ export class ConfigurableDataController {
     });
   }
 
+  @Patch('object-types/:objectTypeId')
+  async updateObjectType(
+    @Req() request: Request,
+    @Param('workspaceId') workspaceId: string,
+    @Param('projectId') projectId: string,
+    @Param('objectTypeId') objectTypeId: string,
+    @Body() unparsed: unknown,
+  ) {
+    const body = z
+      .object({
+        name: z.string().trim().min(1).max(120),
+        pluralName: z.string().trim().min(1).max(120),
+        key,
+        description: z.string().max(2000),
+      })
+      .parse(unparsed);
+    return (
+      await repository(request, workspaceId, projectId, 'schema.manage', true)
+    ).updateObjectType({
+      objectTypeId: await resolveObjectTypeIdentifier(appRuntime().pool, objectTypeId),
+      name: body.name,
+      pluralName: body.pluralName,
+      key: body.key,
+      description: body.description,
+      requestId: requestId(request),
+    });
+  }
+
   @Get('object-types/:objectTypeId/fields')
   async fields(
     @Req() request: Request,

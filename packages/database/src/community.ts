@@ -697,6 +697,24 @@ function mapWorkspace(row: {
   };
 }
 
+function mapWorkspaceConflict(error: unknown): never {
+  if (
+    typeof error === 'object' &&
+    error &&
+    'code' in error &&
+    error.code === '23505' &&
+    'constraint' in error &&
+    error.constraint === 'workspaces_organization_slug_key'
+  ) {
+    throw new RepositoryError(
+      'WORKSPACE_KEY_CONFLICT',
+      409,
+      'Another workspace already uses this key.',
+    );
+  }
+  throw error;
+}
+
 export async function listWorkspaces(pool: Pool, actor: ActorSession): Promise<WorkspaceRow[]> {
   const result = await pool.query(
     `select id, public_id, name, slug, description, archived_at from workspaces
@@ -737,7 +755,59 @@ export async function createWorkspace(
       requestId: input.requestId,
     });
     return mapWorkspace(result.rows[0]);
-  });
+  }).catch(mapWorkspaceConflict);
+}
+
+export async function updateWorkspace(
+  pool: Pool,
+  actor: ActorSession,
+  input: {
+    workspaceId: string;
+    name: string;
+    slug: string;
+    description: string;
+    requestId: string;
+  },
+): Promise<WorkspaceRow> {
+  return transaction(pool, async (client) => {
+    const previous = await client.query<{ name: string; slug: string; description: string }>(
+      `select name, slug, description from workspaces
+       where id = $1 and organization_id = $2 for update`,
+      [input.workspaceId, actor.organizationId],
+    );
+    if (!previous.rows[0])
+      throw new RepositoryError('WORKSPACE_NOT_FOUND', 404, 'Workspace was not found.');
+    const result = await client.query(
+      `update workspaces set name = $3, slug = $4, description = $5, updated_at = now()
+       where id = $1 and organization_id = $2
+       returning id, public_id, name, slug, description, archived_at`,
+      [
+        input.workspaceId,
+        actor.organizationId,
+        input.name.trim(),
+        input.slug.trim().toLowerCase(),
+        input.description,
+      ],
+    );
+    await appendAudit(client, {
+      organizationId: actor.organizationId,
+      workspaceId: input.workspaceId,
+      actorId: actor.actorId,
+      action: 'workspace.updated',
+      targetType: 'workspace',
+      targetId: input.workspaceId,
+      requestId: input.requestId,
+      payload: {
+        from: previous.rows[0],
+        to: {
+          name: input.name.trim(),
+          slug: input.slug.trim().toLowerCase(),
+          description: input.description,
+        },
+      },
+    });
+    return mapWorkspace(result.rows[0]);
+  }).catch(mapWorkspaceConflict);
 }
 
 export interface ProjectRow {

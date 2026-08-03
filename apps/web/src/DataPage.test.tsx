@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { type ComponentProps, useState } from 'react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -55,6 +55,7 @@ describe('DataPage', () => {
     let updateViewBody: Record<string, unknown> | undefined;
     let schemaUpdateBody: Record<string, unknown> | undefined;
     let schemaOrderBody: Record<string, unknown> | undefined;
+    let objectTypeUpdateBody: Record<string, unknown> | undefined;
     let inlineCreateBody: Record<string, unknown> | undefined;
     let createdViewCount = 0;
     const recordQueryBodies: Array<Record<string, unknown>> = [];
@@ -73,9 +74,23 @@ describe('DataPage', () => {
               key: 'sample',
               icon: 'flask',
               description: '',
-              system: true,
+              system: false,
             },
           ],
+        });
+      }
+      if (url.endsWith('/object-types/t1234567890abcd') && init?.method === 'PATCH') {
+        objectTypeUpdateBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return json({
+          id: '019fbcf9-e020-71da-935a-6a6a728b3792',
+          publicId: 't1234567890abcd',
+          projectId: '019fbcf9-e020-71da-935a-6a6a728b3793',
+          name: objectTypeUpdateBody.name,
+          pluralName: objectTypeUpdateBody.pluralName,
+          key: objectTypeUpdateBody.key,
+          icon: 'flask',
+          description: objectTypeUpdateBody.description,
+          system: false,
         });
       }
       if (url.endsWith('/fields')) {
@@ -767,6 +782,33 @@ describe('DataPage', () => {
         viewOptions: { groupFieldId: '019fbcf9-e020-71da-935a-6a6a728b3798' },
       },
     });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit table' }));
+    const settings = screen.getByRole('button', { name: 'Save table' }).closest('form');
+    expect(settings).not.toBeNull();
+    const settingsForm = within(settings!);
+    fireEvent.change(settingsForm.getByRole('textbox', { name: 'Type name' }), {
+      target: { value: 'Specimen' },
+    });
+    fireEvent.change(settingsForm.getByRole('textbox', { name: 'Table label' }), {
+      target: { value: 'Specimens' },
+    });
+    fireEvent.change(settingsForm.getByRole('textbox', { name: 'Stable key' }), {
+      target: { value: 'specimen' },
+    });
+    fireEvent.change(settingsForm.getByRole('textbox', { name: 'Table description' }), {
+      target: { value: 'Prepared materials specimens' },
+    });
+    fireEvent.click(settingsForm.getByRole('button', { name: 'Save table' }));
+    await waitFor(() =>
+      expect(objectTypeUpdateBody).toEqual({
+        name: 'Specimen',
+        pluralName: 'Specimens',
+        key: 'specimen',
+        description: 'Prepared materials specimens',
+      }),
+    );
+    expect(await screen.findByRole('heading', { name: 'Specimens' })).toBeInTheDocument();
   });
 
   it('edits project context alongside rows in a workspace-shared table', async () => {

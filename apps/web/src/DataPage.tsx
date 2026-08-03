@@ -2661,6 +2661,7 @@ export function DataPage({
   const [selectedRecord, setSelectedRecord] = useState<DynamicRecord>();
   const [bulkBusy, setBulkBusy] = useState(false);
   const [showSchema, setShowSchema] = useState(false);
+  const [showTableSettings, setShowTableSettings] = useState(false);
   const [schemaSearch, setSchemaSearch] = useState('');
   const [schemaSelection, setSchemaSelection] = useState<'new' | string>('new');
   const [schemaFieldType, setSchemaFieldType] = useState<FieldType>('text');
@@ -3128,6 +3129,7 @@ export function DataPage({
     setSelectedRecord(undefined);
     setActiveTool(null);
     setShowCreateView(false);
+    setShowTableSettings(false);
     setNewViewType('grid');
     setShowInlineRecord(false);
     setSearchValue('');
@@ -3331,6 +3333,37 @@ export function DataPage({
     } catch (cause) {
       setMessageTone('error');
       setMessage(cause instanceof Error ? cause.message : 'Object type creation failed.');
+    }
+  }
+
+  async function updateObjectType(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selected) return;
+    const data = new FormData(event.currentTarget);
+    setSchemaBusy(true);
+    try {
+      const updated = await api<ObjectType>(`${base}/object-types/${selectedPublicId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: data.get('name'),
+          pluralName: data.get('pluralName'),
+          key: data.get('key'),
+          description: data.get('description'),
+        }),
+      });
+      setObjectTypes((current) =>
+        current
+          .map((objectType) => (objectType.id === updated.id ? updated : objectType))
+          .sort((left, right) => left.name.localeCompare(right.name)),
+      );
+      setShowTableSettings(false);
+      setMessageTone('success');
+      setMessage(`Table “${updated.pluralName}” updated.`);
+    } catch (cause) {
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : 'Table could not be updated.');
+    } finally {
+      setSchemaBusy(false);
     }
   }
 
@@ -4783,6 +4816,15 @@ export function DataPage({
                 )}
                 {allowed(user, 'schema.manage') && (
                   <Button
+                    aria-expanded={showTableSettings}
+                    variant="quiet"
+                    onClick={() => setShowTableSettings((value) => !value)}
+                  >
+                    {t('data.editTable')}
+                  </Button>
+                )}
+                {allowed(user, 'schema.manage') && (
+                  <Button
                     aria-expanded={showSchema}
                     variant="quiet"
                     onClick={() => {
@@ -4854,6 +4896,75 @@ export function DataPage({
                 )}
               </div>
             </div>
+
+            {showTableSettings && allowed(user, 'schema.manage') && (
+              <form
+                className="mt-3 rounded-xl border border-sky-800/40 bg-slate-900/65 p-4"
+                key={selected.id}
+                onSubmit={(event) => void updateObjectType(event)}
+              >
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  <label className={fieldLabelClass}>
+                    {t('data.typeName')}
+                    <input
+                      className={inputClass}
+                      defaultValue={selected.name}
+                      name="name"
+                      required
+                    />
+                  </label>
+                  <label className={fieldLabelClass}>
+                    {t('data.tableLabel')}
+                    <input
+                      className={inputClass}
+                      defaultValue={selected.pluralName}
+                      name="pluralName"
+                      required
+                    />
+                  </label>
+                  <label className={fieldLabelClass}>
+                    {t('data.stableKey')}
+                    <input
+                      aria-readonly={selected.system}
+                      className={inputClass}
+                      defaultValue={selected.key}
+                      maxLength={64}
+                      minLength={2}
+                      name="key"
+                      pattern="[a-z][a-z0-9-]{1,63}"
+                      readOnly={selected.system}
+                      required
+                      title="Start with a lowercase letter; use lowercase letters, numbers, and hyphens."
+                    />
+                    {selected.system && (
+                      <span className="text-[10px] font-normal text-slate-500">
+                        Template table keys are protected.
+                      </span>
+                    )}
+                  </label>
+                  <label className={fieldLabelClass}>
+                    {t('data.tableDescription')}
+                    <input
+                      className={inputClass}
+                      defaultValue={selected.description}
+                      name="description"
+                    />
+                  </label>
+                </div>
+                <div className="mt-4 flex items-center gap-2">
+                  <Button disabled={schemaBusy} type="submit">
+                    {schemaBusy ? t('data.saving') : t('data.saveTable')}
+                  </Button>
+                  <button
+                    className="rounded-lg px-3 py-2 text-sm text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                    onClick={() => setShowTableSettings(false)}
+                    type="button"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            )}
 
             {showSchema && allowed(user, 'schema.manage') && (
               <section
