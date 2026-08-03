@@ -4475,9 +4475,6 @@ export function DataPage({
                       </span>
                       <span className="text-slate-500">▦</span>
                       <span className="truncate">{objectType.pluralName}</span>
-                      <span className="ml-auto shrink-0 font-mono text-[9px] text-slate-600">
-                        {objectType.publicId ?? objectType.id}
-                      </span>
                     </button>
                     {activeTable && (
                       <div className="ml-3 border-l border-slate-700/80 py-1 pl-2">
@@ -4538,9 +4535,6 @@ export function DataPage({
                                     {viewTypeMeta[view.viewType].icon}
                                   </span>
                                   <span className="truncate">{view.name}</span>
-                                  <span className="ml-auto shrink-0 font-mono text-[9px] text-slate-600">
-                                    {view.publicId ?? view.id}
-                                  </span>
                                 </span>
                               </button>
                               {allowed(user, 'schema.manage') && (
