@@ -635,12 +635,17 @@ function GridCell({
   const common = {
     autoFocus: true,
     className:
-      'min-h-9 w-full min-w-28 rounded border border-sky-500 bg-slate-950 px-2 py-1 text-sm text-slate-100 outline-none',
+      'min-h-9 w-full min-w-0 rounded border border-sky-500 bg-slate-950 px-2 py-1 text-sm text-slate-100 outline-none',
     disabled: saving,
   };
   return (
-    <div className="min-w-44 p-1" onBlur={handleBlur} onKeyDown={handleKeyDown}>
-      <div className="flex items-center gap-1">
+    <div
+      className="w-full min-w-0 max-w-full overflow-hidden p-1"
+      data-grid-cell-editor=""
+      onBlur={handleBlur}
+      onKeyDown={handleKeyDown}
+    >
+      <div className="grid min-w-0 gap-1">
         {field?.fieldType === 'boolean' ? (
           <select
             {...common}
@@ -708,6 +713,8 @@ function GridCell({
             ))}
           </select>
         )}
+      </div>
+      <div className="mt-1 flex max-w-full flex-wrap items-center justify-end gap-1">
         <button
           aria-label={`Save ${label}`}
           className="rounded px-2 py-1 text-xs text-emerald-300 hover:bg-emerald-500/10"

@@ -452,6 +452,11 @@ describe('DataPage', () => {
 
     fireEvent.doubleClick(screen.getByRole('button', { name: 'Edit Serial for Sample Two' }));
     const editor = screen.getByRole('textbox', { name: 'Serial value' });
+    const cellEditor = editor.closest('[data-grid-cell-editor]');
+    expect(cellEditor).toHaveClass('w-full', 'min-w-0', 'max-w-full', 'overflow-hidden');
+    expect(screen.getByRole('button', { name: 'Cancel editing Serial' }).closest('td')).toBe(
+      editor.closest('td'),
+    );
     fireEvent.change(editor, { target: { value: '3' } });
     fireEvent.keyDown(editor, { key: 'Enter' });
 
