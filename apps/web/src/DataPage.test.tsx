@@ -241,6 +241,9 @@ describe('DataPage', () => {
     ).toBeInTheDocument();
     expect(screen.getByText('1 records · page 1 of 1')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'New record' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Schema' })).toHaveClass('engrove-button');
+    expect(screen.getByRole('button', { name: 'Export CSV' })).toHaveClass('engrove-button');
+    expect(screen.getByRole('button', { name: 'New record' })).toHaveClass('engrove-button');
     expect(screen.getByRole('navigation', { name: 'Data navigation' })).toBeInTheDocument();
     const moreTableActions = screen.getByText('⋯').closest('details');
     expect(moreTableActions).not.toHaveAttribute('open');

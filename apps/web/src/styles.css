@@ -94,6 +94,26 @@ a {
   scrollbar-width: thin;
 }
 
+.compact-page {
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+}
+
+.compact-page .text-sm {
+  font-size: 0.8125rem;
+  line-height: 1.125rem;
+}
+
+.compact-page .text-lg {
+  font-size: 1rem;
+  line-height: 1.4rem;
+}
+
+.compact-page .text-xl {
+  font-size: 1.125rem;
+  line-height: 1.5rem;
+}
+
 .compact-page .text-5xl,
 .compact-page .text-4xl {
   font-size: 1.75rem;
@@ -167,6 +187,12 @@ a {
 .compact-page .shadow-xl,
 .compact-page .shadow-lg {
   box-shadow: 0 1px 2px rgb(15 23 42 / 0.08);
+}
+
+.compact-ui .engrove-button {
+  font-size: 0.75rem;
+  line-height: 1rem;
+  letter-spacing: -0.005em;
 }
 
 :root[data-theme='light'] .compact-ui [class*='shadow-slate-950'] {

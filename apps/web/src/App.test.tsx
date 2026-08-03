@@ -113,6 +113,9 @@ describe('App', () => {
     expect(document.documentElement).toHaveAttribute('data-theme', 'light');
     expect(window.localStorage.getItem('engrove-theme')).toBe('light');
     fireEvent.click(screen.getByRole('button', { name: 'Open user menu' }));
+    expect(screen.getByRole('combobox', { name: 'Language' })).toHaveClass('text-[11px]');
+    expect(screen.getByRole('button', { name: 'Switch to dark theme' })).toHaveClass('text-[11px]');
+    expect(screen.getByRole('button', { name: 'Sign out' })).toHaveClass('text-[11px]');
     fireEvent.click(screen.getByRole('button', { name: 'Switch to dark theme' }));
     expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
     expect(window.localStorage.getItem('engrove-theme')).toBe('dark');

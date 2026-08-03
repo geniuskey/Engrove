@@ -397,7 +397,7 @@ export function ServiceShell({
                       {t('language.label')}
                       <select
                         aria-label={t('language.label')}
-                        className="mt-1 min-h-8 w-full rounded border border-slate-700 bg-slate-950 px-2 text-xs normal-case tracking-normal text-slate-300"
+                        className="mt-1 min-h-8 w-full rounded border border-slate-700 bg-slate-950 px-2 text-[11px] normal-case tracking-normal text-slate-300"
                         value={locale}
                         onChange={(event) => setLocale(event.target.value as 'en' | 'ko')}
                       >
@@ -409,7 +409,7 @@ export function ServiceShell({
                       aria-label={t('sidebar.switchTheme', {
                         theme: t(theme === 'dark' ? 'theme.light' : 'theme.dark'),
                       })}
-                      className="rounded px-2 py-1.5 text-left text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                      className="rounded px-2 py-1.5 text-left text-[11px] text-slate-400 hover:bg-slate-800 hover:text-slate-200"
                       onClick={onToggleTheme}
                       type="button"
                     >
@@ -417,7 +417,7 @@ export function ServiceShell({
                     </button>
                     <button
                       aria-label={t('sidebar.signOut')}
-                      className="rounded px-2 py-1.5 text-left text-xs text-rose-300 hover:bg-rose-500/10"
+                      className="rounded px-2 py-1.5 text-left text-[11px] text-rose-300 hover:bg-rose-500/10"
                       onClick={() => void signOut()}
                       type="button"
                     >
