@@ -2687,6 +2687,17 @@ export function DataPage({
   const availableFieldTypes = workspaceMode
     ? fieldTypes.filter((type) => !['measurement', 'file', 'dataset'].includes(type))
     : fieldTypes;
+  useEffect(() => {
+    if (!selected?.publicId || search.get('type') === selected.publicId) return;
+    setSearch(
+      (current) => {
+        const canonical = new URLSearchParams(current);
+        canonical.set('type', selected.publicId!);
+        return canonical;
+      },
+      { replace: true },
+    );
+  }, [search, selected, setSearch]);
   const orderedFields = useMemo(() => {
     const position = new Map(fieldOrderIds.map((fieldId, index) => [fieldId, index]));
     return [...fields].sort((left, right) => {
@@ -7027,17 +7038,26 @@ export function RecordDetailPage({ user }: { user: User }) {
   const [error, setError] = useState('');
   const load = useCallback(async () => {
     try {
-      const [fieldResult, recordResult] = await Promise.all([
+      const [typeResult, fieldResult, recordResult] = await Promise.all([
+        api<{ items: ObjectType[] }>(`${base}/object-types`),
         api<{ items: FieldDefinition[] }>(`${base}/object-types/${objectTypeId}/fields`),
         api<DynamicRecord>(`${base}/object-types/${objectTypeId}/records/${recordId}`),
       ]);
       setFields(fieldResult.items);
       setRecord(recordResult);
       setError('');
+      const objectType = typeResult.items.find(
+        (item) => item.id === objectTypeId || item.publicId === objectTypeId,
+      );
+      if (objectType?.publicId && objectType.publicId !== objectTypeId) {
+        void navigate(`${base}/data/${objectType.publicId}/records/${recordId}`, {
+          replace: true,
+        });
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Record could not be loaded.');
     }
-  }, [base, objectTypeId, recordId]);
+  }, [base, navigate, objectTypeId, recordId]);
   useEffect(() => void load(), [load]);
 
   async function archive(archived: boolean) {

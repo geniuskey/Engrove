@@ -69,6 +69,7 @@ describe('App', () => {
           items: [
             {
               id: 'project-id',
+              publicId: 'p1234567890abcd',
               workspaceId: 'workspace-id',
               name: 'Alpha',
               key: 'ALPHA',
@@ -80,7 +81,7 @@ describe('App', () => {
           ],
         });
       }
-      if (url.endsWith('/workspaces/workspace-id/projects/project-id/demo')) {
+      if (url.endsWith('/workspaces/workspace-id/projects/p1234567890abcd/demo')) {
         return json({ installed: true });
       }
       throw new Error(`Unexpected fetch ${url}`);
@@ -104,6 +105,12 @@ describe('App', () => {
     expect(projectNav).toHaveTextContent('Visualizations');
     expect(projectNav).toHaveTextContent('Tasks');
     expect(screen.getByRole('link', { name: 'Overview' })).toHaveAttribute('aria-current', 'page');
+    await waitFor(() =>
+      expect(screen.getByRole('link', { name: 'Overview' })).toHaveAttribute(
+        'href',
+        '/workspaces/workspace-id/projects/p1234567890abcd',
+      ),
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Open command palette' }));
     expect(screen.getByRole('dialog', { name: 'Command palette' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Open Engineering records/ })).toBeInTheDocument();

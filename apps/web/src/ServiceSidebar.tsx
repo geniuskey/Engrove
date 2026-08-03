@@ -107,6 +107,20 @@ export function ServiceShell({
   const project = projects.find(
     (item) => (item.publicId ?? item.id) === projectId || item.id === projectId,
   );
+  useEffect(() => {
+    if (!projectId || !project?.publicId || projectId === project.publicId) return;
+    navigate(
+      {
+        pathname: location.pathname.replace(
+          `/projects/${projectId}`,
+          `/projects/${project.publicId}`,
+        ),
+        search: location.search,
+        hash: location.hash,
+      },
+      { replace: true },
+    );
+  }, [location.hash, location.pathname, location.search, navigate, project, projectId]);
   const utilitySection =
     location.pathname === '/members'
       ? t('common.members')
