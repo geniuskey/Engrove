@@ -3,6 +3,7 @@ import {
   configurableFieldTypes,
   resolveObjectTypeIdentifier,
   resolveProjectIdentifier,
+  resolveRecordViewIdentifier,
   resolveWorkspaceIdentifier,
   ScopedProjectRepository,
   type JsonValue,
@@ -311,7 +312,7 @@ export class ConfigurableDataController {
       await repository(request, workspaceId, projectId, 'schema.manage', true)
     ).updateRecordView({
       objectTypeId: await resolveObjectTypeIdentifier(appRuntime().pool, objectTypeId),
-      viewId: id.parse(viewId),
+      viewId: await resolveRecordViewIdentifier(appRuntime().pool, viewId),
       name: body.name,
       viewType: body.viewType as RecordViewType,
       config: body.config as RecordViewConfig,
@@ -339,7 +340,7 @@ export class ConfigurableDataController {
       await repository(request, workspaceId, projectId, 'schema.manage', true)
     ).setRecordViewArchived({
       objectTypeId: await resolveObjectTypeIdentifier(appRuntime().pool, objectTypeId),
-      viewId: id.parse(viewId),
+      viewId: await resolveRecordViewIdentifier(appRuntime().pool, viewId),
       archived: true,
       rowVersion: body.rowVersion,
       reason: body.reason,

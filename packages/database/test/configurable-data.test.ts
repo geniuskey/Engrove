@@ -5,9 +5,11 @@ import { canonicalDecimal, parseCsv, ScopedProjectRepository } from '../src/conf
 import {
   generateBasePublicId,
   generateTablePublicId,
+  generateViewPublicId,
   generateWorkspacePublicId,
   resolveObjectTypeIdentifier,
   resolveProjectIdentifier,
+  resolveRecordViewIdentifier,
   resolveWorkspaceIdentifier,
 } from '../src/public-ids.js';
 
@@ -22,16 +24,19 @@ const actor = {
 };
 
 describe('Engrove public identifiers', () => {
-  it('generates 15-character workspace, project, and table IDs with canonical prefixes', () => {
+  it('generates 15-character workspace, project, table, and view IDs with canonical prefixes', () => {
     const workspaceIds = Array.from({ length: 1_000 }, generateWorkspacePublicId);
     const baseIds = Array.from({ length: 1_000 }, generateBasePublicId);
     const tableIds = Array.from({ length: 1_000 }, generateTablePublicId);
+    const viewIds = Array.from({ length: 1_000 }, generateViewPublicId);
     expect(workspaceIds.every((value) => /^w[0-9a-z]{14}$/.test(value))).toBe(true);
     expect(baseIds.every((value) => /^p[0-9a-z]{14}$/.test(value))).toBe(true);
     expect(tableIds.every((value) => /^t[0-9a-z]{14}$/.test(value))).toBe(true);
+    expect(viewIds.every((value) => /^v[0-9a-z]{14}$/.test(value))).toBe(true);
     expect(new Set(workspaceIds).size).toBe(workspaceIds.length);
     expect(new Set(baseIds).size).toBe(baseIds.length);
     expect(new Set(tableIds).size).toBe(tableIds.length);
+    expect(new Set(viewIds).size).toBe(viewIds.length);
   });
 
   it('keeps UUIDs compatible and resolves short IDs to internal UUIDs', async () => {
@@ -43,7 +48,9 @@ describe('Engrove public identifiers', () => {
     await expect(resolveProjectIdentifier(database, 'p1234567890abcd')).resolves.toBe(uuid);
     await expect(resolveObjectTypeIdentifier(database, 't1234567890abcd')).resolves.toBe(uuid);
     await expect(resolveObjectTypeIdentifier(database, 'm1234567890abcd')).resolves.toBe(uuid);
-    expect(query).toHaveBeenCalledTimes(4);
+    await expect(resolveRecordViewIdentifier(database, 'v1234567890abcd')).resolves.toBe(uuid);
+    await expect(resolveRecordViewIdentifier(database, uuid)).resolves.toBe(uuid);
+    expect(query).toHaveBeenCalledTimes(5);
   });
 });
 

@@ -204,6 +204,7 @@ describe('DataPage', () => {
               createdViewCount === 1
                 ? '019fbcf9-e020-71da-935a-6a6a728b3796'
                 : '019fbcf9-e020-71da-935a-6a6a728b379a',
+            publicId: createdViewCount === 1 ? 'v1234567890abcd' : 'v1234567890abce',
             objectTypeId: '019fbcf9-e020-71da-935a-6a6a728b3792',
             name: createViewBody.name,
             viewType: createViewBody.viewType,
@@ -215,10 +216,11 @@ describe('DataPage', () => {
         }
         return json({ items: [] });
       }
-      if (url.endsWith('/views/019fbcf9-e020-71da-935a-6a6a728b3796')) {
+      if (url.endsWith('/views/v1234567890abcd')) {
         updateViewBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
         return json({
           id: '019fbcf9-e020-71da-935a-6a6a728b3796',
+          publicId: 'v1234567890abcd',
           objectTypeId: '019fbcf9-e020-71da-935a-6a6a728b3792',
           name: updateViewBody.name,
           viewType: 'grid',
@@ -307,7 +309,12 @@ describe('DataPage', () => {
         <Routes>
           <Route
             path="/workspaces/:workspaceId/projects/:projectId/data"
-            element={<DataPageHarness />}
+            element={
+              <>
+                <LocationProbe />
+                <DataPageHarness />
+              </>
+            }
           />
         </Routes>
       </MemoryRouter>,
@@ -593,6 +600,11 @@ describe('DataPage', () => {
       }),
     );
     expect(await screen.findByRole('button', { name: 'Review queue' })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByLabelText('Current location')).toHaveTextContent(
+        '?type=t1234567890abcd&view=v1234567890abcd',
+      ),
+    );
 
     const densitySelect = screen.getByRole('combobox', { name: 'Row density' });
     fireEvent.change(densitySelect, {

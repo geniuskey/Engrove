@@ -402,6 +402,7 @@ export const recordViews = pgTable(
   'record_views',
   {
     id: uuid('id').primaryKey(),
+    publicId: text('public_id').notNull(),
     projectId: uuid('project_id').notNull(),
     objectTypeId: uuid('object_type_id').notNull(),
     name: text('name').notNull(),
@@ -420,6 +421,7 @@ export const recordViews = pgTable(
     ...auditColumns,
   },
   (table) => [
+    uniqueIndex('record_views_public_id_key').on(table.publicId),
     foreignKey({
       columns: [table.projectId, table.objectTypeId],
       foreignColumns: [objectTypes.projectId, objectTypes.id],
@@ -434,6 +436,7 @@ export const recordViews = pgTable(
       'record_views_type_check',
       sql`${table.viewType} in ('grid', 'form', 'gallery', 'kanban', 'calendar')`,
     ),
+    check('record_views_public_id_check', sql`${table.publicId} ~ '^v[0-9a-z]{14}$'`),
     check('record_views_row_version_check', sql`${table.rowVersion} > 0`),
   ],
 );

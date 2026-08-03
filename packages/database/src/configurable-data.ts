@@ -11,7 +11,7 @@ import { appendAudit, RepositoryError, type ActorSession, type AuditInput } from
 import { evaluateNewRecord } from './engineering-types.js';
 import { installDefaultVisualizations } from './visualizations.js';
 import { evaluateFormula, formulaReferences, type FormulaValue } from './calculated-fields.js';
-import { generateTablePublicId } from './public-ids.js';
+import { generateTablePublicId, generateViewPublicId } from './public-ids.js';
 
 export const RECORD_PROJECTION_VERSION = 1;
 
@@ -173,6 +173,7 @@ export type RecordViewType = 'grid' | 'form' | 'gallery' | 'kanban' | 'calendar'
 
 export interface RecordViewRow {
   id: string;
+  publicId: string;
   projectId: string;
   objectTypeId: string;
   name: string;
@@ -213,6 +214,7 @@ interface DbFieldRow {
 
 interface DbRecordViewRow {
   id: string;
+  public_id: string;
   project_id: string;
   object_type_id: string;
   name: string;
@@ -278,6 +280,7 @@ function mapField(row: DbFieldRow): FieldDefinitionRow {
 function mapRecordView(row: DbRecordViewRow): RecordViewRow {
   return {
     id: row.id,
+    publicId: row.public_id,
     projectId: row.project_id,
     objectTypeId: row.object_type_id,
     name: row.name,
@@ -1285,7 +1288,7 @@ export class ScopedProjectRepository {
 
   async listRecordViews(objectTypeId: string, includeArchived = false): Promise<RecordViewRow[]> {
     const result = await this.pool.query<DbRecordViewRow>(
-      `select id, project_id, object_type_id, name, view_type, config, row_version,
+      `select id, public_id, project_id, object_type_id, name, view_type, config, row_version,
               created_by, updated_by, archived_at, created_at, updated_at
        from record_views
        where project_id = $1 and object_type_id = $2
@@ -1322,12 +1325,13 @@ export class ScopedProjectRepository {
         const id = uuidv7();
         const result = await client.query<DbRecordViewRow>(
           `insert into record_views
-            (id, project_id, object_type_id, name, view_type, config, created_by, updated_by)
-           values ($1, $2, $3, $4, $5, $6::jsonb, $7, $7)
-           returning id, project_id, object_type_id, name, view_type, config, row_version,
+            (id, public_id, project_id, object_type_id, name, view_type, config, created_by, updated_by)
+           values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $8)
+           returning id, public_id, project_id, object_type_id, name, view_type, config, row_version,
                      created_by, updated_by, archived_at, created_at, updated_at`,
           [
             id,
+            generateViewPublicId(),
             this.scope.projectId,
             input.objectTypeId,
             input.name.trim(),
@@ -1381,7 +1385,7 @@ export class ScopedProjectRepository {
              updated_by = $7, updated_at = now()
            where project_id = $1 and object_type_id = $2 and id = $3
              and row_version = $8 and archived_at is null
-           returning id, project_id, object_type_id, name, view_type, config, row_version,
+           returning id, public_id, project_id, object_type_id, name, view_type, config, row_version,
                      created_by, updated_by, archived_at, created_at, updated_at`,
           [
             this.scope.projectId,
@@ -1448,7 +1452,7 @@ export class ScopedProjectRepository {
              row_version = row_version + 1, updated_by = $5, updated_at = now()
            where project_id = $1 and object_type_id = $2 and id = $3 and row_version = $7
              and (($4::boolean and archived_at is null) or (not $4::boolean and archived_at is not null))
-           returning id, project_id, object_type_id, name, view_type, config, row_version,
+           returning id, public_id, project_id, object_type_id, name, view_type, config, row_version,
                      created_by, updated_by, archived_at, created_at, updated_at`,
           [
             this.scope.projectId,

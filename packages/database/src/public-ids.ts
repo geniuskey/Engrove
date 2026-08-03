@@ -10,9 +10,10 @@ const unbiasedLimit = Math.floor(256 / alphabet.length) * alphabet.length;
 export const workspacePublicIdPattern = /^w[0-9a-z]{14}$/;
 export const basePublicIdPattern = /^p[0-9a-z]{14}$/;
 export const tablePublicIdPattern = /^t[0-9a-z]{14}$/;
+export const viewPublicIdPattern = /^v[0-9a-z]{14}$/;
 const legacyTablePublicIdPattern = /^m[0-9a-z]{14}$/;
 
-function generatePublicId(prefix: 'w' | 'p' | 't'): string {
+function generatePublicId(prefix: 'w' | 'p' | 't' | 'v'): string {
   let value = prefix;
   while (value.length <= randomLength) {
     for (const byte of randomBytes(randomLength)) {
@@ -36,13 +37,18 @@ export function generateTablePublicId(): string {
   return generatePublicId('t');
 }
 
+export function generateViewPublicId(): string {
+  return generatePublicId('v');
+}
+
 type Queryable = Pick<Pool, 'query'> | Pick<PoolClient, 'query'>;
 
 async function resolveIdentifier(
   database: Queryable,
-  table: 'workspaces' | 'projects' | 'object_types',
+  table: 'workspaces' | 'projects' | 'object_types' | 'record_views',
   identifier: string,
-  code: 'WORKSPACE_NOT_FOUND' | 'PROJECT_NOT_FOUND' | 'OBJECT_TYPE_NOT_FOUND',
+  code:
+    'WORKSPACE_NOT_FOUND' | 'PROJECT_NOT_FOUND' | 'OBJECT_TYPE_NOT_FOUND' | 'RECORD_VIEW_NOT_FOUND',
   message: string,
 ): Promise<string> {
   if (validateUuid(identifier)) return identifier;
@@ -51,7 +57,9 @@ async function resolveIdentifier(
       ? workspacePublicIdPattern
       : table === 'projects'
         ? basePublicIdPattern
-        : tablePublicIdPattern;
+        : table === 'object_types'
+          ? tablePublicIdPattern
+          : viewPublicIdPattern;
   if (table === 'object_types' && legacyTablePublicIdPattern.test(identifier)) {
     identifier = `t${identifier.slice(1)}`;
   }
@@ -100,5 +108,18 @@ export async function resolveObjectTypeIdentifier(
     identifier,
     'OBJECT_TYPE_NOT_FOUND',
     'Object type was not found.',
+  );
+}
+
+export async function resolveRecordViewIdentifier(
+  database: Queryable,
+  identifier: string,
+): Promise<string> {
+  return resolveIdentifier(
+    database,
+    'record_views',
+    identifier,
+    'RECORD_VIEW_NOT_FOUND',
+    'Record view was not found.',
   );
 }

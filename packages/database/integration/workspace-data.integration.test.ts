@@ -9,6 +9,7 @@ import {
   listProjects,
   listMemberGroups,
   replaceMemberGroupMembers,
+  resolveRecordViewIdentifier,
   RepositoryError,
   ScopedEngineeringRepository,
   ScopedFileDatasetRepository,
@@ -70,6 +71,48 @@ afterAll(async () => {
 });
 
 describe.sequential('workspace data with PostgreSQL', () => {
+  it('creates saved views with canonical public IDs while retaining UUID lookup', async () => {
+    const workspace = await createWorkspace(pool, actor, {
+      name: 'View workspace',
+      slug: 'view-workspace',
+      requestId: 'workspace-create',
+    });
+    const systemProject = await ensureWorkspaceDataProject(
+      pool,
+      actor,
+      workspace.id,
+      'data-context',
+    );
+    const data = await ScopedProjectRepository.open(pool, actor, workspace.id, systemProject.id);
+    const objectType = await data.createObjectType({
+      name: 'Run',
+      pluralName: 'Runs',
+      key: 'run',
+      requestId: 'object-create',
+    });
+    const view = await data.createRecordView({
+      objectTypeId: objectType.id,
+      name: 'Review queue',
+      viewType: 'grid',
+      config: {
+        visibleFieldIds: [],
+        fieldWidths: {},
+        filters: [],
+        sorts: [],
+        rowDensity: 'compact',
+        pageSize: 25,
+      },
+      requestId: 'view-create',
+    });
+
+    expect(view.publicId).toMatch(/^v[0-9a-z]{14}$/);
+    await expect(resolveRecordViewIdentifier(pool, view.publicId)).resolves.toBe(view.id);
+    await expect(resolveRecordViewIdentifier(pool, view.id)).resolves.toBe(view.id);
+    await expect(data.listRecordViews(objectType.id)).resolves.toMatchObject([
+      { id: view.id, publicId: view.publicId },
+    ]);
+  });
+
   it('creates one hidden system scope and rejects it in project resource repositories', async () => {
     const workspace = await createWorkspace(pool, actor, {
       name: 'Workspace',

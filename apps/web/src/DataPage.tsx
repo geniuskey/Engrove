@@ -386,6 +386,7 @@ function ColumnResizeHandle({
 
 interface RecordView {
   id: string;
+  publicId?: string;
   objectTypeId: string;
   name: string;
   viewType: RecordViewType;
@@ -2673,7 +2674,7 @@ export function DataPage({
   const selectedIdentifier = canonicalTableIdentifier(
     routeObjectTypeId ?? search.get('type') ?? objectTypes[0]?.publicId ?? objectTypes[0]?.id ?? '',
   );
-  const selectedViewId = search.get('view') ?? 'all';
+  const requestedViewId = search.get('view') ?? 'all';
   const selected = objectTypes.find(
     (objectType) =>
       (objectType.publicId ?? objectType.id) === selectedIdentifier ||
@@ -2681,7 +2682,10 @@ export function DataPage({
   );
   const selectedId = selected?.id ?? '';
   const selectedPublicId = selected?.publicId ?? selectedIdentifier;
-  const selectedView = views.find((view) => view.id === selectedViewId);
+  const selectedView = views.find(
+    (view) => view.id === requestedViewId || view.publicId === requestedViewId,
+  );
+  const selectedViewId = selectedView?.publicId ?? requestedViewId;
   const layoutPreferenceKey = `engrove:table-layout:${workspaceId}:${projectId}:${selectedId}`;
   const activeViewType = selectedView?.viewType ?? 'grid';
   const kanbanField = fields.find(
@@ -2742,6 +2746,15 @@ export function DataPage({
       { replace: true },
     );
   }, [navigate, routeObjectTypeId, search, selected, setSearch, workspaceId, workspaceMode]);
+  useEffect(() => {
+    if (
+      requestedViewId === 'all' ||
+      !selectedView?.publicId ||
+      requestedViewId === selectedView.publicId
+    )
+      return;
+    selectDataLocation(selectedPublicId, selectedView.publicId, true);
+  }, [requestedViewId, selectDataLocation, selectedPublicId, selectedView]);
   const orderedFields = useMemo(() => {
     const position = new Map(fieldOrderIds.map((fieldId, index) => [fieldId, index]));
     return [...fields].sort((left, right) => {
@@ -3122,7 +3135,9 @@ export function DataPage({
       applyViewConfig();
       return;
     }
-    const view = views.find((candidate) => candidate.id === selectedViewId);
+    const view = views.find(
+      (candidate) => candidate.id === selectedViewId || candidate.publicId === selectedViewId,
+    );
     if (view) {
       const key = `${selectedId}:${view.id}:${view.rowVersion}:${fields.map((field) => field.id).join(',')}`;
       if (appliedViewKey.current === key) return;
@@ -3877,14 +3892,17 @@ export function DataPage({
     if (viewId === selectedViewId || (!force && !confirmDiscardViewChanges())) return;
     setSelectedRows(new Set());
     setSelectedRecord(undefined);
-    const view = views.find((candidate) => candidate.id === viewId);
-    pendingViewId.current = viewId;
+    const view = views.find(
+      (candidate) => candidate.id === viewId || candidate.publicId === viewId,
+    );
+    const routeViewId = view?.publicId ?? viewId;
+    pendingViewId.current = routeViewId;
     appliedViewKey.current =
-      viewId === 'all'
+      routeViewId === 'all'
         ? `${selectedId}:all:${fields.map((field) => field.id).join(',')}`
-        : `${selectedId}:${viewId}:${view?.rowVersion ?? 0}:${fields.map((field) => field.id).join(',')}`;
+        : `${selectedId}:${routeViewId}:${view?.rowVersion ?? 0}:${fields.map((field) => field.id).join(',')}`;
     applyViewConfig(view?.config);
-    selectDataLocation(selectedPublicId, viewId);
+    selectDataLocation(selectedPublicId, routeViewId);
   }
 
   function moveField(fieldId: string, direction: -1 | 1) {
@@ -3998,7 +4016,8 @@ export function DataPage({
         method: 'POST',
         body: JSON.stringify({ name, viewType, config }),
       });
-      pendingViewId.current = created.id;
+      const createdViewId = created.publicId ?? created.id;
+      pendingViewId.current = createdViewId;
       appliedViewKey.current = `${selectedId}:${created.id}:${created.rowVersion}:${fields.map((field) => field.id).join(',')}`;
       setViews((current) =>
         [...current, created].sort((left, right) => left.name.localeCompare(right.name)),
@@ -4006,7 +4025,7 @@ export function DataPage({
       setShowCreateView(false);
       setNewViewType('grid');
       form.reset();
-      selectDataLocation(selectedPublicId, created.id);
+      selectDataLocation(selectedPublicId, createdViewId);
       setMessageTone('success');
       setMessage(`View “${created.name}” created and shared with this project.`);
     } catch (cause) {
@@ -4022,7 +4041,7 @@ export function DataPage({
     setViewBusy(true);
     try {
       const updated = await api<RecordView>(
-        `${base}/object-types/${selectedId}/views/${selectedView.id}`,
+        `${base}/object-types/${selectedId}/views/${selectedView.publicId ?? selectedView.id}`,
         {
           method: 'PATCH',
           body: JSON.stringify({
@@ -4050,15 +4069,18 @@ export function DataPage({
     if (!name || name === view.name) return;
     setViewBusy(true);
     try {
-      const updated = await api<RecordView>(`${base}/object-types/${selectedId}/views/${view.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          name,
-          viewType: view.viewType,
-          config: view.config,
-          rowVersion: view.rowVersion,
-        }),
-      });
+      const updated = await api<RecordView>(
+        `${base}/object-types/${selectedId}/views/${view.publicId ?? view.id}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
+            name,
+            viewType: view.viewType,
+            config: view.config,
+            rowVersion: view.rowVersion,
+          }),
+        },
+      );
       setViews((current) =>
         current
           .map((candidate) => (candidate.id === updated.id ? updated : candidate))
@@ -4089,7 +4111,7 @@ export function DataPage({
       setViews((current) =>
         [...current, created].sort((left, right) => left.name.localeCompare(right.name)),
       );
-      chooseView(created.id);
+      chooseView(created.publicId ?? created.id);
       setMessageTone('success');
       setMessage(`View “${created.name}” duplicated.`);
     } catch (cause) {
@@ -4105,15 +4127,18 @@ export function DataPage({
     if (!window.confirm(`Archive the shared view “${target.name}”?`)) return;
     setViewBusy(true);
     try {
-      await api(`${base}/object-types/${selectedId}/views/${target.id}/archive`, {
-        method: 'POST',
-        body: JSON.stringify({
-          rowVersion: target.rowVersion,
-          reason: 'Archived from the data workspace',
-        }),
-      });
+      await api(
+        `${base}/object-types/${selectedId}/views/${target.publicId ?? target.id}/archive`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            rowVersion: target.rowVersion,
+            reason: 'Archived from the data workspace',
+          }),
+        },
+      );
       setViews((current) => current.filter((view) => view.id !== target.id));
-      if (selectedViewId === target.id) chooseView('all', true);
+      if (selectedView?.id === target.id) chooseView('all', true);
       setMessageTone('success');
       setMessage(`View “${target.name}” archived.`);
     } catch (cause) {
@@ -4259,7 +4284,11 @@ export function DataPage({
 
   function viewContextItems(view: RecordView): ContextMenuItem[] {
     return [
-      { label: 'Open view', icon: '↗', onSelect: () => chooseView(view.id) },
+      {
+        label: 'Open view',
+        icon: '↗',
+        onSelect: () => chooseView(view.publicId ?? view.id),
+      },
       ...(allowed(user, 'schema.manage')
         ? [
             {
@@ -4492,8 +4521,8 @@ export function DataPage({
                             >
                               <button
                                 aria-label={view.name}
-                                className={`min-w-0 flex-1 rounded-md px-2 py-1.5 text-left text-xs ${selectedViewId === view.id ? 'bg-sky-500/15 text-sky-200' : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'}`}
-                                onClick={() => chooseView(view.id)}
+                                className={`min-w-0 flex-1 rounded-md px-2 py-1.5 text-left text-xs ${selectedView?.id === view.id ? 'bg-sky-500/15 text-sky-200' : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'}`}
+                                onClick={() => chooseView(view.publicId ?? view.id)}
                                 onKeyDown={(event) => {
                                   const menu = menuFromKeyboard(
                                     event,
@@ -4509,6 +4538,9 @@ export function DataPage({
                                     {viewTypeMeta[view.viewType].icon}
                                   </span>
                                   <span className="truncate">{view.name}</span>
+                                  <span className="ml-auto shrink-0 font-mono text-[9px] text-slate-600">
+                                    {view.publicId ?? view.id}
+                                  </span>
                                 </span>
                               </button>
                               {allowed(user, 'schema.manage') && (
