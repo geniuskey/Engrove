@@ -18,6 +18,7 @@ interface WorkspaceSummary {
 
 interface ProjectSummary {
   id: string;
+  publicId?: string;
   name: string;
   archivedAt: string | null;
 }
@@ -103,7 +104,9 @@ export function ServiceShell({
   }, []);
 
   const workspace = workspaces.find((item) => item.id === workspaceId);
-  const project = projects.find((item) => item.id === projectId);
+  const project = projects.find(
+    (item) => (item.publicId ?? item.id) === projectId || item.id === projectId,
+  );
   const utilitySection =
     location.pathname === '/members'
       ? t('common.members')
@@ -348,7 +351,7 @@ export function ServiceShell({
                         `block truncate rounded-md px-2 py-1.5 text-xs ${isActive ? 'bg-slate-800 font-medium text-slate-100' : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'}`
                       }
                       key={item.id}
-                      to={`${workspaceBase}/projects/${item.id}`}
+                      to={`${workspaceBase}/projects/${item.publicId ?? item.id}`}
                     >
                       {item.name}
                     </NavLink>

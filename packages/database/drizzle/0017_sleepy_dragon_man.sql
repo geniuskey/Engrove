@@ -1,0 +1,2 @@
+ALTER TABLE "object_types" ADD CONSTRAINT "object_types_public_id_check" CHECK ("object_types"."public_id" ~ '^m[0-9a-z]{14}$');--> statement-breakpoint
+ALTER TABLE "projects" ADD CONSTRAINT "projects_public_id_check" CHECK ("projects"."public_id" ~ '^p[0-9a-z]{14}$');

@@ -2,6 +2,12 @@ import type { Pool } from 'pg';
 import { describe, expect, it, vi } from 'vitest';
 import { evaluateFormula, formulaReferences } from '../src/calculated-fields.js';
 import { canonicalDecimal, parseCsv, ScopedProjectRepository } from '../src/configurable-data.js';
+import {
+  generateBasePublicId,
+  generateTablePublicId,
+  resolveObjectTypeIdentifier,
+  resolveProjectIdentifier,
+} from '../src/public-ids.js';
 
 const actor = {
   sessionId: 'session-1',
@@ -12,6 +18,27 @@ const actor = {
   displayName: 'Owner',
   csrfTokenHash: '',
 };
+
+describe('NocoDB-compatible public identifiers', () => {
+  it('generates 15-character base and table IDs with the canonical prefixes', () => {
+    const baseIds = Array.from({ length: 1_000 }, generateBasePublicId);
+    const tableIds = Array.from({ length: 1_000 }, generateTablePublicId);
+    expect(baseIds.every((value) => /^p[0-9a-z]{14}$/.test(value))).toBe(true);
+    expect(tableIds.every((value) => /^m[0-9a-z]{14}$/.test(value))).toBe(true);
+    expect(new Set(baseIds).size).toBe(baseIds.length);
+    expect(new Set(tableIds).size).toBe(tableIds.length);
+  });
+
+  it('keeps UUIDs compatible and resolves short IDs to internal UUIDs', async () => {
+    const uuid = '019fbcf9-e020-71da-935a-6a6a728b3795';
+    const query = vi.fn().mockResolvedValue({ rows: [{ id: uuid }] });
+    const database = { query } as unknown as Pool;
+    await expect(resolveProjectIdentifier(database, uuid)).resolves.toBe(uuid);
+    await expect(resolveProjectIdentifier(database, 'p1234567890abcd')).resolves.toBe(uuid);
+    await expect(resolveObjectTypeIdentifier(database, 'm1234567890abcd')).resolves.toBe(uuid);
+    expect(query).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe('configurable record canonicalization', () => {
   it.each([

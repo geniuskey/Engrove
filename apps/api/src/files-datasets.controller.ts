@@ -6,7 +6,11 @@ import {
   PutObjectCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { RepositoryError, ScopedFileDatasetRepository } from '@engrove/database';
+import {
+  RepositoryError,
+  resolveProjectIdentifier,
+  ScopedFileDatasetRepository,
+} from '@engrove/database';
 import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import type { Request } from 'express';
 import { z } from 'zod';
@@ -39,7 +43,7 @@ async function repository(
     appRuntime().pool,
     actor,
     id.parse(workspaceId),
-    id.parse(projectId),
+    await resolveProjectIdentifier(appRuntime().pool, projectId),
   );
 }
 const cleanName = (name: string) =>

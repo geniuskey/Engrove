@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
-import { ScopedEngineeringRepository } from '@engrove/database';
+import { resolveProjectIdentifier, ScopedEngineeringRepository } from '@engrove/database';
 import { UNIT_REGISTRY, REGISTRY_DIGEST } from '@engrove/units';
 import type { Request } from 'express';
 import { z } from 'zod';
@@ -31,7 +31,7 @@ async function repository(
     appRuntime().pool,
     actor,
     id.parse(workspaceId),
-    id.parse(projectId),
+    await resolveProjectIdentifier(appRuntime().pool, projectId),
   );
 }
 

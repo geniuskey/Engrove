@@ -38,6 +38,7 @@ import { useServiceSidebarPortal } from './ServiceSidebar.js';
 
 interface ObjectType {
   id: string;
+  publicId?: string;
   projectId: string;
   name: string;
   pluralName: string;
@@ -2664,9 +2665,16 @@ export function DataPage({
   const layoutPreferenceReadyKey = useRef('');
   const recordsRequestId = useRef(0);
   const sidebarPortal = useServiceSidebarPortal();
-  const selectedId = search.get('type') ?? objectTypes[0]?.id ?? '';
+  const selectedIdentifier =
+    search.get('type') ?? objectTypes[0]?.publicId ?? objectTypes[0]?.id ?? '';
   const selectedViewId = search.get('view') ?? 'all';
-  const selected = objectTypes.find((objectType) => objectType.id === selectedId);
+  const selected = objectTypes.find(
+    (objectType) =>
+      (objectType.publicId ?? objectType.id) === selectedIdentifier ||
+      objectType.id === selectedIdentifier,
+  );
+  const selectedId = selected?.id ?? '';
+  const selectedPublicId = selected?.publicId ?? selectedIdentifier;
   const selectedView = views.find((view) => view.id === selectedViewId);
   const layoutPreferenceKey = `engrove:table-layout:${workspaceId}:${projectId}:${selectedId}`;
   const activeViewType = selectedView?.viewType ?? 'grid';
@@ -2982,7 +2990,7 @@ export function DataPage({
       const result = await api<{ items: ObjectType[] }>(`${base}/object-types`);
       setObjectTypes(result.items);
       if (!search.get('type') && result.items[0])
-        setSearch({ type: result.items[0].id }, { replace: true });
+        setSearch({ type: result.items[0].publicId ?? result.items[0].id }, { replace: true });
       setMessage('');
     } catch (cause) {
       setMessageTone('error');
@@ -3067,12 +3075,13 @@ export function DataPage({
       applyViewConfig(view.config);
       return;
     }
-    setSearch({ type: selectedId }, { replace: true });
+    setSearch({ type: selectedPublicId }, { replace: true });
   }, [
     applyViewConfig,
     contextObjectTypeId,
     fields,
     selectedId,
+    selectedPublicId,
     selectedViewId,
     setSearch,
     views,
@@ -3798,12 +3807,15 @@ export function DataPage({
 
   function chooseObjectType(objectTypeId: string) {
     if (objectTypeId === selectedId || !confirmDiscardViewChanges()) return;
+    const routeObject = objectTypes.find((objectType) => objectType.id === objectTypeId);
+    const routeId = routeObject?.publicId ?? routeObject?.id;
+    if (!routeId) return;
     setPage(1);
     setSortField('displayName');
     setSortDirection('asc');
     setFilterField('');
     setFilterValue('');
-    setSearch({ type: objectTypeId });
+    setSearch({ type: routeId });
   }
 
   function chooseView(viewId: string, force = false) {
@@ -3817,7 +3829,9 @@ export function DataPage({
         ? `${selectedId}:all:${fields.map((field) => field.id).join(',')}`
         : `${selectedId}:${viewId}:${view?.rowVersion ?? 0}:${fields.map((field) => field.id).join(',')}`;
     applyViewConfig(view?.config);
-    setSearch(viewId === 'all' ? { type: selectedId } : { type: selectedId, view: viewId });
+    setSearch(
+      viewId === 'all' ? { type: selectedPublicId } : { type: selectedPublicId, view: viewId },
+    );
   }
 
   function moveField(fieldId: string, direction: -1 | 1) {
@@ -3939,7 +3953,7 @@ export function DataPage({
       setShowCreateView(false);
       setNewViewType('grid');
       form.reset();
-      setSearch({ type: selectedId, view: created.id });
+      setSearch({ type: selectedPublicId, view: created.id });
       setMessageTone('success');
       setMessage(`View “${created.name}” created and shared with this project.`);
     } catch (cause) {
@@ -4136,7 +4150,9 @@ export function DataPage({
               label: 'Open full record',
               icon: '□',
               onSelect: () =>
-                void navigate(`${base}/data/${record.objectTypeId}/records/${record.id}`),
+                void navigate(
+                  `${base}/data/${objectTypes.find((item) => item.id === record.objectTypeId)?.publicId ?? record.objectTypeId}/records/${record.id}`,
+                ),
             } satisfies ContextMenuItem,
           ]
         : []),
@@ -4377,6 +4393,9 @@ export function DataPage({
                       </span>
                       <span className="text-slate-500">▦</span>
                       <span className="truncate">{objectType.pluralName}</span>
+                      <span className="ml-auto shrink-0 font-mono text-[9px] text-slate-600">
+                        {objectType.publicId ?? objectType.id}
+                      </span>
                     </button>
                     {activeTable && (
                       <div className="ml-3 border-l border-slate-700/80 py-1 pl-2">
@@ -6942,7 +6961,7 @@ export function DataPage({
                 {!workspaceMode && (
                   <Link
                     className="rounded-lg px-3 py-2 text-sm text-sky-300 hover:bg-sky-500/10"
-                    to={`${base}/data/${selectedRecord.objectTypeId}/records/${selectedRecord.id}`}
+                    to={`${base}/data/${objectTypes.find((item) => item.id === selectedRecord.objectTypeId)?.publicId ?? selectedRecord.objectTypeId}/records/${selectedRecord.id}`}
                   >
                     Full record
                   </Link>

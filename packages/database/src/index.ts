@@ -30,4 +30,5 @@ export * from './files-datasets.js';
 export * from './visualizations.js';
 export * from './tasks.js';
 export * from './production-roles.js';
+export * from './public-ids.js';
 export * from './pilot.js';

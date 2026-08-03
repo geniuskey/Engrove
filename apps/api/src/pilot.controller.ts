@@ -3,6 +3,7 @@ import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import {
   onboardingSteps,
   PilotRepository,
+  resolveProjectIdentifier,
   ScopedFileDatasetRepository,
   ScopedProjectRepository,
   ScopedTaskRepository,
@@ -94,11 +95,12 @@ export class PilotController {
     @Param('projectId') projectId: string,
   ) {
     const actor = await requireActor(request, 'record.read');
+    const resolvedProjectId = await resolveProjectIdentifier(appRuntime().pool, projectId);
     await ScopedProjectRepository.open(
       appRuntime().pool,
       actor,
       id.parse(workspaceId),
-      id.parse(projectId),
+      resolvedProjectId,
     );
     const result = await appRuntime().pool.query(
       `select i.*,d.status dataset_status,d.row_count,c.name chart_name,r.display_name test_run_name
@@ -107,7 +109,7 @@ export class PilotController {
        join charts c on c.id=i.chart_id and c.project_id=i.project_id
        join records r on r.id=i.test_run_record_id and r.project_id=i.project_id
        where i.project_id=$1`,
-      [projectId],
+      [resolvedProjectId],
     );
     return { installed: Boolean(result.rows[0]), installation: result.rows[0] ?? null };
   }
@@ -132,7 +134,7 @@ export class PilotController {
       );
     const runtime = appRuntime();
     const wid = id.parse(workspaceId);
-    const pid = id.parse(projectId);
+    const pid = await resolveProjectIdentifier(runtime.pool, projectId);
     const data = await ScopedProjectRepository.open(runtime.pool, actor, wid, pid);
     const files = await ScopedFileDatasetRepository.open(runtime.pool, actor, wid, pid);
     const visualizations = await ScopedVisualizationRepository.open(runtime.pool, actor, wid, pid);

@@ -1,5 +1,6 @@
 import {
   RepositoryError,
+  resolveProjectIdentifier,
   ScopedVisualizationRepository,
   type ChartSourceInput,
   type DashboardCardInput,
@@ -341,7 +342,7 @@ async function repository(
     appRuntime().pool,
     actor,
     id.parse(workspaceId),
-    id.parse(projectId),
+    await resolveProjectIdentifier(appRuntime().pool, projectId),
   );
 }
 

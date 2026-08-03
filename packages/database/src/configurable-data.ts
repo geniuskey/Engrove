@@ -11,6 +11,7 @@ import { appendAudit, RepositoryError, type ActorSession, type AuditInput } from
 import { evaluateNewRecord } from './engineering-types.js';
 import { installDefaultVisualizations } from './visualizations.js';
 import { evaluateFormula, formulaReferences, type FormulaValue } from './calculated-fields.js';
+import { generateTablePublicId } from './public-ids.js';
 
 export const RECORD_PROJECTION_VERSION = 1;
 
@@ -53,6 +54,7 @@ export interface ProjectScope {
 
 export interface ObjectTypeRow {
   id: string;
+  publicId: string;
   projectId: string;
   name: string;
   pluralName: string;
@@ -242,6 +244,7 @@ async function transaction<T>(pool: Pool, action: (client: PoolClient) => Promis
 function mapObjectType(row: Record<string, unknown>): ObjectTypeRow {
   return {
     id: String(row.id),
+    publicId: String(row.public_id),
     projectId: String(row.project_id),
     name: String(row.name),
     pluralName: String(row.plural_name),
@@ -1156,7 +1159,7 @@ export class ScopedProjectRepository {
 
   async listObjectTypes(): Promise<ObjectTypeRow[]> {
     const result = await this.pool.query(
-      `select id, project_id, name, plural_name, key, icon, description, system
+      `select id, public_id, project_id, name, plural_name, key, icon, description, system
        from object_types where project_id = $1 order by name, id`,
       [this.scope.projectId],
     );
@@ -1174,11 +1177,12 @@ export class ScopedProjectRepository {
     return transaction(this.pool, async (client) => {
       const id = uuidv7();
       const result = await client.query(
-        `insert into object_types (id, project_id, name, plural_name, key, icon, description)
-         values ($1, $2, $3, $4, $5, $6, $7)
-         returning id, project_id, name, plural_name, key, icon, description, system`,
+        `insert into object_types (id, public_id, project_id, name, plural_name, key, icon, description)
+         values ($1, $2, $3, $4, $5, $6, $7, $8)
+         returning id, public_id, project_id, name, plural_name, key, icon, description, system`,
         [
           id,
+          generateTablePublicId(),
           this.scope.projectId,
           input.name.trim(),
           input.pluralName.trim(),
@@ -1950,9 +1954,17 @@ export class ScopedProjectRepository {
         if (!existing.rows[0]) {
           await client.query(
             `insert into object_types
-              (id, project_id, name, plural_name, key, icon, description, system)
-             values ($1, $2, $3, $4, $5, $6, '', true)`,
-            [id, this.scope.projectId, object.name, object.pluralName, object.key, object.icon],
+              (id, public_id, project_id, name, plural_name, key, icon, description, system)
+             values ($1, $2, $3, $4, $5, $6, $7, '', true)`,
+            [
+              id,
+              generateTablePublicId(),
+              this.scope.projectId,
+              object.name,
+              object.pluralName,
+              object.key,
+              object.icon,
+            ],
           );
         }
         ids.set(object.key, id);

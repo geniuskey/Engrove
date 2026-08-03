@@ -1,19 +1,13 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { v7 as uuidv7 } from 'uuid';
+import { generateBasePublicId } from './public-ids.js';
+import { RepositoryError } from './errors.js';
+
+export { RepositoryError } from './errors.js';
 
 export type MemberRole = 'owner' | 'admin' | 'engineer' | 'contributor' | 'viewer';
 export type SecurityTokenType = 'invitation' | 'password_reset';
-
-export class RepositoryError extends Error {
-  constructor(
-    readonly code: string,
-    readonly status: number,
-    message: string,
-  ) {
-    super(message);
-  }
-}
 
 export interface ActorSession {
   sessionId: string;
@@ -744,6 +738,7 @@ export async function createWorkspace(
 
 export interface ProjectRow {
   id: string;
+  publicId: string;
   workspaceId: string;
   name: string;
   key: string;
@@ -755,6 +750,7 @@ export interface ProjectRow {
 
 function mapProject(row: {
   id: string;
+  public_id: string;
   workspace_id: string;
   name: string;
   key: string;
@@ -765,6 +761,7 @@ function mapProject(row: {
 }): ProjectRow {
   return {
     id: row.id,
+    publicId: row.public_id,
     workspaceId: row.workspace_id,
     name: row.name,
     key: row.key,
@@ -794,7 +791,7 @@ export async function listProjects(
   workspaceId: string,
 ): Promise<ProjectRow[]> {
   const result = await pool.query(
-    `select p.id, p.workspace_id, p.name, p.key, p.description, p.status, p.row_version, p.archived_at
+    `select p.id, p.public_id, p.workspace_id, p.name, p.key, p.description, p.status, p.row_version, p.archived_at
      from projects p join workspaces w on w.id = p.workspace_id
      where p.workspace_id = $1 and w.organization_id = $2 and p.system = false
      order by p.name, p.id`,
@@ -809,7 +806,7 @@ export async function listLegacyConfigurableDataProjects(
   workspaceId: string,
 ): Promise<ProjectRow[]> {
   const result = await pool.query(
-    `select p.id, p.workspace_id, p.name, p.key, p.description, p.status, p.row_version,
+    `select p.id, p.public_id, p.workspace_id, p.name, p.key, p.description, p.status, p.row_version,
             p.archived_at
      from projects p join workspaces w on w.id = p.workspace_id
      where p.workspace_id = $1 and w.organization_id = $2 and p.system = false
@@ -829,7 +826,7 @@ export async function ensureWorkspaceDataProject(
   return transaction(pool, async (client) => {
     await assertWorkspaceScope(client, actor, workspaceId);
     const existing = await client.query(
-      `select id, workspace_id, name, key, description, status, row_version, archived_at
+      `select id, public_id, workspace_id, name, key, description, status, row_version, archived_at
        from projects where workspace_id = $1 and system = true`,
       [workspaceId],
     );
@@ -838,18 +835,18 @@ export async function ensureWorkspaceDataProject(
     const id = uuidv7();
     const inserted = await client.query(
       `insert into projects
-         (id, workspace_id, name, key, description, system, created_by)
-       values ($1, $2, 'Workspace data', '__WORKSPACE_DATA__',
-               'Internal backing scope for workspace-shared tables.', true, $3)
+         (id, public_id, workspace_id, name, key, description, system, created_by)
+       values ($1, $2, $3, 'Workspace data', '__WORKSPACE_DATA__',
+               'Internal backing scope for workspace-shared tables.', true, $4)
        on conflict (workspace_id) where system = true do nothing
-       returning id, workspace_id, name, key, description, status, row_version, archived_at`,
-      [id, workspaceId, actor.actorId],
+       returning id, public_id, workspace_id, name, key, description, status, row_version, archived_at`,
+      [id, generateBasePublicId(), workspaceId, actor.actorId],
     );
     const project =
       inserted.rows[0] ??
       (
         await client.query(
-          `select id, workspace_id, name, key, description, status, row_version, archived_at
+          `select id, public_id, workspace_id, name, key, description, status, row_version, archived_at
            from projects where workspace_id = $1 and system = true`,
           [workspaceId],
         )
@@ -890,11 +887,12 @@ export async function createProject(
     await assertWorkspaceScope(client, actor, input.workspaceId);
     const id = uuidv7();
     const result = await client.query(
-      `insert into projects (id, workspace_id, name, key, description, created_by)
-       values ($1, $2, $3, $4, $5, $6)
-       returning id, workspace_id, name, key, description, status, row_version, archived_at`,
+      `insert into projects (id, public_id, workspace_id, name, key, description, created_by)
+       values ($1, $2, $3, $4, $5, $6, $7)
+       returning id, public_id, workspace_id, name, key, description, status, row_version, archived_at`,
       [
         id,
+        generateBasePublicId(),
         input.workspaceId,
         input.name.trim(),
         input.key.trim().toUpperCase(),
@@ -935,7 +933,7 @@ export async function updateProject(
       `update projects set name = $4, description = $5, status = $6,
           row_version = row_version + 1, updated_at = now()
        where id = $1 and workspace_id = $2 and row_version = $3 and system = false
-       returning id, workspace_id, name, key, description, status, row_version, archived_at`,
+       returning id, public_id, workspace_id, name, key, description, status, row_version, archived_at`,
       [
         input.projectId,
         input.workspaceId,
@@ -991,7 +989,7 @@ export async function setProjectArchived(
            archive_reason = case when $4::boolean then $5::text else null end,
            row_version = row_version + 1, updated_at = now()
        where id = $1 and workspace_id = $2 and system = false
-       returning id, workspace_id, name, key, description, status, row_version, archived_at`,
+       returning id, public_id, workspace_id, name, key, description, status, row_version, archived_at`,
       [input.projectId, input.workspaceId, actor.actorId, input.archived, input.reason ?? null],
     );
     if (!result.rows[0])

@@ -68,6 +68,7 @@ interface Workspace {
 
 interface Project {
   id: string;
+  publicId?: string;
   workspaceId: string;
   name: string;
   key: string;
@@ -668,13 +669,15 @@ function WorkspacePage({ user }: { user: User }) {
           <Link
             className="group flex items-center justify-between gap-4 p-5 hover:bg-slate-800/60 sm:p-6"
             key={project.id}
-            to={`/workspaces/${id}/projects/${project.id}`}
+            to={`/workspaces/${id}/projects/${project.publicId ?? project.id}`}
           >
             <span className="min-w-0">
               <strong className="block truncate text-base group-hover:text-sky-200">
                 {project.name}
               </strong>
-              <span className="mt-1 block font-mono text-xs text-slate-500">{project.key}</span>
+              <span className="mt-1 block font-mono text-xs text-slate-500">
+                {project.key} · {project.publicId ?? project.id}
+              </span>
             </span>
             <span
               className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium ${project.archivedAt ? 'bg-amber-500/10 text-amber-300' : 'bg-emerald-500/10 text-emerald-300'}`}
@@ -795,7 +798,7 @@ function ProjectPage({ user }: { user: User }) {
   const [installingDemo, setInstallingDemo] = useState(false);
   const load = useCallback(async () => {
     const result = await api<{ items: Project[] }>(`/workspaces/${wid}/projects`);
-    setProject(result.items.find((item) => item.id === pid));
+    setProject(result.items.find((item) => (item.publicId ?? item.id) === pid || item.id === pid));
   }, [wid, pid]);
   useEffect(() => void load(), [load]);
   useEffect(() => {

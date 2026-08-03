@@ -237,6 +237,7 @@ export const projects = pgTable(
   'projects',
   {
     id: uuid('id').primaryKey(),
+    publicId: text('public_id').notNull(),
     workspaceId: uuid('workspace_id')
       .notNull()
       .references(() => workspaces.id, { onDelete: 'restrict' }),
@@ -255,11 +256,13 @@ export const projects = pgTable(
     ...auditColumns,
   },
   (table) => [
+    uniqueIndex('projects_public_id_key').on(table.publicId),
     uniqueIndex('projects_workspace_key_key').on(table.workspaceId, table.key),
     uniqueIndex('projects_workspace_system_key')
       .on(table.workspaceId)
       .where(sql`${table.system} = true`),
     index('projects_workspace_idx').on(table.workspaceId),
+    check('projects_public_id_check', sql`${table.publicId} ~ '^p[0-9a-z]{14}$'`),
     check('projects_status_check', sql`${table.status} in ('active', 'on_hold', 'completed')`),
   ],
 );
@@ -335,6 +338,7 @@ export const objectTypes = pgTable(
   'object_types',
   {
     id: uuid('id').primaryKey(),
+    publicId: text('public_id').notNull(),
     projectId: uuid('project_id')
       .notNull()
       .references(() => projects.id, { onDelete: 'restrict' }),
@@ -347,9 +351,11 @@ export const objectTypes = pgTable(
     ...auditColumns,
   },
   (table) => [
+    uniqueIndex('object_types_public_id_key').on(table.publicId),
     uniqueIndex('object_types_project_key_key').on(table.projectId, table.key),
     uniqueIndex('object_types_project_id_key').on(table.projectId, table.id),
     index('object_types_project_idx').on(table.projectId),
+    check('object_types_public_id_check', sql`${table.publicId} ~ '^m[0-9a-z]{14}$'`),
   ],
 );
 

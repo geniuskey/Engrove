@@ -113,6 +113,20 @@
       "when": 1785791076550,
       "tag": "0015_lowly_vulcan",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1785791864915,
+      "tag": "0016_giant_sentry",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1785791893035,
+      "tag": "0017_sleepy_dragon_man",
+      "breakpoints": true
     }
   ]
 }

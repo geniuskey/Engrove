@@ -1,4 +1,9 @@
-import { ScopedTaskRepository, type TaskEntityType, type TaskLinkInput } from '@engrove/database';
+import {
+  resolveProjectIdentifier,
+  ScopedTaskRepository,
+  type TaskEntityType,
+  type TaskLinkInput,
+} from '@engrove/database';
 import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import type { Request } from 'express';
 import { z } from 'zod';
@@ -40,7 +45,7 @@ async function repository(
     appRuntime().pool,
     actor,
     id.parse(workspaceId),
-    id.parse(projectId),
+    await resolveProjectIdentifier(appRuntime().pool, projectId),
   );
 }
 
