@@ -50,7 +50,13 @@ const recordViewConfig = z
     filters: z.array(recordFilter).max(20),
     sorts: z.array(recordSort).max(5),
     rowDensity: z.enum(['compact', 'comfortable']),
-    pageSize: z.union([z.literal(25), z.literal(50), z.literal(100)]),
+    pageSize: z.union([
+      z.literal(25),
+      z.literal(50),
+      z.literal(100),
+      z.literal(250),
+      z.literal(500),
+    ]),
     viewOptions: z
       .object({
         groupFieldId: id.optional(),
@@ -354,7 +360,7 @@ export class ConfigurableDataController {
         contextProjectId: id.nullable().optional(),
         groupByFieldId: id.optional(),
         page: z.number().int().min(1).optional(),
-        pageSize: z.number().int().min(1).max(100).optional(),
+        pageSize: z.number().int().min(1).max(500).optional(),
         includeArchived: z.boolean().optional(),
       })
       .parse(unparsed);
@@ -376,6 +382,43 @@ export class ConfigurableDataController {
       id.parse(objectTypeId),
       id.parse(recordId),
     );
+  }
+
+  @Get('object-types/:objectTypeId/records/:recordId/history')
+  async recordHistory(
+    @Req() request: Request,
+    @Param('workspaceId') workspaceId: string,
+    @Param('projectId') projectId: string,
+    @Param('objectTypeId') objectTypeId: string,
+    @Param('recordId') recordId: string,
+  ) {
+    return {
+      items: await (
+        await repository(request, workspaceId, projectId, 'record.read')
+      ).listRecordHistory(id.parse(objectTypeId), id.parse(recordId)),
+    };
+  }
+
+  @Post('object-types/:objectTypeId/records/:recordId/history/:eventId/undo')
+  async undoRecordChange(
+    @Req() request: Request,
+    @Param('workspaceId') workspaceId: string,
+    @Param('projectId') projectId: string,
+    @Param('objectTypeId') objectTypeId: string,
+    @Param('recordId') recordId: string,
+    @Param('eventId') eventId: string,
+    @Body() unparsed: unknown,
+  ) {
+    const body = z.object({ rowVersion: z.number().int().positive() }).parse(unparsed);
+    return (
+      await repository(request, workspaceId, projectId, 'record.update', true)
+    ).undoRecordChange({
+      objectTypeId: id.parse(objectTypeId),
+      recordId: id.parse(recordId),
+      eventId: id.parse(eventId),
+      rowVersion: body.rowVersion,
+      requestId: requestId(request),
+    });
   }
 
   @Post('object-types/:objectTypeId/records')

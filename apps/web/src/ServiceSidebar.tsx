@@ -69,6 +69,8 @@ export function ServiceShell({
   const [portal, setPortal] = useState<HTMLElement | null>(null);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [commandOpen, setCommandOpen] = useState(false);
+  const [commandQuery, setCommandQuery] = useState('');
 
   const loadWorkspaces = useCallback(async () => {
     const result = await request<{ items: WorkspaceSummary[] }>('/workspaces');
@@ -88,6 +90,17 @@ export function ServiceShell({
   useEffect(() => {
     window.localStorage.setItem('engrove-service-sidebar', expanded ? 'expanded' : 'collapsed');
   }, [expanded]);
+  useEffect(() => {
+    const shortcut = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setCommandOpen((current) => !current);
+      }
+      if (event.key === 'Escape') setCommandOpen(false);
+    };
+    window.addEventListener('keydown', shortcut);
+    return () => window.removeEventListener('keydown', shortcut);
+  }, []);
 
   const workspace = workspaces.find((item) => item.id === workspaceId);
   const project = projects.find((item) => item.id === projectId);
@@ -141,6 +154,48 @@ export function ServiceShell({
   async function signOut() {
     await request('/auth/sign-out', { method: 'POST' });
     onSignedOut();
+  }
+
+  const commands: Array<{ label: string; hint: string; run: () => void | Promise<void> }> = [
+    {
+      label: 'Open workspace data',
+      hint: 'Navigation',
+      run: () => navigate(workspaceBase ? `${workspaceBase}/data` : '/workspaces'),
+    },
+    ...(workspaceBase
+      ? [
+          {
+            label: 'Open projects',
+            hint: 'Navigation',
+            run: () => navigate(`${workspaceBase}/projects`),
+          },
+        ]
+      : []),
+    ...projectLinks.map((item) => ({
+      label: `Open ${item.label}`,
+      hint: project?.name ?? 'Project',
+      run: () => navigate(item.to),
+    })),
+    ...(can(user, 'member.manage')
+      ? [{ label: 'Manage members and groups', hint: 'Settings', run: () => navigate('/members') }]
+      : []),
+    ...(can(user, 'audit.read')
+      ? [{ label: 'Open audit log', hint: 'Settings', run: () => navigate('/audit') }]
+      : []),
+    {
+      label: theme === 'dark' ? 'Use light theme' : 'Use dark theme',
+      hint: 'Appearance',
+      run: onToggleTheme,
+    },
+    { label: 'Sign out', hint: user.displayName, run: signOut },
+  ];
+  const visibleCommands = commands.filter((command) =>
+    `${command.label} ${command.hint}`.toLowerCase().includes(commandQuery.trim().toLowerCase()),
+  );
+  function runCommand(command: (typeof commands)[number]) {
+    setCommandOpen(false);
+    setCommandQuery('');
+    void command.run();
   }
 
   return (
@@ -444,12 +499,21 @@ export function ServiceShell({
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <header className="sticky top-0 z-30 flex h-11 shrink-0 items-center border-b border-slate-800/80 bg-slate-950/90 px-3 backdrop-blur-xl">
+          <header className="sticky top-0 z-30 flex h-11 shrink-0 items-center gap-3 border-b border-slate-800/80 bg-slate-950/90 px-3 backdrop-blur-xl">
             <p className="min-w-0 truncate text-xs text-slate-500">
               <span>{workspace?.name ?? t('sidebar.organization')}</span>
               <span className="mx-2 text-slate-700">/</span>
               <strong className="font-medium text-slate-300">{sectionLabel}</strong>
             </p>
+            <button
+              aria-label="Open command palette"
+              className="ml-auto flex h-7 items-center gap-2 rounded-md border border-slate-800 bg-slate-900 px-2 text-[11px] text-slate-500 hover:border-slate-700 hover:text-sky-300"
+              onClick={() => setCommandOpen(true)}
+              type="button"
+            >
+              <span>Search commands</span>
+              <kbd className="rounded border border-slate-700 px-1 font-mono text-[9px]">⌘K</kbd>
+            </button>
           </header>
           <main
             className={`compact-page mx-auto w-full min-w-0 flex-1 ${dataWorkspace ? 'max-w-none px-2 py-2' : 'max-w-[1440px] px-4 py-4'}`}
@@ -458,6 +522,53 @@ export function ServiceShell({
             {children}
           </main>
         </div>
+        {commandOpen && (
+          <div className="fixed inset-0 z-[90] flex justify-center bg-slate-950/70 px-4 pt-[12vh] backdrop-blur-sm">
+            <button
+              aria-label="Close command palette"
+              className="absolute inset-0 cursor-default"
+              onClick={() => setCommandOpen(false)}
+              type="button"
+            />
+            <section
+              aria-label="Command palette"
+              aria-modal="true"
+              className="relative h-fit w-full max-w-xl overflow-hidden rounded-xl border border-slate-700 bg-slate-950 shadow-2xl"
+              role="dialog"
+            >
+              <input
+                aria-label="Search commands"
+                autoFocus
+                className="h-12 w-full border-b border-slate-800 bg-transparent px-4 text-sm text-slate-100 outline-none placeholder:text-slate-600"
+                placeholder="Go to a table, dashboard, member setting…"
+                type="search"
+                value={commandQuery}
+                onChange={(event) => setCommandQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && visibleCommands[0]) runCommand(visibleCommands[0]);
+                }}
+              />
+              <div className="max-h-80 overflow-y-auto p-2">
+                {visibleCommands.map((command) => (
+                  <button
+                    className="flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-sky-400/10 hover:text-sky-200"
+                    key={`${command.hint}:${command.label}`}
+                    onClick={() => runCommand(command)}
+                    type="button"
+                  >
+                    <span>{command.label}</span>
+                    <span className="text-[10px] text-slate-600">{command.hint}</span>
+                  </button>
+                ))}
+                {!visibleCommands.length && (
+                  <p className="px-3 py-8 text-center text-xs text-slate-500">
+                    No matching command.
+                  </p>
+                )}
+              </div>
+            </section>
+          </div>
+        )}
       </div>
     </ServiceSidebarPortalContext.Provider>
   );

@@ -24,6 +24,7 @@ export async function checkMigrationCompatibility(pool: Pool): Promise<void> {
 export type { Pool } from 'pg';
 export * from './community.js';
 export * from './configurable-data.js';
+export * from './calculated-fields.js';
 export * from './engineering-types.js';
 export * from './files-datasets.js';
 export * from './visualizations.js';

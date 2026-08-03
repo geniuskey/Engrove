@@ -104,6 +104,11 @@ describe('App', () => {
     expect(projectNav).toHaveTextContent('Visualizations');
     expect(projectNav).toHaveTextContent('Tasks');
     expect(screen.getByRole('link', { name: 'Overview' })).toHaveAttribute('aria-current', 'page');
+    fireEvent.click(screen.getByRole('button', { name: 'Open command palette' }));
+    expect(screen.getByRole('dialog', { name: 'Command palette' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Open Engineering records/ })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Command palette' })).not.toBeInTheDocument();
 
     await waitFor(() =>
       expect(screen.getByRole('combobox', { name: 'Workspace selector' })).toHaveValue(

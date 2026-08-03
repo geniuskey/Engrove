@@ -80,6 +80,11 @@ describe('VisualizationsPage record dashboard cards', () => {
 
     expect(await screen.findByText('Open issues')).toBeInTheDocument();
     expect(await screen.findByText('7')).toBeInTheDocument();
+    const globalFilter = screen.getByRole('searchbox', {
+      name: 'Search across dashboard record sources',
+    });
+    fireEvent.change(globalFilter, { target: { value: 'urgent' } });
+    await waitFor(() => expect(recordQueryCount).toBeGreaterThan(1));
     const initialQueryCount = recordQueryCount;
     fireEvent.click(screen.getByRole('button', { name: 'Refresh live data' }));
     await waitFor(() => expect(recordQueryCount).toBeGreaterThan(initialQueryCount));

@@ -4,8 +4,10 @@ import { resolve } from 'node:path';
 const kibibyte = 1024;
 const budgets = {
   maxJavaScriptChunk: 450 * kibibyte,
-  totalJavaScript: 1_100 * kibibyte,
-  maxCssAsset: 64 * kibibyte,
+  // Calculated fields, revision history, and the command surface are product-level capabilities.
+  // Keep the post-expansion baseline tight while leaving only modest regression headroom.
+  totalJavaScript: 1_120 * kibibyte,
+  maxCssAsset: 66 * kibibyte,
 };
 
 const assetsDirectory = resolve(process.argv[2] ?? 'apps/web/dist/assets');

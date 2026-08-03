@@ -1,5 +1,6 @@
 import type { Pool } from 'pg';
 import { describe, expect, it, vi } from 'vitest';
+import { evaluateFormula, formulaReferences } from '../src/calculated-fields.js';
 import { canonicalDecimal, parseCsv, ScopedProjectRepository } from '../src/configurable-data.js';
 
 const actor = {
@@ -34,6 +35,23 @@ describe('configurable record canonicalization', () => {
       ['displayName', 'notes'],
       ['A, 1', 'line 1\nline "2"'],
     ]);
+  });
+});
+
+describe('calculated field formulas', () => {
+  it('evaluates arithmetic, references, conditions, and text without dynamic code execution', () => {
+    expect(
+      evaluateFormula('ROUND({mass} * {unit-price}, 2)', { mass: '2.5', 'unit-price': 4 }),
+    ).toBe(10);
+    expect(
+      evaluateFormula('IF({passed}, CONCAT("Lot ", {lot}), "Blocked")', { passed: true, lot: 7 }),
+    ).toBe('Lot 7');
+    expect(evaluateFormula('AVG({readings})', { readings: [2, 4, 6] })).toBe(4);
+  });
+
+  it('extracts stable field-key dependencies and rejects unsupported syntax', () => {
+    expect(formulaReferences('{mass} * {rate} + {mass}')).toEqual(['mass', 'rate']);
+    expect(() => evaluateFormula('globalThis.process.exit()', {})).toThrow(/unsupported|expected/i);
   });
 });
 

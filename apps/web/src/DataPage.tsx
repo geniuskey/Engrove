@@ -64,6 +64,9 @@ type FieldType =
   | 'range'
   | 'spectral_data'
   | 'tabular_data'
+  | 'formula'
+  | 'lookup'
+  | 'rollup'
   | 'file'
   | 'dataset';
 
@@ -90,6 +93,10 @@ interface FieldDefinition {
     yLabel?: string;
     yUnit?: string;
     firstRowHeader?: boolean;
+    expression?: string;
+    relationFieldId?: string;
+    targetFieldId?: string;
+    aggregation?: 'count' | 'sum' | 'average' | 'min' | 'max';
   };
   defaultValue?: unknown;
   projectionStatus: 'ready' | 'rebuilding' | 'failed';
@@ -179,7 +186,7 @@ interface RecordViewConfig {
     direction: 'asc' | 'desc';
   }>;
   rowDensity: 'compact' | 'comfortable';
-  pageSize: 25 | 50 | 100;
+  pageSize: 25 | 50 | 100 | 250 | 500;
   viewOptions?: {
     groupFieldId?: string;
     dateFieldId?: string;
@@ -448,13 +455,22 @@ interface LinkedTask {
   archived_at: string | null;
 }
 
+interface RecordHistoryItem {
+  id: string;
+  action: string;
+  actorName: string | null;
+  createdAt: string;
+  rowVersion: number | null;
+  undoable: boolean;
+}
+
 const fieldTypeMeta: Record<
   FieldType,
   {
     label: string;
     description: string;
     icon: string;
-    group: 'Basic' | 'Choice' | 'Linked' | 'Engineering' | 'Structured';
+    group: 'Basic' | 'Choice' | 'Linked' | 'Engineering' | 'Structured' | 'Calculated';
   }
 > = {
   text: {
@@ -529,6 +545,24 @@ const fieldTypeMeta: Record<
     description: 'Excel-like columns and rows stored as structured data',
     icon: '▦',
     group: 'Structured',
+  },
+  formula: {
+    label: 'Formula',
+    description: 'Calculate a value from fields in this row',
+    icon: 'ƒx',
+    group: 'Calculated',
+  },
+  lookup: {
+    label: 'Lookup',
+    description: 'Bring a value from related records',
+    icon: '↙',
+    group: 'Calculated',
+  },
+  rollup: {
+    label: 'Rollup',
+    description: 'Aggregate values across related records',
+    icon: 'Σ',
+    group: 'Calculated',
   },
 };
 
@@ -611,7 +645,144 @@ function schemaFieldConfig(type: FieldType, data: FormData): Record<string, unkn
   if (type === 'tabular_data') {
     return { firstRowHeader: data.get('firstRowHeader') === 'on' };
   }
+  if (type === 'formula') {
+    return { expression: String(data.get('expression') ?? '').trim() };
+  }
+  if (type === 'lookup' || type === 'rollup') {
+    return {
+      relationFieldId: String(data.get('relationFieldId') ?? ''),
+      targetFieldId: String(data.get('targetFieldId') ?? ''),
+      ...(type === 'rollup' ? { aggregation: String(data.get('aggregation') ?? 'count') } : {}),
+    };
+  }
   return {};
+}
+
+const calculatedFieldTypeSet = new Set<FieldType>(['formula', 'lookup', 'rollup']);
+
+function CalculatedFieldSettings({
+  type,
+  fields,
+  base,
+  defaults,
+}: {
+  type: 'formula' | 'lookup' | 'rollup';
+  fields: FieldDefinition[];
+  base: string;
+  defaults?: FieldDefinition['config'];
+}) {
+  const relationFields = fields.filter((field) => field.fieldType === 'relation');
+  const [relationFieldId, setRelationFieldId] = useState(
+    defaults?.relationFieldId ?? relationFields[0]?.id ?? '',
+  );
+  const [targetFields, setTargetFields] = useState<FieldDefinition[]>([]);
+  const [aggregation, setAggregation] = useState(defaults?.aggregation ?? 'count');
+  useEffect(() => {
+    const relation = relationFields.find((field) => field.id === relationFieldId);
+    const targetId = relation?.config.targetObjectTypeId;
+    if (!targetId) {
+      setTargetFields([]);
+      return;
+    }
+    let active = true;
+    void api<{ items: FieldDefinition[] }>(`${base}/object-types/${targetId}/fields`).then(
+      (result) => {
+        if (active)
+          setTargetFields(
+            result.items.filter((field) => !calculatedFieldTypeSet.has(field.fieldType)),
+          );
+      },
+      () => {
+        if (active) setTargetFields([]);
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [base, relationFieldId]);
+  if (type === 'formula')
+    return (
+      <label className={wideFieldLabelClass}>
+        Formula expression
+        <textarea
+          aria-label="Formula expression"
+          className={`${inputClass} mt-1.5 min-h-24 resize-y font-mono`}
+          defaultValue={defaults?.expression}
+          maxLength={2000}
+          name="expression"
+          placeholder={'ROUND({quantity} * {unit-price}, 2)'}
+          required
+        />
+        <span className={fieldHintClass}>
+          Reference fields as {'{field-key}'}. Supports + − × ÷, comparisons, IF, SUM, AVG, MIN,
+          MAX, ROUND, ABS, and CONCAT.
+        </span>
+      </label>
+    );
+  const targetOptions = targetFields.filter(
+    (field) =>
+      type === 'lookup' ||
+      aggregation === 'count' ||
+      ['integer', 'decimal', 'quantity'].includes(field.fieldType),
+  );
+  return (
+    <>
+      <label className={fieldLabelClass}>
+        Relation field
+        <select
+          className={`${inputClass} mt-1.5`}
+          name="relationFieldId"
+          required
+          value={relationFieldId}
+          onChange={(event) => setRelationFieldId(event.target.value)}
+        >
+          <option value="">Select a relation…</option>
+          {relationFields.map((field) => (
+            <option key={field.id} value={field.id}>
+              {field.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      {type === 'rollup' && (
+        <label className={fieldLabelClass}>
+          Aggregation
+          <select
+            className={`${inputClass} mt-1.5`}
+            name="aggregation"
+            value={aggregation}
+            onChange={(event) =>
+              setAggregation(event.target.value as 'count' | 'sum' | 'average' | 'min' | 'max')
+            }
+          >
+            <option value="count">Count</option>
+            <option value="sum">Sum</option>
+            <option value="average">Average</option>
+            <option value="min">Minimum</option>
+            <option value="max">Maximum</option>
+          </select>
+        </label>
+      )}
+      <label className={type === 'lookup' ? wideFieldLabelClass : fieldLabelClass}>
+        Target field
+        <select
+          className={`${inputClass} mt-1.5`}
+          defaultValue={defaults?.targetFieldId ?? 'displayName'}
+          name="targetFieldId"
+          required
+        >
+          {(type === 'lookup' || aggregation === 'count') && (
+            <option value="displayName">Display name</option>
+          )}
+          {targetOptions.map((field) => (
+            <option key={field.id} value={field.id}>
+              {field.name}
+            </option>
+          ))}
+        </select>
+      </label>
+    </>
+  );
 }
 
 function projectPath(workspaceId: string, projectId: string): string {
@@ -1439,7 +1610,7 @@ function inlineRecordPayload(
   const datasetReferences: Record<string, string[]> = {};
   const name = gridValue(undefined, { primary: displayName, secondary: '', unit: '' }) as string;
   for (const field of fields) {
-    if (field.fieldType === 'measurement') continue;
+    if (field.fieldType === 'measurement' || calculatedFieldTypeSet.has(field.fieldType)) continue;
     const value = gridValue(field, drafts[field.id] ?? gridEditorDraft(field, field.defaultValue));
     if (field.fieldType === 'relation') {
       const targets = Array.isArray(value) ? (value as string[]) : [];
@@ -1461,7 +1632,7 @@ function recordPayload(fields: FieldDefinition[], form: FormData) {
   const fileReferences: Record<string, string[]> = {};
   const datasetReferences: Record<string, string[]> = {};
   for (const field of fields) {
-    if (field.fieldType === 'measurement') continue;
+    if (field.fieldType === 'measurement' || calculatedFieldTypeSet.has(field.fieldType)) continue;
     if (field.fieldType === 'relation') {
       const targets = String(form.get(`relation:${field.id}`) ?? '')
         .split(';')
@@ -1489,6 +1660,13 @@ function recordPayload(fields: FieldDefinition[], form: FormData) {
 }
 
 function FieldInput({ field, value }: { field: FieldDefinition; value?: unknown }) {
+  if (calculatedFieldTypeSet.has(field.fieldType))
+    return (
+      <p className="mt-1.5 min-h-9 rounded-lg border border-sky-400/15 bg-sky-400/5 px-3 py-2 text-xs text-sky-200">
+        {displayFieldValue(field, value)}
+        <span className="ml-2 text-[10px] text-slate-500">Calculated automatically</span>
+      </p>
+    );
   if (field.fieldType === 'measurement')
     return (
       <p className="mt-2 text-xs text-slate-500">Observations are appended from record detail.</p>
@@ -2278,6 +2456,88 @@ function recordGridValue(record: DynamicRecord, field: FieldDefinition): unknown
   return record.values[field.key];
 }
 
+function RecordHistoryPanel({
+  base,
+  objectTypeId,
+  record,
+  user,
+  onRestored,
+}: {
+  base: string;
+  objectTypeId: string;
+  record: DynamicRecord;
+  user: User;
+  onRestored: (record: DynamicRecord) => void;
+}) {
+  const [items, setItems] = useState<RecordHistoryItem[]>([]);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState('');
+  const load = useCallback(async () => {
+    try {
+      const result = await api<{ items: RecordHistoryItem[] }>(
+        `${base}/object-types/${objectTypeId}/records/${record.id}/history`,
+      );
+      setItems(result.items);
+      setError('');
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'History could not be loaded.');
+    }
+  }, [base, objectTypeId, record.id, record.rowVersion]);
+  useEffect(() => void load(), [load]);
+  async function undo(item: RecordHistoryItem) {
+    if (!window.confirm('Restore the record to the state before this change?')) return;
+    setBusy(item.id);
+    try {
+      const restored = await api<DynamicRecord>(
+        `${base}/object-types/${objectTypeId}/records/${record.id}/history/${item.id}/undo`,
+        { method: 'POST', body: JSON.stringify({ rowVersion: record.rowVersion }) },
+      );
+      onRestored(restored);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Change could not be undone.');
+    } finally {
+      setBusy('');
+    }
+  }
+  return (
+    <section className={emptyPanelClass}>
+      <div className="flex items-center gap-2">
+        <h2 className="text-xl font-semibold">Change history</h2>
+        <HelpTip label="Change history help">
+          Every edit is attributable. Undo creates a new audited version and never erases history.
+        </HelpTip>
+      </div>
+      <ol className="mt-4 divide-y divide-slate-800 rounded-xl border border-slate-800">
+        {items.map((item) => (
+          <li className="flex items-center justify-between gap-4 px-4 py-3" key={item.id}>
+            <div className="min-w-0">
+              <p className="text-sm text-slate-200">{item.action.replaceAll('.', ' · ')}</p>
+              <p className="mt-0.5 text-xs text-slate-500">
+                {item.actorName ?? 'System'} · {new Date(item.createdAt).toLocaleString()}
+                {item.rowVersion ? ` · version ${item.rowVersion}` : ''}
+              </p>
+            </div>
+            {item.undoable && allowed(user, 'record.update') && (
+              <button
+                className="shrink-0 rounded-md px-2 py-1 text-xs text-sky-300 hover:bg-sky-500/10 disabled:opacity-50"
+                disabled={Boolean(busy)}
+                onClick={() => void undo(item)}
+                type="button"
+              >
+                {busy === item.id ? 'Restoring…' : 'Undo to here'}
+              </button>
+            )}
+          </li>
+        ))}
+        {!items.length && !error && (
+          <li className="px-4 py-6 text-center text-sm text-slate-500">No changes recorded yet.</li>
+        )}
+      </ol>
+      <ErrorText>{error}</ErrorText>
+    </section>
+  );
+}
+
 function configuredSorts(
   sortField: string,
   sortDirection: 'asc' | 'desc',
@@ -2341,7 +2601,8 @@ export function DataPage({
     total: 0,
   });
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState<25 | 50 | 100>(25);
+  const [pageSize, setPageSize] = useState<25 | 50 | 100 | 250 | 500>(25);
+  const [gridScrollTop, setGridScrollTop] = useState(0);
   const [sortField, setSortField] = useState('displayName');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [filterField, setFilterField] = useState('');
@@ -2466,7 +2727,7 @@ export function DataPage({
         key: `field:${field.id}`,
         label: field.name,
         kind: 'field',
-        editable: field.fieldType !== 'measurement',
+        editable: field.fieldType !== 'measurement' && !calculatedFieldTypeSet.has(field.fieldType),
         field,
       })),
     ],
@@ -2480,6 +2741,15 @@ export function DataPage({
     ? (gridSelectionBounds.rowEnd - gridSelectionBounds.rowStart + 1) *
       (gridSelectionBounds.columnEnd - gridSelectionBounds.columnStart + 1)
     : 0;
+  const virtualRowHeight = rowDensity === 'comfortable' ? 45 : 33;
+  const virtualizeGrid = activeViewType === 'grid' && records.items.length > 80;
+  const virtualStart = virtualizeGrid
+    ? Math.max(0, Math.floor(gridScrollTop / virtualRowHeight) - 10)
+    : 0;
+  const virtualEnd = virtualizeGrid
+    ? Math.min(records.items.length, virtualStart + Math.ceil(720 / virtualRowHeight) + 20)
+    : records.items.length;
+  const virtualRecords = records.items.slice(virtualStart, virtualEnd);
   const displayNameWidth = systemFieldWidths.displayName ?? DEFAULT_SYSTEM_FIELD_WIDTHS.displayName;
   const contextProjectWidth =
     systemFieldWidths.contextProject ?? DEFAULT_SYSTEM_FIELD_WIDTHS.contextProject;
@@ -3038,6 +3308,9 @@ export function DataPage({
               'range',
               'spectral_data',
               'tabular_data',
+              'formula',
+              'lookup',
+              'rollup',
             ].includes(field.fieldType)
               ? schemaFieldConfig(field.fieldType, data)
               : field.config,
@@ -3946,9 +4219,15 @@ export function DataPage({
   }
 
   function columnContextItems(field: FieldDefinition): ContextMenuItem[] {
-    const sortable = !['relation', 'multi_select', 'measurement', 'range'].includes(
-      field.fieldType,
-    );
+    const sortable = ![
+      'relation',
+      'multi_select',
+      'measurement',
+      'range',
+      'formula',
+      'lookup',
+      'rollup',
+    ].includes(field.fieldType);
     const filterable = !['measurement', 'range'].includes(field.fieldType);
     return [
       {
@@ -4743,7 +5022,14 @@ export function DataPage({
                               }
                             >
                               {(
-                                ['Basic', 'Choice', 'Linked', 'Engineering', 'Structured'] as const
+                                [
+                                  'Basic',
+                                  'Choice',
+                                  'Linked',
+                                  'Engineering',
+                                  'Structured',
+                                  'Calculated',
+                                ] as const
                               ).map((group) => {
                                 const groupTypes = availableFieldTypes.filter(
                                   (type) => fieldTypeMeta[type].group === group,
@@ -4810,6 +5096,14 @@ export function DataPage({
                                 ))}
                               </select>
                             </label>
+                          )}
+
+                          {calculatedFieldTypeSet.has(schemaFieldType) && (
+                            <CalculatedFieldSettings
+                              base={base}
+                              fields={fields}
+                              type={schemaFieldType as 'formula' | 'lookup' | 'rollup'}
+                            />
                           )}
 
                           {['quantity', 'measurement', 'range'].includes(schemaFieldType) && (
@@ -4925,20 +5219,22 @@ export function DataPage({
                         </div>
 
                         <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-3 rounded-lg border border-slate-800 bg-slate-900/45 px-3 py-2.5 text-xs text-slate-300">
-                          <label className={checkboxLabelClass}>
-                            <input
-                              className={checkboxClass}
-                              disabled={records.total > 0}
-                              name="required"
-                              title={
-                                records.total > 0
-                                  ? 'Add the field first, backfill existing records, then make it required.'
-                                  : undefined
-                              }
-                              type="checkbox"
-                            />
-                            Required value
-                          </label>
+                          {!calculatedFieldTypeSet.has(schemaFieldType) && (
+                            <label className={checkboxLabelClass}>
+                              <input
+                                className={checkboxClass}
+                                disabled={records.total > 0}
+                                name="required"
+                                title={
+                                  records.total > 0
+                                    ? 'Add the field first, backfill existing records, then make it required.'
+                                    : undefined
+                                }
+                                type="checkbox"
+                              />
+                              Required value
+                            </label>
+                          )}
                           {fieldSupportsUnique(schemaFieldType) && (
                             <label className={checkboxLabelClass}>
                               <input className={checkboxClass} name="unique" type="checkbox" />
@@ -5103,6 +5399,17 @@ export function DataPage({
                             </>
                           )}
 
+                          {calculatedFieldTypeSet.has(selectedSchemaField.fieldType) && (
+                            <CalculatedFieldSettings
+                              base={base}
+                              defaults={selectedSchemaField.config}
+                              fields={fields.filter((field) => field.id !== selectedSchemaField.id)}
+                              type={
+                                selectedSchemaField.fieldType as 'formula' | 'lookup' | 'rollup'
+                              }
+                            />
+                          )}
+
                           {['quantity', 'measurement', 'range'].includes(
                             selectedSchemaField.fieldType,
                           ) && (
@@ -5219,15 +5526,17 @@ export function DataPage({
                         </div>
 
                         <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-3 rounded-lg border border-slate-800 bg-slate-900/45 px-3 py-2.5 text-xs text-slate-300">
-                          <label className={checkboxLabelClass}>
-                            <input
-                              className={checkboxClass}
-                              defaultChecked={selectedSchemaField.required}
-                              name="required"
-                              type="checkbox"
-                            />
-                            Required value
-                          </label>
+                          {!calculatedFieldTypeSet.has(selectedSchemaField.fieldType) && (
+                            <label className={checkboxLabelClass}>
+                              <input
+                                className={checkboxClass}
+                                defaultChecked={selectedSchemaField.required}
+                                name="required"
+                                type="checkbox"
+                              />
+                              Required value
+                            </label>
+                          )}
                           {fieldSupportsUnique(selectedSchemaField.fieldType) && (
                             <label className={checkboxLabelClass}>
                               <input
@@ -5375,11 +5684,11 @@ export function DataPage({
                     className="rounded-lg border border-transparent bg-transparent px-3 py-2 text-sm text-slate-300 outline-none hover:bg-slate-800 focus:border-sky-500"
                     value={pageSize}
                     onChange={(event) => {
-                      setPageSize(Number(event.target.value) as 25 | 50 | 100);
+                      setPageSize(Number(event.target.value) as 25 | 50 | 100 | 250 | 500);
                       setPage(1);
                     }}
                   >
-                    {[25, 50, 100].map((size) => (
+                    {[25, 50, 100, 250, 500].map((size) => (
                       <option key={size} value={size}>
                         {t('data.rows', { count: size })}
                       </option>
@@ -5592,7 +5901,9 @@ export function DataPage({
                       {fields
                         .filter(
                           (field) =>
-                            field.fieldType !== 'measurement' && field.fieldType !== 'range',
+                            field.fieldType !== 'measurement' &&
+                            field.fieldType !== 'range' &&
+                            !calculatedFieldTypeSet.has(field.fieldType),
                         )
                         .map((field) => (
                           <option key={field.id} value={field.id}>
@@ -5664,9 +5975,15 @@ export function DataPage({
                       {fields
                         .filter(
                           (field) =>
-                            !['relation', 'multi_select', 'measurement', 'range'].includes(
-                              field.fieldType,
-                            ),
+                            ![
+                              'relation',
+                              'multi_select',
+                              'measurement',
+                              'range',
+                              'formula',
+                              'lookup',
+                              'rollup',
+                            ].includes(field.fieldType),
                         )
                         .map((field) => (
                           <option key={field.id} value={field.id}>
@@ -5713,7 +6030,10 @@ export function DataPage({
 
             <div
               aria-label={`${selected.pluralName} table. Scroll horizontally to view more columns.`}
-              className="mt-1.5 w-full min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-md border border-slate-800"
+              className={`mt-1.5 w-full min-w-0 max-w-full overflow-x-auto overflow-y-auto overscroll-x-contain rounded-md border border-slate-800 ${activeViewType === 'grid' ? 'max-h-[72vh]' : ''}`}
+              onScroll={(event) => {
+                if (virtualizeGrid) setGridScrollTop(event.currentTarget.scrollTop);
+              }}
               role="region"
               tabIndex={0}
             >
@@ -5955,6 +6275,9 @@ export function DataPage({
                                 'multi_select',
                                 'measurement',
                                 'range',
+                                'formula',
+                                'lookup',
+                                'rollup',
                               ].includes(field.fieldType)}
                               onClick={() => cycleSort(field.id)}
                               title={t('data.sortCycleHint')}
@@ -5979,9 +6302,15 @@ export function DataPage({
                                 ⋮
                               </summary>
                               <div className="absolute right-0 top-8 z-50 grid w-52 gap-0.5 rounded-md border border-slate-700 bg-slate-950 p-1 text-xs font-normal tracking-normal text-slate-300 shadow-xl">
-                                {!['relation', 'multi_select', 'measurement', 'range'].includes(
-                                  field.fieldType,
-                                ) && (
+                                {![
+                                  'relation',
+                                  'multi_select',
+                                  'measurement',
+                                  'range',
+                                  'formula',
+                                  'lookup',
+                                  'rollup',
+                                ].includes(field.fieldType) && (
                                   <>
                                     <button
                                       aria-label={`Sort ${field.name} ascending`}
@@ -6145,190 +6474,210 @@ export function DataPage({
                     </tr>
                   </thead>
                   <tbody>
-                    {records.items.map((record, index) => (
-                      <tr
-                        className={`${selectedRows.has(record.id) ? 'bg-sky-500/5' : 'bg-slate-950/30'} hover:bg-slate-900/40`}
-                        key={record.id}
-                        onContextMenu={(event) => openRecordContextMenu(event, record)}
-                        onKeyDown={(event) => openRecordContextMenuFromKeyboard(event, record)}
-                      >
-                        <td className="border-b border-r border-slate-800 px-3 text-xs text-slate-600">
-                          <span className="flex items-center gap-2">
-                            <input
-                              aria-label={`Select ${record.displayName}`}
-                              checked={selectedRows.has(record.id)}
-                              type="checkbox"
-                              onChange={(event) =>
-                                setSelectedRows((current) => {
-                                  const next = new Set(current);
-                                  if (event.target.checked) next.add(record.id);
-                                  else next.delete(record.id);
-                                  return next;
-                                })
-                              }
-                            />
-                            <button
-                              aria-label={`Quick view ${record.displayName}`}
-                              className="rounded px-1 py-2 font-mono hover:bg-slate-800 hover:text-sky-300"
-                              onClick={() => setSelectedRecord(record)}
-                              title="Open quick view"
-                              type="button"
-                            >
-                              {(records.page - 1) * records.pageSize + index + 1}
-                            </button>
-                          </span>
-                        </td>
+                    {virtualStart > 0 && (
+                      <tr aria-hidden="true">
                         <td
-                          className={`sticky left-0 z-10 border-b border-r border-slate-800 bg-slate-950 ${gridCellSelectionClass({ rowId: record.id, columnKey: 'displayName' })}`}
-                          data-grid-cell=""
-                          data-grid-column-key="displayName"
-                          data-grid-row-id={record.id}
-                          onPointerDown={(event) =>
-                            beginGridCellSelection(event, {
-                              rowId: record.id,
-                              columnKey: 'displayName',
-                            })
-                          }
-                          onPointerEnter={(event) =>
-                            extendGridCellSelection(event, {
-                              rowId: record.id,
-                              columnKey: 'displayName',
-                            })
-                          }
-                          tabIndex={-1}
+                          colSpan={visibleFields.length + 4 + (workspaceMode ? 1 : 0)}
+                          style={{ height: virtualStart * virtualRowHeight }}
+                        />
+                      </tr>
+                    )}
+                    {virtualRecords.map((record, visibleIndex) => {
+                      const index = virtualStart + visibleIndex;
+                      return (
+                        <tr
+                          className={`${selectedRows.has(record.id) ? 'bg-sky-500/5' : 'bg-slate-950/30'} hover:bg-slate-900/40`}
+                          key={record.id}
+                          onContextMenu={(event) => openRecordContextMenu(event, record)}
+                          onKeyDown={(event) => openRecordContextMenuFromKeyboard(event, record)}
                         >
-                          {allowed(user, 'record.update') ? (
-                            <GridCell
-                              comfortable={rowDensity === 'comfortable'}
-                              label="Name"
-                              recordName={record.displayName}
-                              value={record.displayName}
-                              onSave={(value) => saveGridCell(record, 'displayName', value)}
-                            />
-                          ) : (
-                            <span className="block px-2.5 py-2 text-xs font-medium text-slate-200">
-                              {record.displayName}
+                          <td className="border-b border-r border-slate-800 px-3 text-xs text-slate-600">
+                            <span className="flex items-center gap-2">
+                              <input
+                                aria-label={`Select ${record.displayName}`}
+                                checked={selectedRows.has(record.id)}
+                                type="checkbox"
+                                onChange={(event) =>
+                                  setSelectedRows((current) => {
+                                    const next = new Set(current);
+                                    if (event.target.checked) next.add(record.id);
+                                    else next.delete(record.id);
+                                    return next;
+                                  })
+                                }
+                              />
+                              <button
+                                aria-label={`Quick view ${record.displayName}`}
+                                className="rounded px-1 py-2 font-mono hover:bg-slate-800 hover:text-sky-300"
+                                onClick={() => setSelectedRecord(record)}
+                                title="Open quick view"
+                                type="button"
+                              >
+                                {(records.page - 1) * records.pageSize + index + 1}
+                              </button>
                             </span>
-                          )}
-                        </td>
-                        {workspaceMode && (
+                          </td>
                           <td
-                            className={`border-b border-r border-slate-800 px-1.5 py-1 ${gridCellSelectionClass({ rowId: record.id, columnKey: 'contextProject' })}`}
+                            className={`sticky left-0 z-10 border-b border-r border-slate-800 bg-slate-950 ${gridCellSelectionClass({ rowId: record.id, columnKey: 'displayName' })}`}
                             data-grid-cell=""
-                            data-grid-column-key="contextProject"
+                            data-grid-column-key="displayName"
                             data-grid-row-id={record.id}
                             onPointerDown={(event) =>
                               beginGridCellSelection(event, {
                                 rowId: record.id,
-                                columnKey: 'contextProject',
+                                columnKey: 'displayName',
                               })
                             }
                             onPointerEnter={(event) =>
                               extendGridCellSelection(event, {
                                 rowId: record.id,
-                                columnKey: 'contextProject',
+                                columnKey: 'displayName',
                               })
                             }
                             tabIndex={-1}
                           >
                             {allowed(user, 'record.update') ? (
-                              <select
-                                aria-label={`Project for ${record.displayName}`}
-                                className="min-h-7 w-full select-text rounded border border-transparent bg-transparent px-1.5 text-xs text-slate-300 outline-none hover:border-slate-700 focus:border-sky-400"
-                                value={record.contextProjectId ?? ''}
-                                onChange={(event) =>
-                                  void saveProjectCell(record, event.target.value || null).catch(
-                                    (cause: unknown) => {
-                                      setMessageTone('error');
-                                      setMessage(
-                                        cause instanceof Error
-                                          ? cause.message
-                                          : 'Project link could not be saved.',
-                                      );
-                                    },
-                                  )
-                                }
-                              >
-                                <option value="">{t('data.noProject')}</option>
-                                {workspaceData?.projects.map((project) => (
-                                  <option key={project.id} value={project.id}>
-                                    {project.name}
-                                    {project.archivedAt ? ' (archived)' : ''}
-                                  </option>
-                                ))}
-                              </select>
-                            ) : (
-                              <span className="block truncate px-1.5 text-xs text-slate-400">
-                                {workspaceData?.projects.find(
-                                  (project) => project.id === record.contextProjectId,
-                                )?.name ?? t('data.noProject')}
-                              </span>
-                            )}
-                          </td>
-                        )}
-                        {visibleFields.map((field) => (
-                          <td
-                            className={`border-b border-r border-slate-800 ${gridCellSelectionClass({ rowId: record.id, columnKey: `field:${field.id}` })}`}
-                            data-grid-cell=""
-                            data-grid-column-key={`field:${field.id}`}
-                            data-grid-row-id={record.id}
-                            key={field.id}
-                            onPointerDown={(event) =>
-                              beginGridCellSelection(event, {
-                                rowId: record.id,
-                                columnKey: `field:${field.id}`,
-                              })
-                            }
-                            onPointerEnter={(event) =>
-                              extendGridCellSelection(event, {
-                                rowId: record.id,
-                                columnKey: `field:${field.id}`,
-                              })
-                            }
-                            tabIndex={-1}
-                          >
-                            {field.fieldType === 'measurement' ? (
-                              <span className="block max-w-64 truncate px-2.5 py-2 text-xs text-slate-400">
-                                {record.measurements?.[field.id]?.resultId
-                                  ? `${record.measurements[field.id]?.value} ${record.measurements[field.id]?.unit} · ${record.measurements[field.id]?.status ?? 'pending'}`
-                                  : (record.measurements?.[field.id]?.status ?? '—')}
-                              </span>
-                            ) : allowed(user, 'record.update') ? (
                               <GridCell
                                 comfortable={rowDensity === 'comfortable'}
-                                field={field}
-                                label={field.name}
+                                label="Name"
                                 recordName={record.displayName}
-                                value={recordGridValue(record, field)}
-                                onSave={(value) => saveGridCell(record, field, value)}
+                                value={record.displayName}
+                                onSave={(value) => saveGridCell(record, 'displayName', value)}
                               />
                             ) : (
-                              <span
-                                className={`block max-w-64 truncate px-2.5 text-xs text-slate-300 ${rowDensity === 'comfortable' ? 'py-3' : 'py-1.5'}`}
-                              >
-                                {displayFieldValue(field, recordGridValue(record, field))}
+                              <span className="block px-2.5 py-2 text-xs font-medium text-slate-200">
+                                {record.displayName}
                               </span>
                             )}
                           </td>
-                        ))}
-                        <td
-                          className={`border-b border-r border-slate-800 px-2.5 text-xs text-slate-500 ${rowDensity === 'comfortable' ? 'py-3' : 'py-1.5'}`}
-                        >
-                          {new Date(record.updatedAt).toLocaleDateString()}
-                        </td>
-                        <td className="border-b border-slate-800 px-3 py-2">
-                          <button
-                            aria-label={`Expand ${record.displayName}`}
-                            className="rounded-lg px-2 py-1 text-sky-400 hover:bg-sky-500/10 hover:text-sky-300"
-                            onClick={() => setSelectedRecord(record)}
-                            title={`Quick view ${record.displayName}`}
-                            type="button"
+                          {workspaceMode && (
+                            <td
+                              className={`border-b border-r border-slate-800 px-1.5 py-1 ${gridCellSelectionClass({ rowId: record.id, columnKey: 'contextProject' })}`}
+                              data-grid-cell=""
+                              data-grid-column-key="contextProject"
+                              data-grid-row-id={record.id}
+                              onPointerDown={(event) =>
+                                beginGridCellSelection(event, {
+                                  rowId: record.id,
+                                  columnKey: 'contextProject',
+                                })
+                              }
+                              onPointerEnter={(event) =>
+                                extendGridCellSelection(event, {
+                                  rowId: record.id,
+                                  columnKey: 'contextProject',
+                                })
+                              }
+                              tabIndex={-1}
+                            >
+                              {allowed(user, 'record.update') ? (
+                                <select
+                                  aria-label={`Project for ${record.displayName}`}
+                                  className="min-h-7 w-full select-text rounded border border-transparent bg-transparent px-1.5 text-xs text-slate-300 outline-none hover:border-slate-700 focus:border-sky-400"
+                                  value={record.contextProjectId ?? ''}
+                                  onChange={(event) =>
+                                    void saveProjectCell(record, event.target.value || null).catch(
+                                      (cause: unknown) => {
+                                        setMessageTone('error');
+                                        setMessage(
+                                          cause instanceof Error
+                                            ? cause.message
+                                            : 'Project link could not be saved.',
+                                        );
+                                      },
+                                    )
+                                  }
+                                >
+                                  <option value="">{t('data.noProject')}</option>
+                                  {workspaceData?.projects.map((project) => (
+                                    <option key={project.id} value={project.id}>
+                                      {project.name}
+                                      {project.archivedAt ? ' (archived)' : ''}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <span className="block truncate px-1.5 text-xs text-slate-400">
+                                  {workspaceData?.projects.find(
+                                    (project) => project.id === record.contextProjectId,
+                                  )?.name ?? t('data.noProject')}
+                                </span>
+                              )}
+                            </td>
+                          )}
+                          {visibleFields.map((field) => (
+                            <td
+                              className={`border-b border-r border-slate-800 ${gridCellSelectionClass({ rowId: record.id, columnKey: `field:${field.id}` })}`}
+                              data-grid-cell=""
+                              data-grid-column-key={`field:${field.id}`}
+                              data-grid-row-id={record.id}
+                              key={field.id}
+                              onPointerDown={(event) =>
+                                beginGridCellSelection(event, {
+                                  rowId: record.id,
+                                  columnKey: `field:${field.id}`,
+                                })
+                              }
+                              onPointerEnter={(event) =>
+                                extendGridCellSelection(event, {
+                                  rowId: record.id,
+                                  columnKey: `field:${field.id}`,
+                                })
+                              }
+                              tabIndex={-1}
+                            >
+                              {field.fieldType === 'measurement' ? (
+                                <span className="block max-w-64 truncate px-2.5 py-2 text-xs text-slate-400">
+                                  {record.measurements?.[field.id]?.resultId
+                                    ? `${record.measurements[field.id]?.value} ${record.measurements[field.id]?.unit} · ${record.measurements[field.id]?.status ?? 'pending'}`
+                                    : (record.measurements?.[field.id]?.status ?? '—')}
+                                </span>
+                              ) : allowed(user, 'record.update') &&
+                                !calculatedFieldTypeSet.has(field.fieldType) ? (
+                                <GridCell
+                                  comfortable={rowDensity === 'comfortable'}
+                                  field={field}
+                                  label={field.name}
+                                  recordName={record.displayName}
+                                  value={recordGridValue(record, field)}
+                                  onSave={(value) => saveGridCell(record, field, value)}
+                                />
+                              ) : (
+                                <span
+                                  className={`block max-w-64 truncate px-2.5 text-xs text-slate-300 ${rowDensity === 'comfortable' ? 'py-3' : 'py-1.5'}`}
+                                >
+                                  {displayFieldValue(field, recordGridValue(record, field))}
+                                </span>
+                              )}
+                            </td>
+                          ))}
+                          <td
+                            className={`border-b border-r border-slate-800 px-2.5 text-xs text-slate-500 ${rowDensity === 'comfortable' ? 'py-3' : 'py-1.5'}`}
                           >
-                            ↗
-                          </button>
-                        </td>
+                            {new Date(record.updatedAt).toLocaleDateString()}
+                          </td>
+                          <td className="border-b border-slate-800 px-3 py-2">
+                            <button
+                              aria-label={`Expand ${record.displayName}`}
+                              className="rounded-lg px-2 py-1 text-sky-400 hover:bg-sky-500/10 hover:text-sky-300"
+                              onClick={() => setSelectedRecord(record)}
+                              title={`Quick view ${record.displayName}`}
+                              type="button"
+                            >
+                              ↗
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {virtualEnd < records.items.length && (
+                      <tr aria-hidden="true">
+                        <td
+                          colSpan={visibleFields.length + 4 + (workspaceMode ? 1 : 0)}
+                          style={{ height: (records.items.length - virtualEnd) * virtualRowHeight }}
+                        />
                       </tr>
-                    ))}
+                    )}
                     {showInlineRecord && allowed(user, 'record.create') && (
                       <InlineRecordRow
                         fields={visibleFields}
@@ -6761,6 +7110,16 @@ export function RecordDetailPage({ user }: { user: User }) {
           </dl>
         )}
       </section>
+      <RecordHistoryPanel
+        base={base}
+        objectTypeId={objectTypeId}
+        record={record}
+        user={user}
+        onRestored={(restored) => {
+          setRecord(restored);
+          setError('');
+        }}
+      />
       <MeasurementsPanel base={base} fields={fields} recordId={record.id} user={user} />
       <LinkedTasksPanel base={base} recordId={record.id} />
       <button

@@ -362,6 +362,10 @@ describe('DataPage', () => {
       }),
     ).toBeChecked();
     fireEvent.change(screen.getByRole('combobox', { name: 'Field type' }), {
+      target: { value: 'formula' },
+    });
+    expect(screen.getByRole('textbox', { name: 'Formula expression' })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Field type' }), {
       target: { value: 'single_select' },
     });
     expect(screen.getByRole('textbox', { name: 'Select options' })).toBeInTheDocument();

@@ -14,6 +14,7 @@ import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -468,15 +469,19 @@ function RecordCardView({
   base,
   card,
   refreshKey,
+  globalSearch,
 }: {
   base: string;
   card: DashboardCard;
   refreshKey: number;
+  globalSearch: string;
 }) {
   const config = card.config as RecordKpiConfig | RecordChartConfig | RecordListConfig;
   const [result, setResult] = useState<RecordQueryResult>();
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [drilldown, setDrilldown] = useState<{ value: string | null; label: string }>();
+  const [drilldownItems, setDrilldownItems] = useState<DynamicRecord[]>([]);
   useEffect(() => {
     let active = true;
     setLoading(true);
@@ -487,6 +492,7 @@ function RecordCardView({
         body: JSON.stringify({
           filters: config.source.filters,
           sorts: config.source.sorts,
+          ...(globalSearch.trim() ? { search: globalSearch.trim() } : {}),
           page: 1,
           pageSize: card.card_type === 'record_list' ? (config as RecordListConfig).limit : 1,
           ...(card.card_type === 'record_chart'
@@ -511,7 +517,43 @@ function RecordCardView({
     return () => {
       active = false;
     };
-  }, [base, card.card_type, config, refreshKey]);
+  }, [base, card.card_type, config, globalSearch, refreshKey]);
+  useEffect(() => {
+    if (!drilldown || card.card_type !== 'record_chart') {
+      setDrilldownItems([]);
+      return;
+    }
+    const chart = config as RecordChartConfig;
+    let active = true;
+    void api<RecordQueryResult>(
+      `${base}/object-types/${config.source.objectTypeId}/records/query`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          filters: [
+            ...config.source.filters,
+            drilldown.value === null
+              ? { fieldId: chart.groupByFieldId, operator: 'is_null' }
+              : { fieldId: chart.groupByFieldId, operator: 'eq', value: drilldown.value },
+          ],
+          sorts: config.source.sorts,
+          ...(globalSearch.trim() ? { search: globalSearch.trim() } : {}),
+          page: 1,
+          pageSize: 10,
+        }),
+      },
+    ).then(
+      (response) => {
+        if (active) setDrilldownItems(response.items);
+      },
+      () => {
+        if (active) setDrilldownItems([]);
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [base, card.card_type, config, drilldown, globalSearch]);
 
   if (loading) return <div className="mt-4 h-16 animate-pulse rounded-lg bg-slate-800/70" />;
   if (error)
@@ -573,13 +615,44 @@ function RecordCardView({
           ariaLabel={`${chart.title}. ${chart.chartType} chart grouped by ${chart.groupByLabel}. ${data.map((item) => `${item.name}: ${item.value}`).join(', ')}.`}
           option={option}
         />
-        <ul className="sr-only">
-          {data.map((item) => (
-            <li key={item.name}>
-              {item.name}: {item.value}
-            </li>
+        <div className="mt-1 flex flex-wrap gap-1.5" aria-label="Chart drill-down options">
+          {groups.map((group, index) => (
+            <button
+              className={`rounded-md px-2 py-1 text-[10px] ${drilldown?.value === group.value ? 'bg-sky-400/15 text-sky-200' : 'bg-slate-800 text-slate-400 hover:text-sky-300'}`}
+              key={`${group.value ?? 'empty'}-${index}`}
+              onClick={() => setDrilldown({ value: group.value, label: data[index]!.name })}
+              type="button"
+            >
+              {data[index]!.name} · {group.count}
+            </button>
           ))}
-        </ul>
+        </div>
+        {drilldown && (
+          <div className="mt-2 rounded-lg border border-sky-400/15 bg-slate-950/50 p-2">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[11px] font-medium text-sky-200">{drilldown.label} records</p>
+              <button
+                className="text-[10px] text-slate-500 hover:text-slate-200"
+                onClick={() => setDrilldown(undefined)}
+                type="button"
+              >
+                Close
+              </button>
+            </div>
+            <ul className="mt-1 grid gap-1">
+              {drilldownItems.map((record) => (
+                <li key={record.id}>
+                  <Link
+                    className="block truncate rounded px-1.5 py-1 text-xs text-slate-300 hover:bg-slate-800 hover:text-sky-300"
+                    to={`${base}/data/${config.source.objectTypeId}/records/${record.id}`}
+                  >
+                    {record.displayName}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </>
     ) : (
       <p className="mt-4 text-sm text-slate-500">No grouped records match this card.</p>
@@ -603,7 +676,12 @@ function RecordCardView({
           {(result?.items ?? []).map((record) => (
             <tr key={record.id}>
               <td className="border-b border-slate-800/70 px-2 py-2 font-medium text-slate-200">
-                {record.displayName}
+                <Link
+                  className="hover:text-sky-300"
+                  to={`${base}/data/${config.source.objectTypeId}/records/${record.id}`}
+                >
+                  {record.displayName}
+                </Link>
               </td>
               {list.columns.map((column) => (
                 <td
@@ -681,6 +759,16 @@ export function VisualizationsPage({ user }: { user: User }) {
   const [contextMenu, setContextMenu] = useState<ContextMenuModel>();
   const [recordRefreshKey, setRecordRefreshKey] = useState(0);
   const [lastRecordRefreshAt, setLastRecordRefreshAt] = useState(() => new Date());
+  const [dashboardSearch, setDashboardSearch] = useState('');
+  const [dashboardQuery, setDashboardQuery] = useState('');
+  const [layoutDraft, setLayoutDraft] = useState<
+    Record<string, Pick<DashboardCard, 'x' | 'y' | 'width' | 'height'>>
+  >({});
+  const dashboardGridRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setDashboardQuery(dashboardSearch), 250);
+    return () => window.clearTimeout(timeout);
+  }, [dashboardSearch]);
   const refresh = useCallback(async () => {
     try {
       const [d, c, b, m] = await Promise.all([
@@ -769,6 +857,7 @@ export function VisualizationsPage({ user }: { user: User }) {
     [datasets],
   );
   const dashboard = dashboards.find((item) => item.id === selectedDashboard) ?? dashboards[0];
+  useEffect(() => setLayoutDraft({}), [dashboard?.id, dashboard?.revision_number]);
   const liveCardCount =
     dashboard?.cards.filter((card) =>
       ['record_kpi', 'record_chart', 'record_list'].includes(card.card_type),
@@ -796,6 +885,52 @@ export function VisualizationsPage({ user }: { user: User }) {
   function refreshLiveCards() {
     setRecordRefreshKey((current) => current + 1);
     setLastRecordRefreshAt(new Date());
+  }
+  function cardWithDraft(card: DashboardCard): DashboardCard {
+    return { ...card, ...(layoutDraft[card.id] ?? {}) };
+  }
+  function beginLayoutChange(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    card: DashboardCard,
+    mode: 'move' | 'resize',
+  ) {
+    const grid = dashboardGridRef.current;
+    if (!grid || window.innerWidth < 768) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const initial = cardWithDraft(card);
+    const bounds = grid.getBoundingClientRect();
+    const columnStep = Math.max(40, (bounds.width - 11 * 16) / 12 + 16);
+    const rowStep = 64;
+    const move = (pointer: PointerEvent) => {
+      const columns = Math.round((pointer.clientX - startX) / columnStep);
+      const rows = Math.round((pointer.clientY - startY) / rowStep);
+      setLayoutDraft((current) => ({
+        ...current,
+        [card.id]:
+          mode === 'move'
+            ? {
+                x: Math.max(0, Math.min(12 - initial.width, initial.x + columns)),
+                y: Math.max(0, initial.y + rows),
+                width: initial.width,
+                height: initial.height,
+              }
+            : {
+                x: initial.x,
+                y: initial.y,
+                width: Math.max(2, Math.min(12 - initial.x, initial.width + columns)),
+                height: Math.max(2, Math.min(20, initial.height + rows)),
+              },
+      }));
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up, { once: true });
   }
   async function mutate(operation: () => Promise<unknown>) {
     try {
@@ -975,7 +1110,7 @@ export function VisualizationsPage({ user }: { user: User }) {
           name: dashboard.name,
           description: dashboard.description,
           changeNote: 'Explicit layout publication',
-          cards: dashboard.cards.map(dashboardCardInput),
+          cards: dashboard.cards.map((card) => dashboardCardInput(cardWithDraft(card))),
         }),
       }),
     );
@@ -1349,14 +1484,45 @@ export function VisualizationsPage({ user }: { user: User }) {
             </div>
           )}
           {dashboard && allowed(user, 'dashboard.manage') && (
-            <button
-              className="text-sm text-sky-400"
-              onClick={() => void publishDashboardRevision()}
-            >
-              Publish layout revision
-            </button>
+            <div className="flex items-center gap-2">
+              {Object.keys(layoutDraft).length > 0 && (
+                <button
+                  className="text-xs text-slate-500 hover:text-slate-200"
+                  onClick={() => setLayoutDraft({})}
+                  type="button"
+                >
+                  Reset layout
+                </button>
+              )}
+              <button
+                className="text-sm text-sky-400"
+                onClick={() => void publishDashboardRevision()}
+                type="button"
+              >
+                Publish layout revision
+              </button>
+            </div>
           )}
         </div>
+        {dashboard && liveCardCount > 0 && (
+          <div className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/45 p-3">
+            <label className="min-w-64 flex-1 text-xs text-slate-400">
+              Global dashboard filter
+              <input
+                aria-label="Search across dashboard record sources"
+                className={`${inputClass} mt-1`}
+                placeholder="Search every record-backed card…"
+                type="search"
+                value={dashboardSearch}
+                onChange={(event) => setDashboardSearch(event.target.value)}
+              />
+            </label>
+            <p className="max-w-md text-[11px] leading-relaxed text-slate-500">
+              One search is applied to every table-backed KPI, chart, and list. Select a chart group
+              to drill into its matching records.
+            </p>
+          </div>
+        )}
         {dashboard && allowed(user, 'dashboard.manage') && (
           <form
             className="mt-5 rounded-2xl border border-slate-800 bg-slate-900/40 p-5"
@@ -1483,7 +1649,7 @@ export function VisualizationsPage({ user }: { user: User }) {
           </form>
         )}
         {dashboard ? (
-          <div className="dashboard-grid mt-5 grid grid-cols-12 gap-4">
+          <div className="dashboard-grid mt-5 grid grid-cols-12 gap-4" ref={dashboardGridRef}>
             {dashboard.cards.map((card) => (
               <article
                 className="dashboard-card relative rounded-xl border border-slate-800 bg-slate-900/60 p-4"
@@ -1492,15 +1658,30 @@ export function VisualizationsPage({ user }: { user: User }) {
                 onKeyDown={(event) => openDashboardCardMenuFromKeyboard(event, card)}
                 style={
                   {
-                    '--dashboard-column': `${card.x + 1} / span ${card.width}`,
-                    '--dashboard-row': `${card.y + 1} / span ${card.height}`,
-                    '--dashboard-height': card.height,
+                    '--dashboard-column': `${cardWithDraft(card).x + 1} / span ${cardWithDraft(card).width}`,
+                    '--dashboard-row': `${cardWithDraft(card).y + 1} / span ${cardWithDraft(card).height}`,
+                    '--dashboard-height': cardWithDraft(card).height,
                   } as CSSProperties
                 }
                 tabIndex={0}
               >
                 <div className="flex items-start justify-between gap-3">
-                  <h3 className="text-sm font-medium text-slate-300">{card.config.title}</h3>
+                  <div className="flex min-w-0 items-center gap-2">
+                    {allowed(user, 'dashboard.manage') && (
+                      <button
+                        aria-label={`Move ${card.config.title ?? 'card'}`}
+                        className="cursor-grab rounded px-1 text-slate-600 hover:bg-slate-800 hover:text-sky-300 active:cursor-grabbing"
+                        onPointerDown={(event) => beginLayoutChange(event, card, 'move')}
+                        title="Drag to move"
+                        type="button"
+                      >
+                        ⠿
+                      </button>
+                    )}
+                    <h3 className="truncate text-sm font-medium text-slate-300">
+                      {card.config.title}
+                    </h3>
+                  </div>
                   {allowed(user, 'dashboard.manage') && (
                     <button
                       aria-label={`Remove ${card.config.title ?? 'card'}`}
@@ -1515,7 +1696,12 @@ export function VisualizationsPage({ user }: { user: User }) {
                 {card.card_type === 'chart' && card.chart_revision_id ? (
                   <ChartView base={base} revisionId={card.chart_revision_id} />
                 ) : ['record_kpi', 'record_chart', 'record_list'].includes(card.card_type) ? (
-                  <RecordCardView base={base} card={card} refreshKey={recordRefreshKey} />
+                  <RecordCardView
+                    base={base}
+                    card={card}
+                    globalSearch={dashboardQuery}
+                    refreshKey={recordRefreshKey}
+                  />
                 ) : card.card_type === 'kpi' ? (
                   <p className="mt-4 text-4xl font-semibold text-sky-300">
                     {metricValue(card) ?? '—'}
@@ -1534,6 +1720,17 @@ export function VisualizationsPage({ user }: { user: User }) {
                   </ul>
                 ) : (
                   <p className="mt-4 text-4xl font-semibold">{metrics?.overdue_tasks ?? 0}</p>
+                )}
+                {allowed(user, 'dashboard.manage') && (
+                  <button
+                    aria-label={`Resize ${card.config.title ?? 'card'}`}
+                    className="absolute bottom-1 right-1 cursor-nwse-resize px-1 text-slate-700 hover:text-sky-300"
+                    onPointerDown={(event) => beginLayoutChange(event, card, 'resize')}
+                    title="Drag to resize"
+                    type="button"
+                  >
+                    ◢
+                  </button>
                 )}
               </article>
             ))}

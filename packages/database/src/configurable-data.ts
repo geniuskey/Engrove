@@ -10,6 +10,7 @@ import {
 import { appendAudit, RepositoryError, type ActorSession, type AuditInput } from './community.js';
 import { evaluateNewRecord } from './engineering-types.js';
 import { installDefaultVisualizations } from './visualizations.js';
+import { evaluateFormula, formulaReferences, type FormulaValue } from './calculated-fields.js';
 
 export const RECORD_PROJECTION_VERSION = 1;
 
@@ -30,11 +31,15 @@ export const configurableFieldTypes = [
   'range',
   'spectral_data',
   'tabular_data',
+  'formula',
+  'lookup',
+  'rollup',
   'file',
   'dataset',
 ] as const;
 
 export type ConfigurableFieldType = (typeof configurableFieldTypes)[number];
+const calculatedFieldTypes: ConfigurableFieldType[] = ['formula', 'lookup', 'rollup'];
 export type ProjectionStatus = 'ready' | 'rebuilding' | 'failed';
 export type JsonValue =
   null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -95,6 +100,24 @@ export interface RecordRow {
   updatedAt: string;
 }
 
+export interface RecordHistoryRow {
+  id: string;
+  action: string;
+  actorName: string | null;
+  createdAt: string;
+  rowVersion: number | null;
+  undoable: boolean;
+}
+
+interface RecordSnapshot {
+  displayName: string;
+  contextProjectId: string | null;
+  values: Record<string, JsonValue>;
+  relations: Record<string, string[]>;
+  fileReferences: Record<string, string[]>;
+  datasetReferences: Record<string, string[]>;
+}
+
 export type RecordFilterOperator =
   'eq' | 'ne' | 'contains' | 'gt' | 'gte' | 'lt' | 'lte' | 'in' | 'is_null';
 
@@ -136,7 +159,7 @@ export interface RecordViewConfig {
   filters: RecordFilter[];
   sorts: RecordSort[];
   rowDensity: 'compact' | 'comfortable';
-  pageSize: 25 | 50 | 100;
+  pageSize: 25 | 50 | 100 | 250 | 500;
   viewOptions?: {
     groupFieldId?: string;
     dateFieldId?: string;
@@ -521,6 +544,10 @@ function fieldProjection(field: FieldDefinitionRow, value: JsonValue): Projectio
     case 'tabular_data':
       normalizeTabularData(value);
       return [];
+    case 'formula':
+    case 'lookup':
+    case 'rollup':
+      throw new Error('is calculated and read-only');
     case 'quantity': {
       if (
         !value ||
@@ -607,6 +634,27 @@ function hasRecordValue(value: JsonValue | undefined): value is JsonValue {
   );
 }
 
+function formulaValue(value: JsonValue | undefined): FormulaValue {
+  if (value === undefined || value === null || typeof value !== 'object') return value ?? null;
+  if (Array.isArray(value)) return value.map(formulaValue);
+  if (typeof value.canonicalValue === 'string') return value.canonicalValue;
+  if (typeof value.value === 'string') return value.value;
+  return JSON.stringify(value);
+}
+
+function rollupNumber(value: JsonValue | undefined): number | undefined {
+  const candidate = formulaValue(value);
+  if (
+    Array.isArray(candidate) ||
+    candidate === null ||
+    candidate === '' ||
+    typeof candidate === 'boolean'
+  )
+    return undefined;
+  const number = Number(candidate);
+  return Number.isFinite(number) ? number : undefined;
+}
+
 function validateConfig(type: ConfigurableFieldType, config: Record<string, JsonValue>): void {
   if (type === 'single_select' || type === 'multi_select') {
     const options = config.options;
@@ -682,6 +730,55 @@ function validateConfig(type: ConfigurableFieldType, config: Record<string, Json
       'Data table firstRowHeader must be true or false.',
     );
   }
+  if (type === 'formula') {
+    const expression = config.expression;
+    if (typeof expression !== 'string' || !expression.trim() || expression.length > 2_000) {
+      throw new RepositoryError(
+        'FIELD_CONFIG_INVALID',
+        400,
+        'Formula fields require an expression of at most 2,000 characters.',
+      );
+    }
+    try {
+      evaluateFormula(expression, {});
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Formula is invalid.';
+      if (!/not numeric|divide by zero/i.test(message)) {
+        throw new RepositoryError('FIELD_CONFIG_INVALID', 400, message);
+      }
+    }
+  }
+  if (type === 'lookup') {
+    if (
+      typeof config.relationFieldId !== 'string' ||
+      !/^[0-9a-f-]{36}$/i.test(config.relationFieldId) ||
+      typeof config.targetFieldId !== 'string' ||
+      (config.targetFieldId !== 'displayName' && !/^[0-9a-f-]{36}$/i.test(config.targetFieldId))
+    ) {
+      throw new RepositoryError(
+        'FIELD_CONFIG_INVALID',
+        400,
+        'Lookup fields require a relation field and target field.',
+      );
+    }
+  }
+  if (type === 'rollup') {
+    const aggregations = ['count', 'sum', 'average', 'min', 'max'];
+    if (
+      typeof config.relationFieldId !== 'string' ||
+      !/^[0-9a-f-]{36}$/i.test(config.relationFieldId) ||
+      typeof config.targetFieldId !== 'string' ||
+      (config.targetFieldId !== 'displayName' && !/^[0-9a-f-]{36}$/i.test(config.targetFieldId)) ||
+      typeof config.aggregation !== 'string' ||
+      !aggregations.includes(config.aggregation)
+    ) {
+      throw new RepositoryError(
+        'FIELD_CONFIG_INVALID',
+        400,
+        'Rollup fields require a relation, target field, and aggregation.',
+      );
+    }
+  }
 }
 
 function uniqueAllowed(type: ConfigurableFieldType): boolean {
@@ -725,6 +822,9 @@ function projectionColumn(field: FieldDefinitionRow): string {
     case 'tabular_data':
     case 'file':
     case 'dataset':
+    case 'formula':
+    case 'lookup':
+    case 'rollup':
       throw new RepositoryError('FIELD_SORT_UNSUPPORTED', 400, 'This field type cannot be sorted.');
   }
 }
@@ -818,6 +918,10 @@ function csvValue(field: FieldDefinitionRow, cell: string): JsonValue | undefine
       } catch {
         return cell;
       }
+    case 'formula':
+    case 'lookup':
+    case 'rollup':
+      return undefined;
     default:
       return cell;
   }
@@ -1483,12 +1587,14 @@ export class ScopedProjectRepository {
     }
     if (
       input.defaultValue !== undefined &&
-      ['relation', 'measurement', 'file', 'dataset'].includes(input.fieldType)
+      ['relation', 'measurement', 'file', 'dataset', ...calculatedFieldTypes].includes(
+        input.fieldType,
+      )
     ) {
       throw new RepositoryError(
         'FIELD_DEFAULT_UNSUPPORTED',
         400,
-        'Relation, measurement, file, and dataset fields cannot have default values.',
+        'Calculated and reference fields cannot have default values.',
       );
     }
     if (input.defaultValue !== undefined && !hasRecordValue(input.defaultValue)) {
@@ -1500,6 +1606,13 @@ export class ScopedProjectRepository {
     }
     const config = input.config ?? {};
     validateConfig(input.fieldType, config);
+    if (calculatedFieldTypes.includes(input.fieldType) && (input.required || input.unique)) {
+      throw new RepositoryError(
+        'FIELD_CALCULATED_READ_ONLY',
+        400,
+        'Calculated fields cannot be required or unique.',
+      );
+    }
     if (input.unique && !uniqueAllowed(input.fieldType)) {
       throw new RepositoryError(
         'FIELD_UNIQUE_UNSUPPORTED',
@@ -1514,6 +1627,7 @@ export class ScopedProjectRepository {
       );
       if (!objectType.rowCount)
         throw new RepositoryError('OBJECT_TYPE_NOT_FOUND', 404, 'Object type was not found.');
+      await this.validateCalculatedFieldConfig(client, input.objectTypeId, input.fieldType, config);
       const recordCount = await client.query<{ count: string }>(
         'select count(*)::text as count from records where project_id = $1 and object_type_id = $2',
         [this.scope.projectId, input.objectTypeId],
@@ -1647,6 +1761,20 @@ export class ScopedProjectRepository {
           );
         }
         validateConfig(previous.fieldType, input.config);
+        await this.validateCalculatedFieldConfig(
+          client,
+          input.objectTypeId,
+          previous.fieldType,
+          input.config,
+          input.fieldId,
+        );
+        if (calculatedFieldTypes.includes(previous.fieldType) && (input.required || input.unique)) {
+          throw new RepositoryError(
+            'FIELD_CALCULATED_READ_ONLY',
+            400,
+            'Calculated fields cannot be required or unique.',
+          );
+        }
         if (
           ['quantity', 'measurement', 'range'].includes(previous.fieldType) &&
           (previous.config.dimension !== input.config.dimension ||
@@ -1713,7 +1841,7 @@ export class ScopedProjectRepository {
                 'Existing records do not contain this required relation.',
               );
           }
-        } else {
+        } else if (!calculatedFieldTypes.includes(previous.fieldType)) {
           for (const record of records.rows) {
             const value = record.values[previous.key];
             if (value === undefined || value === null || value === '') {
@@ -1754,7 +1882,10 @@ export class ScopedProjectRepository {
             JSON.stringify(next.config),
           ],
         );
-        if (previous.fieldType !== 'relation') {
+        if (
+          previous.fieldType !== 'relation' &&
+          !calculatedFieldTypes.includes(previous.fieldType)
+        ) {
           for (const record of records.rows) {
             const value = record.values[previous.key];
             if (value !== undefined && value !== null && value !== '') {
@@ -2002,6 +2133,72 @@ export class ScopedProjectRepository {
     }
   }
 
+  private async validateCalculatedFieldConfig(
+    client: PoolClient,
+    objectTypeId: string,
+    type: ConfigurableFieldType,
+    config: Record<string, JsonValue>,
+    fieldId?: string,
+  ): Promise<void> {
+    if (type === 'formula') {
+      const references = formulaReferences(String(config.expression));
+      if (!references.length) return;
+      const result = await client.query<{ id: string; key: string }>(
+        `select id,key from field_definitions
+         where project_id=$1 and object_type_id=$2 and key=any($3::text[])`,
+        [this.scope.projectId, objectTypeId, references],
+      );
+      if (
+        result.rows.length !== references.length ||
+        (fieldId && result.rows.some((field) => field.id === fieldId))
+      ) {
+        throw new RepositoryError(
+          'FIELD_CONFIG_INVALID',
+          400,
+          'Formula references must point to other fields in this table.',
+        );
+      }
+      return;
+    }
+    if (type !== 'lookup' && type !== 'rollup') return;
+    const relation = await client.query<{ config: Record<string, JsonValue> }>(
+      `select config from field_definitions
+       where project_id=$1 and object_type_id=$2 and id=$3 and field_type='relation'`,
+      [this.scope.projectId, objectTypeId, config.relationFieldId],
+    );
+    if (!relation.rows[0]) {
+      throw new RepositoryError(
+        'FIELD_CONFIG_INVALID',
+        400,
+        'Calculated field relation must belong to this table.',
+      );
+    }
+    if (config.targetFieldId === 'displayName') return;
+    const target = await client.query<{ field_type: ConfigurableFieldType }>(
+      `select field_type from field_definitions
+       where project_id=$1 and object_type_id=$2 and id=$3`,
+      [this.scope.projectId, relation.rows[0].config.targetObjectTypeId, config.targetFieldId],
+    );
+    if (!target.rows[0] || calculatedFieldTypes.includes(target.rows[0].field_type)) {
+      throw new RepositoryError(
+        'FIELD_CONFIG_INVALID',
+        400,
+        'Calculated target must be a stored field in the related table.',
+      );
+    }
+    if (
+      type === 'rollup' &&
+      config.aggregation !== 'count' &&
+      !['integer', 'decimal', 'quantity'].includes(target.rows[0].field_type)
+    ) {
+      throw new RepositoryError(
+        'FIELD_CONFIG_INVALID',
+        400,
+        'Numeric rollups require an integer, decimal, or quantity target field.',
+      );
+    }
+  }
+
   private async normalizeRecordInput(
     client: PoolClient,
     objectTypeId: string,
@@ -2028,7 +2225,12 @@ export class ScopedProjectRepository {
     const byId = new Map(fields.map((field) => [field.id, field]));
     for (const key of Object.keys(suppliedValues)) {
       const field = byKey.get(key);
-      if (!field || ['relation', 'measurement', 'file', 'dataset'].includes(field.fieldType)) {
+      if (
+        !field ||
+        ['relation', 'measurement', 'file', 'dataset', ...calculatedFieldTypes].includes(
+          field.fieldType,
+        )
+      ) {
         throw new RepositoryError('FIELD_VALIDATION_FAILED', 400, `Unknown value field '${key}'.`);
       }
     }
@@ -2137,7 +2339,8 @@ export class ScopedProjectRepository {
         else datasetReferences[field.id] = references;
         continue;
       }
-      if (field.fieldType === 'measurement') continue;
+      if (field.fieldType === 'measurement' || calculatedFieldTypes.includes(field.fieldType))
+        continue;
       if (field.unique && field.projectionStatus !== 'ready') {
         throw new RepositoryError(
           'FIELD_INDEX_REBUILDING',
@@ -2231,10 +2434,103 @@ export class ScopedProjectRepository {
             'insert into record_dataset_references (id,project_id,record_id,field_id,dataset_id) values ($1,$2,$3,$4,$5)',
             [uuidv7(), this.scope.projectId, recordId, field.id, datasetId],
           );
-      } else if (values[field.key] !== undefined) {
+      } else if (
+        !calculatedFieldTypes.includes(field.fieldType) &&
+        values[field.key] !== undefined
+      ) {
         await this.replaceProjection(client, recordId, field, values[field.key]!);
       }
     }
+  }
+
+  private async hydrateCalculatedValues(
+    records: RecordRow[],
+    fields: FieldDefinitionRow[],
+  ): Promise<RecordRow[]> {
+    if (!records.length) return records;
+    const calculated = fields.filter((field) => calculatedFieldTypes.includes(field.fieldType));
+    for (const field of calculated.filter((candidate) => candidate.fieldType !== 'formula')) {
+      const relationFieldId = String(field.config.relationFieldId);
+      const targetIds = [
+        ...new Set(records.flatMap((record) => record.relations[relationFieldId] ?? [])),
+      ];
+      if (!targetIds.length) {
+        for (const record of records)
+          record.values[field.key] = field.fieldType === 'rollup' ? 0 : [];
+        continue;
+      }
+      const targetFieldId = String(field.config.targetFieldId);
+      let targetKey: string | undefined;
+      if (targetFieldId !== 'displayName') {
+        const targetField = await this.pool.query<{ key: string }>(
+          'select key from field_definitions where project_id=$1 and id=$2',
+          [this.scope.projectId, targetFieldId],
+        );
+        targetKey = targetField.rows[0]?.key;
+      }
+      const targets = await this.pool.query<{
+        id: string;
+        display_name: string;
+        values: Record<string, JsonValue>;
+      }>(
+        `select id,display_name,values from records
+         where project_id=$1 and id=any($2::uuid[]) and archived_at is null`,
+        [this.scope.projectId, targetIds],
+      );
+      const byId = new Map(
+        targets.rows.map((target) => [
+          target.id,
+          targetFieldId === 'displayName' ? target.display_name : target.values[targetKey!],
+        ]),
+      );
+      for (const record of records) {
+        const values = (record.relations[relationFieldId] ?? []).flatMap((id) => {
+          const value = byId.get(id);
+          return value === undefined ? [] : [value];
+        });
+        if (field.fieldType === 'lookup') {
+          record.values[field.key] = values.length === 1 ? values[0]! : values;
+          continue;
+        }
+        const aggregation = String(field.config.aggregation);
+        if (aggregation === 'count') {
+          record.values[field.key] = values.length;
+          continue;
+        }
+        const numbers = values.flatMap((value) => {
+          const number = rollupNumber(value);
+          return number === undefined ? [] : [number];
+        });
+        record.values[field.key] = !numbers.length
+          ? null
+          : aggregation === 'sum'
+            ? numbers.reduce((total, value) => total + value, 0)
+            : aggregation === 'average'
+              ? numbers.reduce((total, value) => total + value, 0) / numbers.length
+              : aggregation === 'min'
+                ? Math.min(...numbers)
+                : Math.max(...numbers);
+      }
+    }
+    const formulas = calculated.filter((field) => field.fieldType === 'formula');
+    for (let pass = 0; pass < formulas.length; pass += 1) {
+      for (const record of records) {
+        const inputs = Object.fromEntries(
+          Object.entries(record.values).map(([key, value]) => [key, formulaValue(value)]),
+        );
+        for (const field of formulas) {
+          try {
+            record.values[field.key] = evaluateFormula(String(field.config.expression), inputs);
+            inputs[field.key] = formulaValue(record.values[field.key]);
+          } catch (error) {
+            record.values[field.key] = `#ERROR! ${
+              error instanceof Error ? error.message : 'Formula could not be evaluated.'
+            }`;
+          }
+        }
+      }
+    }
+    return records;
   }
 
   private async loadRelations(recordIds: string[]): Promise<Map<string, Record<string, string[]>>> {
@@ -2379,13 +2675,14 @@ export class ScopedProjectRepository {
       this.loadResourceReferences([recordId]),
       this.loadCurrentMeasurements([recordId]),
     ]);
-    return this.mapRecord(
+    const mapped = this.mapRecord(
       result.rows[0],
       relations.get(recordId),
       resources.files.get(recordId),
       resources.datasets.get(recordId),
       measurements.get(recordId),
     );
+    return (await this.hydrateCalculatedValues([mapped], await this.listFields(objectTypeId)))[0]!;
   }
 
   async createRecord(input: {
@@ -2472,8 +2769,13 @@ export class ScopedProjectRepository {
       await transaction(this.pool, async (client) => {
         if (input.contextProjectId !== undefined)
           await this.validateContextProject(client, input.contextProjectId);
-        const existing = await client.query<{ id: string }>(
-          `select id from records where project_id = $1 and object_type_id = $2 and id = $3
+        const existing = await client.query<{
+          id: string;
+          display_name: string;
+          context_project_id: string | null;
+          values: Record<string, JsonValue>;
+        }>(
+          `select id,display_name,context_project_id,values from records where project_id = $1 and object_type_id = $2 and id = $3
              and row_version = $4 for update`,
           [this.scope.projectId, input.objectTypeId, input.recordId, input.rowVersion],
         );
@@ -2497,6 +2799,34 @@ export class ScopedProjectRepository {
           input.datasetReferences ?? {},
           false,
         );
+        const [relationRows, fileRows, datasetRows] = await Promise.all([
+          client.query<{ field_id: string; target_record_id: string }>(
+            'select source_field_id field_id,target_record_id from relation_edges where project_id=$1 and source_record_id=$2',
+            [this.scope.projectId, input.recordId],
+          ),
+          client.query<{ field_id: string; file_id: string }>(
+            'select field_id,file_id from record_file_references where project_id=$1 and record_id=$2',
+            [this.scope.projectId, input.recordId],
+          ),
+          client.query<{ field_id: string; dataset_id: string }>(
+            'select field_id,dataset_id from record_dataset_references where project_id=$1 and record_id=$2',
+            [this.scope.projectId, input.recordId],
+          ),
+        ]);
+        const collect = <T extends { field_id: string }>(rows: T[], value: (row: T) => string) => {
+          const mapped: Record<string, string[]> = {};
+          for (const row of rows) (mapped[row.field_id] ??= []).push(value(row));
+          return mapped;
+        };
+        const previous = existing.rows[0]!;
+        const before: RecordSnapshot = {
+          displayName: previous.display_name,
+          contextProjectId: previous.context_project_id,
+          values: previous.values,
+          relations: collect(relationRows.rows, (row) => row.target_record_id),
+          fileReferences: collect(fileRows.rows, (row) => row.file_id),
+          datasetReferences: collect(datasetRows.rows, (row) => row.dataset_id),
+        };
         await client.query(
           `update records set display_name = $4, values = $5::jsonb, updated_by = $6,
                   context_project_id = case when $7::boolean then $8::uuid else context_project_id end,
@@ -2532,6 +2862,18 @@ export class ScopedProjectRepository {
             requestId: input.requestId,
             payload: {
               rowVersion: input.rowVersion + 1,
+              before,
+              after: {
+                displayName: input.displayName.trim(),
+                contextProjectId:
+                  input.contextProjectId !== undefined
+                    ? input.contextProjectId
+                    : previous.context_project_id,
+                values: normalized.values,
+                relations: normalized.relations,
+                fileReferences: normalized.fileReferences,
+                datasetReferences: normalized.datasetReferences,
+              } satisfies RecordSnapshot,
               ...(input.contextProjectId !== undefined
                 ? { contextProjectId: input.contextProjectId }
                 : {}),
@@ -2543,6 +2885,108 @@ export class ScopedProjectRepository {
     } catch (error) {
       mapUniqueViolation(error);
     }
+  }
+
+  async listRecordHistory(objectTypeId: string, recordId: string): Promise<RecordHistoryRow[]> {
+    await this.getRecord(objectTypeId, recordId);
+    const result = await this.pool.query<{
+      id: string;
+      action: string;
+      actor_name: string | null;
+      created_at: Date;
+      payload: { rowVersion?: unknown; before?: unknown };
+    }>(
+      `select a.id,a.action,u.display_name actor_name,a.created_at,a.payload
+       from audit_events a left join users u on u.id=a.actor_id
+       where a.project_id=$1 and a.target_type='record' and a.target_id=$2
+       order by a.created_at desc,a.id desc limit 100`,
+      [this.scope.projectId, recordId],
+    );
+    return result.rows.map((row) => ({
+      id: row.id,
+      action: row.action,
+      actorName: row.actor_name,
+      createdAt: row.created_at.toISOString(),
+      rowVersion: typeof row.payload.rowVersion === 'number' ? row.payload.rowVersion : null,
+      undoable: row.action === 'record.updated' && Boolean(row.payload.before),
+    }));
+  }
+
+  async undoRecordChange(input: {
+    objectTypeId: string;
+    recordId: string;
+    eventId: string;
+    rowVersion: number;
+    requestId: string;
+  }): Promise<RecordRow> {
+    await transaction(this.pool, async (client) => {
+      const event = await client.query<{ payload: { before?: RecordSnapshot } }>(
+        `select payload from audit_events
+         where id=$1 and project_id=$2 and target_type='record' and target_id=$3
+           and action='record.updated'`,
+        [input.eventId, this.scope.projectId, input.recordId],
+      );
+      const snapshot = event.rows[0]?.payload.before;
+      if (!snapshot)
+        throw new RepositoryError(
+          'HISTORY_NOT_UNDOABLE',
+          409,
+          'This history entry cannot be undone.',
+        );
+      const current = await client.query<{ row_version: number }>(
+        `select row_version from records where project_id=$1 and object_type_id=$2 and id=$3 for update`,
+        [this.scope.projectId, input.objectTypeId, input.recordId],
+      );
+      if (!current.rows[0])
+        throw new RepositoryError('RECORD_NOT_FOUND', 404, 'Record was not found.');
+      if (current.rows[0].row_version !== input.rowVersion)
+        throw new RepositoryError('VERSION_CONFLICT', 409, 'The record changed; reload and retry.');
+      await this.validateContextProject(client, snapshot.contextProjectId);
+      const normalized = await this.normalizeRecordInput(
+        client,
+        input.objectTypeId,
+        snapshot.values,
+        snapshot.relations,
+        snapshot.fileReferences,
+        snapshot.datasetReferences,
+        false,
+      );
+      await client.query(
+        `update records set display_name=$4,context_project_id=$5,values=$6::jsonb,
+           row_version=row_version+1,updated_by=$7,updated_at=now()
+         where project_id=$1 and object_type_id=$2 and id=$3`,
+        [
+          this.scope.projectId,
+          input.objectTypeId,
+          input.recordId,
+          snapshot.displayName,
+          snapshot.contextProjectId,
+          JSON.stringify(normalized.values),
+          this.scope.actor.actorId,
+        ],
+      );
+      await this.replaceRecordDerivedData(
+        client,
+        input.recordId,
+        normalized.fields,
+        normalized.values,
+        normalized.relations,
+        normalized.fileReferences,
+        normalized.datasetReferences,
+      );
+      await appendAudit(
+        client,
+        this.audit({
+          actorId: this.scope.actor.actorId,
+          action: 'record.undo_applied',
+          targetType: 'record',
+          targetId: input.recordId,
+          requestId: input.requestId,
+          payload: { sourceEventId: input.eventId, rowVersion: input.rowVersion + 1 },
+        }),
+      );
+    });
+    return this.getRecord(input.objectTypeId, input.recordId);
   }
 
   async importRecordsCsv(input: {
@@ -2948,7 +3392,7 @@ export class ScopedProjectRepository {
     order.push('r.id asc');
 
     const page = Math.max(1, query.page ?? 1);
-    const pageSize = Math.min(100, Math.max(1, query.pageSize ?? 50));
+    const pageSize = Math.min(500, Math.max(1, query.pageSize ?? 50));
     const totalResult = await this.pool.query<{ count: string }>(
       `select count(*)::text as count from records r where ${where.join(' and ')}`,
       filterParameters,
@@ -2970,16 +3414,19 @@ export class ScopedProjectRepository {
       this.loadCurrentMeasurements(recordIds),
     ]);
     const response: RecordQueryResult = {
-      items: result.rows.map((row) => {
-        const recordId = String(row.id);
-        return this.mapRecord(
-          row,
-          relations.get(recordId),
-          resources.files.get(recordId),
-          resources.datasets.get(recordId),
-          measurements.get(recordId),
-        );
-      }),
+      items: await this.hydrateCalculatedValues(
+        result.rows.map((row) => {
+          const recordId = String(row.id);
+          return this.mapRecord(
+            row,
+            relations.get(recordId),
+            resources.files.get(recordId),
+            resources.datasets.get(recordId),
+            measurements.get(recordId),
+          );
+        }),
+        fields,
+      ),
       page,
       pageSize,
       total: Number(totalResult.rows[0]?.count ?? 0),

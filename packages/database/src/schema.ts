@@ -48,6 +48,9 @@ export const fieldType = pgEnum('field_type', [
   'range',
   'spectral_data',
   'tabular_data',
+  'formula',
+  'lookup',
+  'rollup',
   'file',
   'dataset',
 ]);
