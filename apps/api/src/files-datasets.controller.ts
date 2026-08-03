@@ -9,6 +9,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import {
   RepositoryError,
   resolveProjectIdentifier,
+  resolveWorkspaceIdentifier,
   ScopedFileDatasetRepository,
 } from '@engrove/database';
 import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
@@ -42,7 +43,7 @@ async function repository(
   return ScopedFileDatasetRepository.open(
     appRuntime().pool,
     actor,
-    id.parse(workspaceId),
+    await resolveWorkspaceIdentifier(appRuntime().pool, workspaceId),
     await resolveProjectIdentifier(appRuntime().pool, projectId),
   );
 }

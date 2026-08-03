@@ -3,6 +3,7 @@ import {
   configurableFieldTypes,
   resolveObjectTypeIdentifier,
   resolveProjectIdentifier,
+  resolveWorkspaceIdentifier,
   ScopedProjectRepository,
   type JsonValue,
   type RecordQuery,
@@ -89,7 +90,7 @@ async function repository(
   return ScopedProjectRepository.open(
     appRuntime().pool,
     actor,
-    id.parse(workspaceId),
+    await resolveWorkspaceIdentifier(appRuntime().pool, workspaceId),
     await resolveProjectIdentifier(appRuntime().pool, projectId),
   );
 }

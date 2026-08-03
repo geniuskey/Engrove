@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { v7 as uuidv7 } from 'uuid';
-import { generateBasePublicId } from './public-ids.js';
+import { generateBasePublicId, generateWorkspacePublicId } from './public-ids.js';
 import { RepositoryError } from './errors.js';
 
 export { RepositoryError } from './errors.js';
@@ -672,6 +672,7 @@ export async function completePasswordReset(
 
 export interface WorkspaceRow {
   id: string;
+  publicId: string;
   name: string;
   slug: string;
   description: string;
@@ -680,6 +681,7 @@ export interface WorkspaceRow {
 
 function mapWorkspace(row: {
   id: string;
+  public_id: string;
   name: string;
   slug: string;
   description: string;
@@ -687,6 +689,7 @@ function mapWorkspace(row: {
 }): WorkspaceRow {
   return {
     id: row.id,
+    publicId: row.public_id,
     name: row.name,
     slug: row.slug,
     description: row.description,
@@ -696,7 +699,7 @@ function mapWorkspace(row: {
 
 export async function listWorkspaces(pool: Pool, actor: ActorSession): Promise<WorkspaceRow[]> {
   const result = await pool.query(
-    `select id, name, slug, description, archived_at from workspaces
+    `select id, public_id, name, slug, description, archived_at from workspaces
      where organization_id = $1 order by name, id`,
     [actor.organizationId],
   );
@@ -711,11 +714,12 @@ export async function createWorkspace(
   return transaction(pool, async (client) => {
     const id = uuidv7();
     const result = await client.query(
-      `insert into workspaces (id, organization_id, name, slug, description, created_by)
-       values ($1, $2, $3, $4, $5, $6)
-       returning id, name, slug, description, archived_at`,
+      `insert into workspaces (id, public_id, organization_id, name, slug, description, created_by)
+       values ($1, $2, $3, $4, $5, $6, $7)
+       returning id, public_id, name, slug, description, archived_at`,
       [
         id,
+        generateWorkspacePublicId(),
         actor.organizationId,
         input.name.trim(),
         input.slug.trim().toLowerCase(),

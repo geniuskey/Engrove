@@ -13,6 +13,7 @@ import { useI18n } from './i18n.js';
 
 interface WorkspaceSummary {
   id: string;
+  publicId?: string;
   name: string;
 }
 
@@ -103,7 +104,23 @@ export function ServiceShell({
     return () => window.removeEventListener('keydown', shortcut);
   }, []);
 
-  const workspace = workspaces.find((item) => item.id === workspaceId);
+  const workspace = workspaces.find(
+    (item) => (item.publicId ?? item.id) === workspaceId || item.id === workspaceId,
+  );
+  useEffect(() => {
+    if (!workspaceId || !workspace?.publicId || workspaceId === workspace.publicId) return;
+    navigate(
+      {
+        pathname: location.pathname.replace(
+          `/workspaces/${workspaceId}`,
+          `/workspaces/${workspace.publicId}`,
+        ),
+        search: location.search,
+        hash: location.hash,
+      },
+      { replace: true },
+    );
+  }, [location.hash, location.pathname, location.search, navigate, workspace, workspaceId]);
   const project = projects.find(
     (item) => (item.publicId ?? item.id) === projectId || item.id === projectId,
   );
@@ -274,7 +291,7 @@ export function ServiceShell({
                 >
                   <option value="">{t('sidebar.selectWorkspacePlaceholder')}</option>
                   {workspaces.map((item) => (
-                    <option key={item.id} value={item.id}>
+                    <option key={item.id} value={item.publicId ?? item.id}>
                       {item.name}
                     </option>
                   ))}

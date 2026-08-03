@@ -127,6 +127,13 @@
       "when": 1785791893035,
       "tag": "0017_sleepy_dragon_man",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1785793732829,
+      "tag": "0018_magical_black_tom",
+      "breakpoints": true
     }
   ]
 }

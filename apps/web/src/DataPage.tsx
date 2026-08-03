@@ -790,6 +790,10 @@ function projectPath(workspaceId: string, projectId: string): string {
   return `/workspaces/${workspaceId}/projects/${projectId}`;
 }
 
+function canonicalTableIdentifier(identifier: string): string {
+  return /^m[0-9a-z]{14}$/.test(identifier) ? `t${identifier.slice(1)}` : identifier;
+}
+
 function isStructuredFieldType(type: FieldType): boolean {
   return type === 'spectral_data' || type === 'tabular_data';
 }
@@ -2665,8 +2669,9 @@ export function DataPage({
   const layoutPreferenceReadyKey = useRef('');
   const recordsRequestId = useRef(0);
   const sidebarPortal = useServiceSidebarPortal();
-  const selectedIdentifier =
-    search.get('type') ?? objectTypes[0]?.publicId ?? objectTypes[0]?.id ?? '';
+  const selectedIdentifier = canonicalTableIdentifier(
+    search.get('type') ?? objectTypes[0]?.publicId ?? objectTypes[0]?.id ?? '',
+  );
   const selectedViewId = search.get('view') ?? 'all';
   const selected = objectTypes.find(
     (objectType) =>
@@ -7047,7 +7052,8 @@ export function RecordDetailPage({ user }: { user: User }) {
       setRecord(recordResult);
       setError('');
       const objectType = typeResult.items.find(
-        (item) => item.id === objectTypeId || item.publicId === objectTypeId,
+        (item) =>
+          item.id === objectTypeId || item.publicId === canonicalTableIdentifier(objectTypeId),
       );
       if (objectType?.publicId && objectType.publicId !== objectTypeId) {
         void navigate(`${base}/data/${objectType.publicId}/records/${recordId}`, {

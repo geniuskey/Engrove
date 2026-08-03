@@ -60,6 +60,7 @@ export interface User {
 
 interface Workspace {
   id: string;
+  publicId?: string;
   name: string;
   slug: string;
   description: string;
@@ -572,7 +573,7 @@ function WorkspacesPage({ user }: { user: User }) {
           <Link
             className="group rounded-2xl border border-slate-800/90 bg-slate-900/60 p-6 shadow-lg shadow-slate-950/15 hover:-translate-y-0.5 hover:border-sky-500/60 hover:bg-slate-900/90"
             key={workspace.id}
-            to={`/workspaces/${workspace.id}`}
+            to={`/workspaces/${workspace.publicId ?? workspace.id}`}
           >
             <div className="flex items-start justify-between gap-4">
               <span className="grid size-10 place-items-center rounded-xl border border-slate-700 bg-slate-800 font-mono text-sm text-sky-300">
@@ -583,7 +584,9 @@ function WorkspacesPage({ user }: { user: User }) {
               </span>
             </div>
             <h2 className="mt-5 text-xl font-semibold tracking-tight">{workspace.name}</h2>
-            <p className="mt-1 font-mono text-xs text-slate-500">{workspace.slug}</p>
+            <p className="mt-1 font-mono text-xs text-slate-500">
+              {workspace.slug} · {workspace.publicId ?? workspace.id}
+            </p>
             <p className="mt-3 line-clamp-2 text-sm text-slate-400">
               {workspace.description || t('workspaces.open')}
             </p>

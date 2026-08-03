@@ -1,5 +1,6 @@
 import {
   resolveProjectIdentifier,
+  resolveWorkspaceIdentifier,
   ScopedTaskRepository,
   type TaskEntityType,
   type TaskLinkInput,
@@ -44,7 +45,7 @@ async function repository(
   return ScopedTaskRepository.open(
     appRuntime().pool,
     actor,
-    id.parse(workspaceId),
+    await resolveWorkspaceIdentifier(appRuntime().pool, workspaceId),
     await resolveProjectIdentifier(appRuntime().pool, projectId),
   );
 }

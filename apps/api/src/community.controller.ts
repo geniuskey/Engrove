@@ -34,6 +34,7 @@ import {
   listWorkspaces,
   recordAuthenticationEvent,
   resolveProjectIdentifier,
+  resolveWorkspaceIdentifier,
   replaceMemberGroupMembers,
   revokeAllUserSessions,
   revokeSecurityToken,
@@ -152,7 +153,6 @@ function clearSessionCookies(response: Response): void {
 const password = z.string().min(12).max(256);
 const email = z.string().email().max(320);
 const role = z.enum(['owner', 'admin', 'engineer', 'contributor', 'viewer']);
-const workspaceId = z.string().uuid();
 
 @Controller('api/v1')
 export class CommunityController {
@@ -361,7 +361,11 @@ export class CommunityController {
   async projects(@Req() request: Request, @Param('workspaceId') unparsedWorkspaceId: string) {
     const actor = await requireActor(request, 'project.read');
     return {
-      items: await listProjects(appRuntime().pool, actor, workspaceId.parse(unparsedWorkspaceId)),
+      items: await listProjects(
+        appRuntime().pool,
+        actor,
+        await resolveWorkspaceIdentifier(appRuntime().pool, unparsedWorkspaceId),
+      ),
     };
   }
 
@@ -371,7 +375,10 @@ export class CommunityController {
     @Param('workspaceId') unparsedWorkspaceId: string,
   ) {
     const actor = await requireActor(request, 'schema.read', true);
-    const parsedWorkspaceId = workspaceId.parse(unparsedWorkspaceId);
+    const parsedWorkspaceId = await resolveWorkspaceIdentifier(
+      appRuntime().pool,
+      unparsedWorkspaceId,
+    );
     const project = await ensureWorkspaceDataProject(
       appRuntime().pool,
       actor,
@@ -404,7 +411,7 @@ export class CommunityController {
       })
       .parse(unparsed);
     return createProject(appRuntime().pool, actor, {
-      workspaceId: workspaceId.parse(unparsedWorkspaceId),
+      workspaceId: await resolveWorkspaceIdentifier(appRuntime().pool, unparsedWorkspaceId),
       name: body.name,
       key: body.key,
       description: body.description ?? '',
@@ -429,7 +436,7 @@ export class CommunityController {
       })
       .parse(unparsed);
     return updateProject(appRuntime().pool, actor, {
-      workspaceId: workspaceId.parse(unparsedWorkspaceId),
+      workspaceId: await resolveWorkspaceIdentifier(appRuntime().pool, unparsedWorkspaceId),
       projectId: await resolveProjectIdentifier(appRuntime().pool, unparsedProjectId),
       ...body,
       requestId: requestId(request),
@@ -446,7 +453,7 @@ export class CommunityController {
     const actor = await requireActor(request, 'project.archive', true);
     const body = z.object({ reason: z.string().trim().min(1).max(500) }).parse(unparsed);
     return setProjectArchived(appRuntime().pool, actor, {
-      workspaceId: workspaceId.parse(unparsedWorkspaceId),
+      workspaceId: await resolveWorkspaceIdentifier(appRuntime().pool, unparsedWorkspaceId),
       projectId: await resolveProjectIdentifier(appRuntime().pool, unparsedProjectId),
       archived: true,
       reason: body.reason,
@@ -462,7 +469,7 @@ export class CommunityController {
   ) {
     const actor = await requireActor(request, 'project.restore', true);
     return setProjectArchived(appRuntime().pool, actor, {
-      workspaceId: workspaceId.parse(unparsedWorkspaceId),
+      workspaceId: await resolveWorkspaceIdentifier(appRuntime().pool, unparsedWorkspaceId),
       projectId: await resolveProjectIdentifier(appRuntime().pool, unparsedProjectId),
       archived: false,
       requestId: requestId(request),

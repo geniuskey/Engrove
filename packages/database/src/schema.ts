@@ -213,6 +213,7 @@ export const workspaces = pgTable(
   'workspaces',
   {
     id: uuid('id').primaryKey(),
+    publicId: text('public_id').notNull(),
     organizationId: uuid('organization_id')
       .notNull()
       .references(() => organizations.id, { onDelete: 'restrict' }),
@@ -228,8 +229,10 @@ export const workspaces = pgTable(
     ...auditColumns,
   },
   (table) => [
+    uniqueIndex('workspaces_public_id_key').on(table.publicId),
     uniqueIndex('workspaces_organization_slug_key').on(table.organizationId, table.slug),
     index('workspaces_organization_idx').on(table.organizationId),
+    check('workspaces_public_id_check', sql`${table.publicId} ~ '^w[0-9a-z]{14}$'`),
   ],
 );
 
@@ -355,7 +358,7 @@ export const objectTypes = pgTable(
     uniqueIndex('object_types_project_key_key').on(table.projectId, table.key),
     uniqueIndex('object_types_project_id_key').on(table.projectId, table.id),
     index('object_types_project_idx').on(table.projectId),
-    check('object_types_public_id_check', sql`${table.publicId} ~ '^m[0-9a-z]{14}$'`),
+    check('object_types_public_id_check', sql`${table.publicId} ~ '^t[0-9a-z]{14}$'`),
   ],
 );
 

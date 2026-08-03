@@ -56,6 +56,7 @@ describe('App', () => {
           items: [
             {
               id: 'workspace-id',
+              publicId: 'w1234567890abcd',
               name: 'Alpha workspace',
               slug: 'alpha',
               description: '',
@@ -64,7 +65,10 @@ describe('App', () => {
           ],
         });
       }
-      if (url.endsWith('/workspaces/workspace-id/projects')) {
+      if (
+        url.endsWith('/workspaces/workspace-id/projects') ||
+        url.endsWith('/workspaces/w1234567890abcd/projects')
+      ) {
         return json({
           items: [
             {
@@ -81,7 +85,7 @@ describe('App', () => {
           ],
         });
       }
-      if (url.endsWith('/workspaces/workspace-id/projects/p1234567890abcd/demo')) {
+      if (url.endsWith('/projects/p1234567890abcd/demo')) {
         return json({ installed: true });
       }
       throw new Error(`Unexpected fetch ${url}`);
@@ -108,7 +112,7 @@ describe('App', () => {
     await waitFor(() =>
       expect(screen.getByRole('link', { name: 'Overview' })).toHaveAttribute(
         'href',
-        '/workspaces/workspace-id/projects/p1234567890abcd',
+        '/workspaces/w1234567890abcd/projects/p1234567890abcd',
       ),
     );
     fireEvent.click(screen.getByRole('button', { name: 'Open command palette' }));
@@ -119,7 +123,7 @@ describe('App', () => {
 
     await waitFor(() =>
       expect(screen.getByRole('combobox', { name: 'Workspace selector' })).toHaveValue(
-        'workspace-id',
+        'w1234567890abcd',
       ),
     );
     expect(screen.getByRole('link', { name: 'Data' })).toBeInTheDocument();

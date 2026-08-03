@@ -61,6 +61,7 @@ describe('DataPage', () => {
           items: [
             {
               id: '019fbcf9-e020-71da-935a-6a6a728b3792',
+              publicId: 't1234567890abcd',
               projectId: '019fbcf9-e020-71da-935a-6a6a728b3793',
               name: 'Sample',
               pluralName: 'Samples',
@@ -758,6 +759,7 @@ describe('DataPage', () => {
           items: [
             {
               id: objectTypeId,
+              publicId: 't1234567890abce',
               projectId: backingProjectId,
               name: 'Project item',
               pluralName: 'Project items',

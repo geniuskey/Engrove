@@ -7,10 +7,12 @@ const alphabet = '1234567890abcdefghijklmnopqrstuvwxyz';
 const randomLength = 14;
 const unbiasedLimit = Math.floor(256 / alphabet.length) * alphabet.length;
 
+export const workspacePublicIdPattern = /^w[0-9a-z]{14}$/;
 export const basePublicIdPattern = /^p[0-9a-z]{14}$/;
-export const tablePublicIdPattern = /^m[0-9a-z]{14}$/;
+export const tablePublicIdPattern = /^t[0-9a-z]{14}$/;
+const legacyTablePublicIdPattern = /^m[0-9a-z]{14}$/;
 
-function generatePublicId(prefix: 'p' | 'm'): string {
+function generatePublicId(prefix: 'w' | 'p' | 't'): string {
   let value = prefix;
   while (value.length <= randomLength) {
     for (const byte of randomBytes(randomLength)) {
@@ -26,21 +28,33 @@ export function generateBasePublicId(): string {
   return generatePublicId('p');
 }
 
+export function generateWorkspacePublicId(): string {
+  return generatePublicId('w');
+}
+
 export function generateTablePublicId(): string {
-  return generatePublicId('m');
+  return generatePublicId('t');
 }
 
 type Queryable = Pick<Pool, 'query'> | Pick<PoolClient, 'query'>;
 
 async function resolveIdentifier(
   database: Queryable,
-  table: 'projects' | 'object_types',
+  table: 'workspaces' | 'projects' | 'object_types',
   identifier: string,
-  code: 'PROJECT_NOT_FOUND' | 'OBJECT_TYPE_NOT_FOUND',
+  code: 'WORKSPACE_NOT_FOUND' | 'PROJECT_NOT_FOUND' | 'OBJECT_TYPE_NOT_FOUND',
   message: string,
 ): Promise<string> {
   if (validateUuid(identifier)) return identifier;
-  const expectedPattern = table === 'projects' ? basePublicIdPattern : tablePublicIdPattern;
+  const expectedPattern =
+    table === 'workspaces'
+      ? workspacePublicIdPattern
+      : table === 'projects'
+        ? basePublicIdPattern
+        : tablePublicIdPattern;
+  if (table === 'object_types' && legacyTablePublicIdPattern.test(identifier)) {
+    identifier = `t${identifier.slice(1)}`;
+  }
   if (!expectedPattern.test(identifier)) throw new RepositoryError(code, 404, message);
   const result = await database.query<{ id: string }>(
     `select id from ${table} where public_id = $1`,
@@ -48,6 +62,19 @@ async function resolveIdentifier(
   );
   if (!result.rows[0]) throw new RepositoryError(code, 404, message);
   return result.rows[0].id;
+}
+
+export async function resolveWorkspaceIdentifier(
+  database: Queryable,
+  identifier: string,
+): Promise<string> {
+  return resolveIdentifier(
+    database,
+    'workspaces',
+    identifier,
+    'WORKSPACE_NOT_FOUND',
+    'Workspace was not found.',
+  );
 }
 
 export async function resolveProjectIdentifier(

@@ -4,6 +4,7 @@ import {
   onboardingSteps,
   PilotRepository,
   resolveProjectIdentifier,
+  resolveWorkspaceIdentifier,
   ScopedFileDatasetRepository,
   ScopedProjectRepository,
   ScopedTaskRepository,
@@ -99,7 +100,7 @@ export class PilotController {
     await ScopedProjectRepository.open(
       appRuntime().pool,
       actor,
-      id.parse(workspaceId),
+      await resolveWorkspaceIdentifier(appRuntime().pool, workspaceId),
       resolvedProjectId,
     );
     const result = await appRuntime().pool.query(
@@ -133,7 +134,7 @@ export class PilotController {
         action,
       );
     const runtime = appRuntime();
-    const wid = id.parse(workspaceId);
+    const wid = await resolveWorkspaceIdentifier(runtime.pool, workspaceId);
     const pid = await resolveProjectIdentifier(runtime.pool, projectId);
     const data = await ScopedProjectRepository.open(runtime.pool, actor, wid, pid);
     const files = await ScopedFileDatasetRepository.open(runtime.pool, actor, wid, pid);
