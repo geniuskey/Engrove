@@ -2599,6 +2599,61 @@ function reorderIds(ids: string[], sourceId: string, targetId: string, after: bo
   return order;
 }
 
+function useDismissiblePopoverMenus() {
+  useEffect(() => {
+    const selector = 'details[data-popover-menu][open]';
+    const closeMenu = (menu: HTMLDetailsElement) => {
+      menu.open = false;
+    };
+    const closeOutside = (event: PointerEvent) => {
+      if (!(event.target instanceof Node)) return;
+      document.querySelectorAll<HTMLDetailsElement>(selector).forEach((menu) => {
+        if (!menu.contains(event.target as Node)) closeMenu(menu);
+      });
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      const activeMenu =
+        document.activeElement instanceof Element
+          ? document.activeElement.closest<HTMLDetailsElement>(selector)
+          : null;
+      const openMenus = document.querySelectorAll<HTMLDetailsElement>(selector);
+      if (openMenus.length === 0) return;
+      event.preventDefault();
+      openMenus.forEach(closeMenu);
+      activeMenu?.querySelector<HTMLElement>('summary')?.focus();
+    };
+    const closeAfterAction = (event: MouseEvent) => {
+      if (!(event.target instanceof Element) || event.target.closest('summary')) return;
+      const action = event.target.closest('button');
+      const menu = action?.closest<HTMLDetailsElement>(selector);
+      if (menu) closeMenu(menu);
+    };
+    const keepOnlyNewestMenu = (event: Event) => {
+      if (
+        !(event.target instanceof HTMLDetailsElement) ||
+        !event.target.matches('details[data-popover-menu]') ||
+        !event.target.open
+      )
+        return;
+      document.querySelectorAll<HTMLDetailsElement>(selector).forEach((menu) => {
+        if (menu !== event.target) closeMenu(menu);
+      });
+    };
+
+    document.addEventListener('pointerdown', closeOutside, true);
+    document.addEventListener('keydown', closeOnEscape);
+    document.addEventListener('click', closeAfterAction);
+    document.addEventListener('toggle', keepOnlyNewestMenu, true);
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside, true);
+      document.removeEventListener('keydown', closeOnEscape);
+      document.removeEventListener('click', closeAfterAction);
+      document.removeEventListener('toggle', keepOnlyNewestMenu, true);
+    };
+  }, []);
+}
+
 export function DataPage({
   user,
   workspaceData,
@@ -2606,6 +2661,7 @@ export function DataPage({
   user: User;
   workspaceData?: WorkspaceDataContext;
 }) {
+  useDismissiblePopoverMenus();
   const { t } = useI18n();
   const params = useParams();
   const workspaceId = workspaceData?.workspaceId ?? params.workspaceId ?? '';
@@ -4588,7 +4644,7 @@ export function DataPage({
                                 </span>
                               </button>
                               {allowed(user, 'schema.manage') && (
-                                <details className="relative -ml-6">
+                                <details className="relative -ml-6" data-popover-menu>
                                   <summary
                                     aria-label={`Actions for view ${view.name}`}
                                     className="grid size-6 list-none cursor-pointer place-items-center rounded text-slate-600 opacity-0 marker:content-none hover:bg-slate-700 hover:text-slate-200 group-hover/view:opacity-100 focus:opacity-100"
@@ -4852,7 +4908,7 @@ export function DataPage({
                   </Button>
                 )}
                 {allowed(user, 'record.create') && (
-                  <details className="group relative">
+                  <details className="group relative" data-popover-menu>
                     <summary
                       aria-label="More table actions"
                       className="grid size-8 cursor-pointer list-none place-items-center rounded-lg border border-slate-800 text-base text-slate-500 marker:content-none hover:border-slate-700 hover:bg-slate-900 hover:text-slate-200"
@@ -6519,7 +6575,7 @@ export function DataPage({
                                 {field.fieldType}
                               </span>
                             </button>
-                            <details className="relative shrink-0 normal-case">
+                            <details className="relative shrink-0 normal-case" data-popover-menu>
                               <summary
                                 aria-label={t('data.columnOptions', { column: field.name })}
                                 className="grid size-7 cursor-pointer list-none place-items-center rounded text-base tracking-normal text-slate-500 marker:content-none hover:bg-slate-800 hover:text-slate-200"

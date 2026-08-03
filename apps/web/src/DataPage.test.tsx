@@ -430,6 +430,7 @@ describe('DataPage', () => {
     expect(nameCell).not.toBeNull();
     expect(serialCell).not.toBeNull();
     fireEvent.pointerDown(nameCell!, { button: 0, buttons: 1 });
+    expect(moreTableActions).not.toHaveAttribute('open');
     fireEvent.pointerEnter(serialCell!, { buttons: 1 });
     fireEvent.pointerUp(window);
     expect(screen.getByText('2 cells selected')).toBeInTheDocument();
@@ -782,6 +783,20 @@ describe('DataPage', () => {
         viewOptions: { groupFieldId: '019fbcf9-e020-71da-935a-6a6a728b3798' },
       },
     });
+
+    const tableMenu = screen.getByLabelText('More table actions').closest('details');
+    const viewMenu = screen.getByLabelText('Actions for view Workflow board').closest('details');
+    expect(tableMenu).not.toBeNull();
+    expect(viewMenu).not.toBeNull();
+    fireEvent.click(screen.getByLabelText('More table actions'));
+    expect(tableMenu).toHaveAttribute('open');
+    const viewMenuSummary = screen.getByLabelText('Actions for view Workflow board');
+    fireEvent.pointerDown(viewMenuSummary);
+    fireEvent.click(viewMenuSummary);
+    expect(tableMenu).not.toHaveAttribute('open');
+    expect(viewMenu).toHaveAttribute('open');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(viewMenu).not.toHaveAttribute('open');
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit table' }));
     const settings = screen.getByRole('button', { name: 'Save table' }).closest('form');
