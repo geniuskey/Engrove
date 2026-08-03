@@ -266,4 +266,88 @@ describe.sequential('workspace data with PostgreSQL', () => {
     );
     expect(stored.rows[0]?.count).toBe(0);
   });
+
+  it('stores validated spectral series and Excel-like tables as structured JSON', async () => {
+    const workspace = await createWorkspace(pool, actor, {
+      name: 'Laboratory',
+      slug: 'laboratory',
+      requestId: 'workspace-create',
+    });
+    const systemProject = await ensureWorkspaceDataProject(
+      pool,
+      actor,
+      workspace.id,
+      'data-context',
+    );
+    const data = await ScopedProjectRepository.open(pool, actor, workspace.id, systemProject.id);
+    const objectType = await data.createObjectType({
+      name: 'Scan',
+      pluralName: 'Scans',
+      key: 'scan',
+      requestId: 'object-create',
+    });
+    await data.createField({
+      objectTypeId: objectType.id,
+      name: 'UV-Vis spectrum',
+      key: 'uv-vis-spectrum',
+      fieldType: 'spectral_data',
+      config: { xLabel: 'Wavelength', xUnit: 'nm', yLabel: 'Absorbance', yUnit: 'a.u.' },
+      requestId: 'spectrum-field',
+    });
+    await data.createField({
+      objectTypeId: objectType.id,
+      name: 'Conditions',
+      key: 'conditions',
+      fieldType: 'tabular_data',
+      config: { firstRowHeader: true },
+      requestId: 'table-field',
+    });
+    await data.createRecord({
+      objectTypeId: objectType.id,
+      displayName: 'Scan 001',
+      values: {
+        'uv-vis-spectrum': {
+          x: [400, 401],
+          series: [{ name: 'Sample A', values: [0.12, 0.18] }],
+        },
+        conditions: {
+          columns: ['Time', 'Temperature'],
+          rows: [
+            [0, 20],
+            [1, 21.5],
+          ],
+        },
+      },
+      requestId: 'record-create',
+    });
+
+    const result = await data.queryRecords(objectType.id, {});
+    expect(result.items[0]?.values).toMatchObject({
+      'uv-vis-spectrum': {
+        x: [400, 401],
+        series: [{ name: 'Sample A', values: [0.12, 0.18] }],
+      },
+      conditions: {
+        columns: ['Time', 'Temperature'],
+        rows: [
+          [0, 20],
+          [1, 21.5],
+        ],
+      },
+    });
+
+    await expect(
+      data.createRecord({
+        objectTypeId: objectType.id,
+        displayName: 'Invalid scan',
+        values: {
+          'uv-vis-spectrum': {
+            x: [400, 401],
+            series: [{ name: 'Broken', values: [0.12] }],
+          },
+        },
+        requestId: 'invalid-record',
+      }),
+    ).rejects.toMatchObject({ code: 'FIELD_VALIDATION_FAILED' });
+  });
 });

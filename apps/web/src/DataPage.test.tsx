@@ -117,6 +117,24 @@ describe('DataPage', () => {
               },
               projectionStatus: 'ready',
             },
+            {
+              id: '019fbcf9-e020-71da-935a-6a6a728b379b',
+              objectTypeId: '019fbcf9-e020-71da-935a-6a6a728b3792',
+              name: 'Spectrum',
+              key: 'spectrum',
+              description: 'UV-Vis spectrum',
+              fieldType: 'spectral_data',
+              required: false,
+              unique: false,
+              position: 3,
+              config: {
+                xLabel: 'Wavelength',
+                xUnit: 'nm',
+                yLabel: 'Absorbance',
+                yUnit: 'a.u.',
+              },
+              projectionStatus: 'ready',
+            },
           ],
         });
       }
@@ -178,7 +196,14 @@ describe('DataPage', () => {
               id: '019fbcf9-e020-71da-935a-6a6a728b3795',
               objectTypeId: '019fbcf9-e020-71da-935a-6a6a728b3792',
               displayName: 'Sample Two',
-              values: { serial: '2', state: 'ready' },
+              values: {
+                serial: '2',
+                state: 'ready',
+                spectrum: {
+                  x: [400, 401],
+                  series: [{ name: 'Sample A', values: [0.12, 0.18] }],
+                },
+              },
               relations: {},
               rowVersion: 1,
               archivedAt: null,
@@ -266,6 +291,12 @@ describe('DataPage', () => {
     expect(screen.getByRole('heading', { name: 'Schema editor' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Edit Serial' })).toBeInTheDocument();
     expect(screen.getByText('Index ready')).toBeInTheDocument();
+    expect(screen.getByLabelText('Field definitions')).toHaveClass('overflow-y-auto');
+    expect(screen.getByLabelText('Field definitions')).toHaveAttribute(
+      'style',
+      'max-height: 16rem;',
+    );
+    expect(screen.getByRole('button', { name: 'Edit field Serial' })).toHaveClass('py-1.5');
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search fields' }), {
       target: { value: 'state' },
     });
@@ -282,6 +313,19 @@ describe('DataPage', () => {
     expect(screen.getByRole('textbox', { name: 'Stable field key' })).toHaveValue(
       'inspection-status',
     );
+    fireEvent.change(screen.getByRole('combobox', { name: 'Field type' }), {
+      target: { value: 'spectral_data' },
+    });
+    expect(screen.getByRole('textbox', { name: 'X-axis label' })).toHaveValue('Wavelength');
+    expect(screen.getByRole('textbox', { name: 'Signal unit' })).toHaveValue('a.u.');
+    fireEvent.change(screen.getByRole('combobox', { name: 'Field type' }), {
+      target: { value: 'tabular_data' },
+    });
+    expect(
+      screen.getByRole('checkbox', {
+        name: 'Treat the first pasted row as column headers',
+      }),
+    ).toBeChecked();
     fireEvent.change(screen.getByRole('combobox', { name: 'Field type' }), {
       target: { value: 'single_select' },
     });
@@ -495,6 +539,7 @@ describe('DataPage', () => {
             '019fbcf9-e020-71da-935a-6a6a728b3794',
             '019fbcf9-e020-71da-935a-6a6a728b3798',
             '019fbcf9-e020-71da-935a-6a6a728b3799',
+            '019fbcf9-e020-71da-935a-6a6a728b379b',
           ],
           fieldWidths: { '019fbcf9-e020-71da-935a-6a6a728b3794': 240 },
           rowDensity: 'compact',
@@ -571,6 +616,25 @@ describe('DataPage', () => {
       }),
     );
     expect(await screen.findByText('3')).toBeInTheDocument();
+
+    fireEvent.doubleClick(screen.getByRole('button', { name: 'Edit Spectrum for Sample Two' }));
+    const spectrumEditor = screen.getByRole('textbox', { name: 'Spectrum value' });
+    expect(spectrumEditor).toHaveValue('Wavelength\tSample A\n400\t0.12\n401\t0.18');
+    fireEvent.change(spectrumEditor, {
+      target: { value: 'Wavelength\tSample A\n500\t0.25\n501\t0.31' },
+    });
+    fireEvent.keyDown(spectrumEditor, { key: 'Enter', ctrlKey: true });
+    await waitFor(() =>
+      expect(patchBody).toMatchObject({
+        values: {
+          spectrum: {
+            x: [500, 501],
+            series: [{ name: 'Sample A', values: [0.25, 0.31] }],
+          },
+        },
+      }),
+    );
+    expect(await screen.findByText('2 points · 1 series')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select Sample Two' }));
     fireEvent.click(screen.getByRole('button', { name: 'Archive' }));

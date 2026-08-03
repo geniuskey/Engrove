@@ -28,6 +28,8 @@ export const configurableFieldTypes = [
   'quantity',
   'measurement',
   'range',
+  'spectral_data',
+  'tabular_data',
   'file',
   'dataset',
 ] as const;
@@ -324,6 +326,77 @@ function selectKeys(field: FieldDefinitionRow): Set<string> {
   );
 }
 
+function normalizeSpectralData(value: JsonValue): JsonValue {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('must be a spectral data object');
+  }
+  const x = value.x;
+  const series = value.series;
+  if (!Array.isArray(x) || x.length === 0 || x.length > 100_000) {
+    throw new Error('must contain between 1 and 100,000 x-axis values');
+  }
+  if (x.some((item) => typeof item !== 'number' || !Number.isFinite(item))) {
+    throw new Error('x-axis values must be finite numbers');
+  }
+  if (!Array.isArray(series) || series.length === 0 || series.length > 64) {
+    throw new Error('must contain between 1 and 64 signal series');
+  }
+  const names = new Set<string>();
+  const normalizedSeries = series.map((candidate, index) => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      throw new Error(`series ${index + 1} must be an object`);
+    }
+    const name = typeof candidate.name === 'string' ? candidate.name.trim() : '';
+    const values = candidate.values;
+    if (!name) throw new Error(`series ${index + 1} requires a name`);
+    if (names.has(name)) throw new Error('series names must be unique');
+    names.add(name);
+    if (!Array.isArray(values) || values.length !== x.length) {
+      throw new Error(`series '${name}' must contain ${x.length} values`);
+    }
+    if (values.some((item) => typeof item !== 'number' || !Number.isFinite(item))) {
+      throw new Error(`series '${name}' values must be finite numbers`);
+    }
+    return { name, values };
+  });
+  return { x, series: normalizedSeries };
+}
+
+function normalizeTabularData(value: JsonValue): JsonValue {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('must be a data table object');
+  }
+  const columns = value.columns;
+  const rows = value.rows;
+  if (!Array.isArray(columns) || columns.length === 0 || columns.length > 256) {
+    throw new Error('must contain between 1 and 256 columns');
+  }
+  if (columns.some((column) => typeof column !== 'string' || !column.trim())) {
+    throw new Error('column names must be non-empty text');
+  }
+  if (!Array.isArray(rows) || rows.length > 50_000 || rows.length * columns.length > 500_000) {
+    throw new Error('table data is limited to 50,000 rows and 500,000 cells');
+  }
+  const normalizedRows = rows.map((candidate, index) => {
+    if (!Array.isArray(candidate) || candidate.length !== columns.length) {
+      throw new Error(`row ${index + 1} must contain ${columns.length} cells`);
+    }
+    if (
+      candidate.some(
+        (cell) =>
+          cell !== null &&
+          typeof cell !== 'string' &&
+          typeof cell !== 'number' &&
+          typeof cell !== 'boolean',
+      )
+    ) {
+      throw new Error(`row ${index + 1} contains a non-scalar cell`);
+    }
+    return candidate;
+  });
+  return { columns: columns.map((column) => String(column).trim()), rows: normalizedRows };
+}
+
 function fieldProjection(field: FieldDefinitionRow, value: JsonValue): ProjectionValue[] {
   if (value === null || value === '') return [];
   const unique = (prefix: string, canonical: string) =>
@@ -442,6 +515,12 @@ function fieldProjection(field: FieldDefinitionRow, value: JsonValue): Projectio
       if (!value || typeof value !== 'object' || Array.isArray(value))
         throw new Error('must be a range object');
       return [];
+    case 'spectral_data':
+      normalizeSpectralData(value);
+      return [];
+    case 'tabular_data':
+      normalizeTabularData(value);
+      return [];
     case 'quantity': {
       if (
         !value ||
@@ -471,6 +550,8 @@ function fieldProjection(field: FieldDefinitionRow, value: JsonValue): Projectio
 }
 
 function normalizeValue(field: FieldDefinitionRow, value: JsonValue): JsonValue {
+  if (field.fieldType === 'spectral_data') return normalizeSpectralData(value);
+  if (field.fieldType === 'tabular_data') return normalizeTabularData(value);
   if (field.fieldType === 'quantity') {
     const input = value as {
       value: string;
@@ -578,6 +659,29 @@ function validateConfig(type: ConfigurableFieldType, config: Record<string, Json
       );
     }
   }
+  if (type === 'spectral_data') {
+    for (const key of ['xLabel', 'xUnit', 'yLabel', 'yUnit']) {
+      const value = config[key];
+      if (value !== undefined && typeof value !== 'string') {
+        throw new RepositoryError(
+          'FIELD_CONFIG_INVALID',
+          400,
+          'Spectral axis labels and units must be text.',
+        );
+      }
+    }
+  }
+  if (
+    type === 'tabular_data' &&
+    config.firstRowHeader !== undefined &&
+    typeof config.firstRowHeader !== 'boolean'
+  ) {
+    throw new RepositoryError(
+      'FIELD_CONFIG_INVALID',
+      400,
+      'Data table firstRowHeader must be true or false.',
+    );
+  }
 }
 
 function uniqueAllowed(type: ConfigurableFieldType): boolean {
@@ -617,6 +721,8 @@ function projectionColumn(field: FieldDefinitionRow): string {
       throw new RepositoryError('FIELD_SORT_UNSUPPORTED', 400, 'Relation fields cannot be sorted.');
     case 'measurement':
     case 'range':
+    case 'spectral_data':
+    case 'tabular_data':
     case 'file':
     case 'dataset':
       throw new RepositoryError('FIELD_SORT_UNSUPPORTED', 400, 'This field type cannot be sorted.');
@@ -705,6 +811,8 @@ function csvValue(field: FieldDefinitionRow, cell: string): JsonValue | undefine
         .filter(Boolean);
     case 'quantity':
     case 'range':
+    case 'spectral_data':
+    case 'tabular_data':
       try {
         return JSON.parse(cell) as JsonValue;
       } catch {

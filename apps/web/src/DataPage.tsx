@@ -53,6 +53,8 @@ type FieldType =
   | 'quantity'
   | 'measurement'
   | 'range'
+  | 'spectral_data'
+  | 'tabular_data'
   | 'file'
   | 'dataset';
 
@@ -74,6 +76,11 @@ interface FieldDefinition {
     canonicalUnit?: string;
     allowedUnits?: string[];
     displayPrecision?: number;
+    xLabel?: string;
+    xUnit?: string;
+    yLabel?: string;
+    yUnit?: string;
+    firstRowHeader?: boolean;
   };
   defaultValue?: unknown;
   projectionStatus: 'ready' | 'rebuilding' | 'failed';
@@ -447,6 +454,8 @@ const fieldTypes: FieldType[] = [
   'quantity',
   'measurement',
   'range',
+  'spectral_data',
+  'tabular_data',
   'file',
   'dataset',
 ];
@@ -457,7 +466,7 @@ const fieldTypeMeta: Record<
     label: string;
     description: string;
     icon: string;
-    group: 'Basic' | 'Choice' | 'Linked' | 'Engineering';
+    group: 'Basic' | 'Choice' | 'Linked' | 'Engineering' | 'Structured';
   }
 > = {
   text: {
@@ -521,6 +530,18 @@ const fieldTypeMeta: Record<
     icon: '↔',
     group: 'Engineering',
   },
+  spectral_data: {
+    label: 'Spectral data',
+    description: 'X-axis values with one or more signal series',
+    icon: '∿',
+    group: 'Structured',
+  },
+  tabular_data: {
+    label: 'Data table',
+    description: 'Excel-like columns and rows stored as structured data',
+    icon: '▦',
+    group: 'Structured',
+  },
 };
 
 function schemaFieldKey(name: string): string {
@@ -581,11 +602,146 @@ function schemaFieldConfig(type: FieldType, data: FormData): Record<string, unkn
       displayPrecision: Number(data.get('displayPrecision') ?? 3),
     };
   }
+  if (type === 'spectral_data') {
+    return {
+      xLabel: String(data.get('xLabel') ?? '').trim(),
+      xUnit: String(data.get('xUnit') ?? '').trim(),
+      yLabel: String(data.get('yLabel') ?? '').trim(),
+      yUnit: String(data.get('yUnit') ?? '').trim(),
+    };
+  }
+  if (type === 'tabular_data') {
+    return { firstRowHeader: data.get('firstRowHeader') === 'on' };
+  }
   return {};
 }
 
 function projectPath(workspaceId: string, projectId: string): string {
   return `/workspaces/${workspaceId}/projects/${projectId}`;
+}
+
+function isStructuredFieldType(type: FieldType): boolean {
+  return type === 'spectral_data' || type === 'tabular_data';
+}
+
+function delimitedRows(source: string): string[][] {
+  const lines = source.replace(/\r\n?/g, '\n').split('\n');
+  while (lines.length && !lines.at(-1)?.trim()) lines.pop();
+  const delimiter = source.includes('\t') ? '\t' : ',';
+  return lines
+    .map((line) => line.split(delimiter).map((cell) => cell.trim()))
+    .filter((row) => row.some(Boolean));
+}
+
+function uniqueLabels(labels: string[], fallback: string): string[] {
+  const counts = new Map<string, number>();
+  return labels.map((label, index) => {
+    const base = label.trim() || `${fallback} ${index + 1}`;
+    const count = (counts.get(base) ?? 0) + 1;
+    counts.set(base, count);
+    return count === 1 ? base : `${base} (${count})`;
+  });
+}
+
+function scalarTableValue(value: string): string | number | boolean | null {
+  if (!value) return null;
+  if (value.toLowerCase() === 'true') return true;
+  if (value.toLowerCase() === 'false') return false;
+  if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(value)) {
+    const number = Number(value);
+    if (Number.isFinite(number)) return number;
+  }
+  return value;
+}
+
+function parseStructuredData(field: FieldDefinition, source: string): unknown {
+  const rows = delimitedRows(source);
+  if (!rows.length) return undefined;
+  const width = Math.max(...rows.map((row) => row.length));
+  if (rows.some((row) => row.length !== width)) {
+    throw new Error('Every pasted row must contain the same number of columns.');
+  }
+  if (field.fieldType === 'spectral_data') {
+    if (width < 2)
+      throw new Error('Spectral data needs an X column and at least one signal column.');
+    const firstRowIsData = rows[0]!.every((cell) => cell !== '' && Number.isFinite(Number(cell)));
+    const headers = firstRowIsData
+      ? [
+          field.config.xLabel || 'X',
+          ...Array.from({ length: width - 1 }, (_, index) =>
+            width === 2 ? field.config.yLabel || 'Signal' : `Signal ${index + 1}`,
+          ),
+        ]
+      : uniqueLabels(rows[0]!, 'Series');
+    const dataRows = firstRowIsData ? rows : rows.slice(1);
+    if (!dataRows.length) throw new Error('Spectral data needs at least one numeric row.');
+    const numericRows = dataRows.map((row, rowIndex) =>
+      row.map((cell, columnIndex) => {
+        const value = Number(cell);
+        if (!cell || !Number.isFinite(value)) {
+          throw new Error(`Row ${rowIndex + 1}, column ${columnIndex + 1} must be numeric.`);
+        }
+        return value;
+      }),
+    );
+    return {
+      x: numericRows.map((row) => row[0]!),
+      series: headers.slice(1).map((name, seriesIndex) => ({
+        name,
+        values: numericRows.map((row) => row[seriesIndex + 1]!),
+      })),
+    };
+  }
+  const firstRowHeader = field.config.firstRowHeader !== false;
+  const columns = firstRowHeader
+    ? uniqueLabels(rows[0]!, 'Column')
+    : Array.from({ length: width }, (_, index) => `Column ${index + 1}`);
+  const dataRows = firstRowHeader ? rows.slice(1) : rows;
+  return { columns, rows: dataRows.map((row) => row.map(scalarTableValue)) };
+}
+
+function structuredDataText(field: FieldDefinition, value: unknown): string {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
+  if (field.fieldType === 'spectral_data') {
+    const spectral = value as {
+      x?: number[];
+      series?: Array<{ name?: string; values?: number[] }>;
+    };
+    if (!Array.isArray(spectral.x) || !Array.isArray(spectral.series)) return '';
+    const header = [
+      field.config.xLabel || 'X',
+      ...spectral.series.map((series, index) => series.name || `Signal ${index + 1}`),
+    ];
+    return [
+      header,
+      ...spectral.x.map((x, rowIndex) => [
+        x,
+        ...spectral.series!.map((series) => series.values?.[rowIndex] ?? ''),
+      ]),
+    ]
+      .map((row) => row.join('\t'))
+      .join('\n');
+  }
+  const table = value as { columns?: string[]; rows?: unknown[][] };
+  if (!Array.isArray(table.columns) || !Array.isArray(table.rows)) return '';
+  return [...(field.config.firstRowHeader === false ? [] : [table.columns]), ...table.rows]
+    .map((row) => row.map((cell) => (cell === null || cell === undefined ? '' : cell)).join('\t'))
+    .join('\n');
+}
+
+function structuredDataSummary(field: FieldDefinition, value: unknown): string | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  if (field.fieldType === 'spectral_data') {
+    const spectral = value as { x?: unknown[]; series?: unknown[] };
+    if (!Array.isArray(spectral.x) || !Array.isArray(spectral.series)) return undefined;
+    return `${spectral.x.length.toLocaleString()} points · ${spectral.series.length} ${spectral.series.length === 1 ? 'series' : 'series'}`;
+  }
+  if (field.fieldType === 'tabular_data') {
+    const table = value as { columns?: unknown[]; rows?: unknown[] };
+    if (!Array.isArray(table.columns) || !Array.isArray(table.rows)) return undefined;
+    return `${table.rows.length.toLocaleString()} rows × ${table.columns.length} columns`;
+  }
+  return undefined;
 }
 
 function displayValue(value: unknown): string {
@@ -607,6 +763,10 @@ function displayValue(value: unknown): string {
   return String(value);
 }
 
+function displayFieldValue(field: FieldDefinition, value: unknown): string {
+  return structuredDataSummary(field, value) ?? displayValue(value);
+}
+
 function fieldValue(field: FieldDefinition, form: FormData): unknown {
   const raw = String(form.get(`value:${field.key}`) ?? '').trim();
   if (!raw) return undefined;
@@ -626,6 +786,7 @@ function fieldValue(field: FieldDefinition, form: FormData): unknown {
       .split(',')
       .map((value) => value.trim())
       .filter(Boolean);
+  if (isStructuredFieldType(field.fieldType)) return parseStructuredData(field, raw);
   return raw;
 }
 
@@ -657,6 +818,9 @@ function gridEditorDraft(field: FieldDefinition | undefined, value: unknown): Gr
         field.config.allowedUnits?.[0] ??
         '',
     };
+  }
+  if (isStructuredFieldType(field.fieldType)) {
+    return { primary: structuredDataText(field, value), secondary: '', unit: '' };
   }
   return {
     primary: Array.isArray(value)
@@ -701,6 +865,7 @@ function gridValue(field: FieldDefinition | undefined, draft: GridEditorDraft): 
       .map((item) => item.trim())
       .filter(Boolean);
   if (field.fieldType === 'file' || field.fieldType === 'dataset') return primary ? [primary] : [];
+  if (isStructuredFieldType(field.fieldType)) return parseStructuredData(field, draft.primary);
   return primary || undefined;
 }
 
@@ -789,7 +954,10 @@ function GridCell({
     if (event.key === 'Escape') {
       event.preventDefault();
       cancelEditing();
-    } else if (event.key === 'Enter') {
+    } else if (
+      event.key === 'Enter' &&
+      (!field || !isStructuredFieldType(field.fieldType) || event.metaKey || event.ctrlKey)
+    ) {
       event.preventDefault();
       void commit();
     }
@@ -814,7 +982,9 @@ function GridCell({
         title="Double-click or press Enter to edit"
         type="button"
       >
-        <span className="block max-w-64 truncate text-slate-300">{displayValue(value)}</span>
+        <span className="block max-w-64 truncate text-slate-300">
+          {field ? displayFieldValue(field, value) : displayValue(value)}
+        </span>
         <span className="invisible text-xs text-sky-400 group-hover:visible group-focus:visible">
           Edit
         </span>
@@ -861,6 +1031,20 @@ function GridCell({
               </option>
             ))}
           </select>
+        ) : field && isStructuredFieldType(field.fieldType) ? (
+          <textarea
+            {...common}
+            aria-label={`${label} value`}
+            className={`${common.className} resize-y font-mono text-xs`}
+            placeholder={
+              field.fieldType === 'spectral_data'
+                ? 'Wavelength\tSignal 1\n400\t0.12\n401\t0.18'
+                : 'Column A\tColumn B\nValue 1\tValue 2'
+            }
+            value={draft.primary}
+            style={{ minHeight: '10rem', whiteSpace: 'pre' }}
+            onChange={(event) => setDraft({ ...draft, primary: event.target.value })}
+          />
         ) : (
           <input
             {...common}
@@ -905,6 +1089,11 @@ function GridCell({
         )}
       </div>
       <div className="mt-1 flex max-w-full flex-wrap items-center justify-end gap-1">
+        {field && isStructuredFieldType(field.fieldType) && (
+          <span className="mr-auto px-1 text-[10px] text-slate-500">
+            Paste from Excel · Ctrl/⌘+Enter to save
+          </span>
+        )}
         <button
           aria-label={`Save ${label}`}
           className="rounded px-2 py-1 text-xs text-emerald-300 hover:bg-emerald-500/10"
@@ -953,6 +1142,16 @@ function InlineDraftInput({
         title="Measurements are appended after the record exists"
       >
         Read-only
+      </span>
+    );
+  }
+  if (isStructuredFieldType(field.fieldType)) {
+    return (
+      <span
+        className="block px-2.5 py-2 text-xs text-slate-600"
+        title="Open the full form to paste structured table data"
+      >
+        Use full form
       </span>
     );
   }
@@ -1334,6 +1533,29 @@ function FieldInput({ field, value }: { field: FieldDefinition; value?: unknown 
       </div>
     );
   }
+  if (isStructuredFieldType(field.fieldType)) {
+    return (
+      <div>
+        <textarea
+          aria-label={`${field.name} table data`}
+          className={`${inputClass} resize-y font-mono text-xs`}
+          defaultValue={structuredDataText(field, value)}
+          name={`value:${field.key}`}
+          placeholder={
+            field.fieldType === 'spectral_data'
+              ? 'Wavelength\tSignal 1\n400\t0.12\n401\t0.18'
+              : 'Column A\tColumn B\nValue 1\tValue 2'
+          }
+          required={field.required}
+          spellCheck={false}
+          style={{ minHeight: '12rem', whiteSpace: 'pre' }}
+        />
+        <p className="mt-1 text-[10px] text-slate-500">
+          Paste a range directly from Excel. Tabs separate columns and line breaks separate rows.
+        </p>
+      </div>
+    );
+  }
   if (field.fieldType === 'single_select') {
     return (
       <select
@@ -1548,7 +1770,7 @@ function GalleryRecordsView({
                 <div className="grid grid-cols-[5rem_1fr] gap-2 text-xs" key={field.id}>
                   <dt className="truncate text-slate-500">{field.name}</dt>
                   <dd className="truncate text-slate-300">
-                    {displayValue(recordGridValue(record, field))}
+                    {displayFieldValue(field, recordGridValue(record, field))}
                   </dd>
                 </div>
               ))}
@@ -2802,6 +3024,8 @@ export function DataPage({
               'quantity',
               'measurement',
               'range',
+              'spectral_data',
+              'tabular_data',
             ].includes(field.fieldType)
               ? schemaFieldConfig(field.fieldType, data)
               : field.config,
@@ -2973,15 +3197,25 @@ export function DataPage({
 
   function handleGridCopy(event: ReactClipboardEvent<HTMLTableElement>) {
     if (!gridSelectionBounds) return;
-    const text = records.items
-      .slice(gridSelectionBounds.rowStart, gridSelectionBounds.rowEnd + 1)
-      .map((record) =>
-        gridColumns
-          .slice(gridSelectionBounds.columnStart, gridSelectionBounds.columnEnd + 1)
-          .map((column) => clipboardSafeValue(gridClipboardValue(record, column)))
-          .join('\t'),
-      )
-      .join('\n');
+    const singleRecord = records.items[gridSelectionBounds.rowStart];
+    const singleColumn = gridColumns[gridSelectionBounds.columnStart];
+    const singleStructuredCell =
+      gridSelectionBounds.rowStart === gridSelectionBounds.rowEnd &&
+      gridSelectionBounds.columnStart === gridSelectionBounds.columnEnd &&
+      singleRecord &&
+      singleColumn?.kind === 'field' &&
+      isStructuredFieldType(singleColumn.field.fieldType);
+    const text = singleStructuredCell
+      ? structuredDataText(singleColumn.field, recordGridValue(singleRecord, singleColumn.field))
+      : records.items
+          .slice(gridSelectionBounds.rowStart, gridSelectionBounds.rowEnd + 1)
+          .map((record) =>
+            gridColumns
+              .slice(gridSelectionBounds.columnStart, gridSelectionBounds.columnEnd + 1)
+              .map((column) => clipboardSafeValue(gridClipboardValue(record, column)))
+              .join('\t'),
+          )
+          .join('\n');
     event.clipboardData.setData('text/plain', text);
     event.preventDefault();
     setLayoutAnnouncement(`${selectedGridCellCount} cells copied.`);
@@ -2998,7 +3232,11 @@ export function DataPage({
     if (anchorRow < 0 || anchorColumn < 0) return;
 
     const targets: Array<{ rowIndex: number; columnIndex: number; value: string }> = [];
-    if (matrix.length === 1 && matrix[0]?.length === 1 && gridSelectionBounds) {
+    const anchorField =
+      gridColumns[anchorColumn]?.kind === 'field' ? gridColumns[anchorColumn].field : undefined;
+    if (anchorField && isStructuredFieldType(anchorField.fieldType)) {
+      targets.push({ rowIndex: anchorRow, columnIndex: anchorColumn, value: text });
+    } else if (matrix.length === 1 && matrix[0]?.length === 1 && gridSelectionBounds) {
       for (
         let rowIndex = gridSelectionBounds.rowStart;
         rowIndex <= gridSelectionBounds.rowEnd;
@@ -4206,8 +4444,8 @@ export function DataPage({
                   </button>
                 </header>
 
-                <div className="grid min-h-[30rem] lg:grid-cols-[minmax(16rem,0.8fr)_minmax(24rem,1.2fr)]">
-                  <aside className="border-b border-slate-800 bg-slate-900/35 p-3 lg:border-b-0 lg:border-r">
+                <div className="grid lg:grid-cols-[minmax(16rem,0.8fr)_minmax(24rem,1.2fr)]">
+                  <aside className="border-b border-slate-800 bg-slate-900/35 p-2.5 lg:border-b-0 lg:border-r">
                     <div className="flex gap-2">
                       <div className="relative min-w-0 flex-1">
                         <span
@@ -4236,14 +4474,18 @@ export function DataPage({
                       </Button>
                     </div>
 
-                    <div className="mt-3 max-h-[27rem] space-y-1 overflow-y-auto pr-1">
+                    <div
+                      aria-label="Field definitions"
+                      className="mt-2 overflow-y-auto pr-1"
+                      style={{ maxHeight: '16rem' }}
+                    >
                       {filteredSchemaFields.map((field) => {
                         const meta = fieldTypeMeta[field.fieldType];
                         const active = schemaSelection === field.id;
                         return (
                           <button
                             aria-label={`Edit field ${field.name}`}
-                            className={`group flex w-full items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors ${
+                            className={`group flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors ${
                               active
                                 ? 'border-sky-400/30 bg-sky-400/10'
                                 : 'border-transparent hover:border-slate-800 hover:bg-slate-900'
@@ -4254,7 +4496,7 @@ export function DataPage({
                           >
                             <span
                               aria-hidden="true"
-                              className={`grid size-8 shrink-0 place-items-center rounded-lg border font-mono text-[11px] ${
+                              className={`grid size-6 shrink-0 place-items-center rounded-md border font-mono text-[9px] ${
                                 active
                                   ? 'border-sky-400/25 bg-sky-400/10 text-sky-300'
                                   : 'border-slate-800 bg-slate-950/50 text-slate-500'
@@ -4268,12 +4510,15 @@ export function DataPage({
                                   {field.name}
                                 </span>
                                 {field.required && (
-                                  <span className="text-[9px] font-semibold uppercase text-amber-300">
-                                    Required
+                                  <span
+                                    aria-label="Required"
+                                    className="text-[10px] text-amber-300"
+                                  >
+                                    *
                                   </span>
                                 )}
                               </span>
-                              <span className="mt-0.5 block truncate font-mono text-[10px] text-slate-600">
+                              <span className="block truncate font-mono text-[9px] leading-tight text-slate-600">
                                 {field.key} · {meta.label}
                               </span>
                             </span>
@@ -4380,24 +4625,24 @@ export function DataPage({
                                 setSchemaFieldType(event.target.value as FieldType)
                               }
                             >
-                              {(['Basic', 'Choice', 'Linked', 'Engineering'] as const).map(
-                                (group) => {
-                                  const groupTypes = availableFieldTypes.filter(
-                                    (type) => fieldTypeMeta[type].group === group,
-                                  );
-                                  if (!groupTypes.length) return null;
-                                  return (
-                                    <optgroup key={group} label={group}>
-                                      {groupTypes.map((type) => (
-                                        <option key={type} value={type}>
-                                          {fieldTypeMeta[type].label} —{' '}
-                                          {fieldTypeMeta[type].description}
-                                        </option>
-                                      ))}
-                                    </optgroup>
-                                  );
-                                },
-                              )}
+                              {(
+                                ['Basic', 'Choice', 'Linked', 'Engineering', 'Structured'] as const
+                              ).map((group) => {
+                                const groupTypes = availableFieldTypes.filter(
+                                  (type) => fieldTypeMeta[type].group === group,
+                                );
+                                if (!groupTypes.length) return null;
+                                return (
+                                  <optgroup key={group} label={group}>
+                                    {groupTypes.map((type) => (
+                                      <option key={type} value={type}>
+                                        {fieldTypeMeta[type].label} —{' '}
+                                        {fieldTypeMeta[type].description}
+                                      </option>
+                                    ))}
+                                  </optgroup>
+                                );
+                              })}
                             </select>
                           </label>
                           <label className="text-xs font-medium text-slate-300 sm:col-span-2">
@@ -4495,6 +4740,70 @@ export function DataPage({
                                 />
                               </label>
                             </>
+                          )}
+
+                          {schemaFieldType === 'spectral_data' && (
+                            <>
+                              <div className="sm:col-span-2 rounded-lg border border-sky-400/20 bg-sky-400/10 px-3 py-2 text-[11px] leading-relaxed text-slate-400">
+                                Paste an Excel range with X values in the first column and one or
+                                more signal series in the remaining columns. The first row may
+                                contain headers.
+                              </div>
+                              <label className="text-xs font-medium text-slate-300">
+                                X-axis label
+                                <input
+                                  aria-label="X-axis label"
+                                  className={`${inputClass} mt-1.5`}
+                                  defaultValue="Wavelength"
+                                  name="xLabel"
+                                />
+                              </label>
+                              <label className="text-xs font-medium text-slate-300">
+                                X-axis unit
+                                <input
+                                  aria-label="X-axis unit"
+                                  className={`${inputClass} mt-1.5 font-mono`}
+                                  defaultValue="nm"
+                                  name="xUnit"
+                                />
+                              </label>
+                              <label className="text-xs font-medium text-slate-300">
+                                Signal label
+                                <input
+                                  aria-label="Signal label"
+                                  className={`${inputClass} mt-1.5`}
+                                  defaultValue="Intensity"
+                                  name="yLabel"
+                                />
+                              </label>
+                              <label className="text-xs font-medium text-slate-300">
+                                Signal unit
+                                <input
+                                  aria-label="Signal unit"
+                                  className={`${inputClass} mt-1.5 font-mono`}
+                                  defaultValue="a.u."
+                                  name="yUnit"
+                                />
+                              </label>
+                            </>
+                          )}
+
+                          {schemaFieldType === 'tabular_data' && (
+                            <div className="sm:col-span-2 rounded-lg border border-sky-400/20 bg-sky-400/10 px-3 py-2.5">
+                              <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-300">
+                                <input
+                                  className="accent-sky-500"
+                                  defaultChecked
+                                  name="firstRowHeader"
+                                  type="checkbox"
+                                />
+                                Treat the first pasted row as column headers
+                              </label>
+                              <p className="mt-1 pl-5 text-[10px] leading-relaxed text-slate-500">
+                                Excel cells are stored as JSON columns and rows while preserving
+                                numbers, booleans, text, and blanks.
+                              </p>
+                            </div>
                           )}
                         </div>
 
@@ -4724,6 +5033,59 @@ export function DataPage({
                                 />
                               </label>
                             </>
+                          )}
+
+                          {selectedSchemaField.fieldType === 'spectral_data' && (
+                            <>
+                              <label className="text-xs font-medium text-slate-300">
+                                X-axis label
+                                <input
+                                  aria-label="X-axis label"
+                                  className={`${inputClass} mt-1.5`}
+                                  defaultValue={selectedSchemaField.config.xLabel}
+                                  name="xLabel"
+                                />
+                              </label>
+                              <label className="text-xs font-medium text-slate-300">
+                                X-axis unit
+                                <input
+                                  aria-label="X-axis unit"
+                                  className={`${inputClass} mt-1.5 font-mono`}
+                                  defaultValue={selectedSchemaField.config.xUnit}
+                                  name="xUnit"
+                                />
+                              </label>
+                              <label className="text-xs font-medium text-slate-300">
+                                Signal label
+                                <input
+                                  aria-label="Signal label"
+                                  className={`${inputClass} mt-1.5`}
+                                  defaultValue={selectedSchemaField.config.yLabel}
+                                  name="yLabel"
+                                />
+                              </label>
+                              <label className="text-xs font-medium text-slate-300">
+                                Signal unit
+                                <input
+                                  aria-label="Signal unit"
+                                  className={`${inputClass} mt-1.5 font-mono`}
+                                  defaultValue={selectedSchemaField.config.yUnit}
+                                  name="yUnit"
+                                />
+                              </label>
+                            </>
+                          )}
+
+                          {selectedSchemaField.fieldType === 'tabular_data' && (
+                            <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-300 sm:col-span-2">
+                              <input
+                                className="accent-sky-500"
+                                defaultChecked={selectedSchemaField.config.firstRowHeader !== false}
+                                name="firstRowHeader"
+                                type="checkbox"
+                              />
+                              Treat the first pasted row as column headers
+                            </label>
                           )}
 
                           <label className="text-xs font-medium text-slate-300">
@@ -5827,7 +6189,7 @@ export function DataPage({
                               <span
                                 className={`block max-w-64 truncate px-2.5 text-xs text-slate-300 ${rowDensity === 'comfortable' ? 'py-3' : 'py-1.5'}`}
                               >
-                                {displayValue(recordGridValue(record, field))}
+                                {displayFieldValue(field, recordGridValue(record, field))}
                               </span>
                             )}
                           </td>
@@ -6152,7 +6514,7 @@ export function DataPage({
                       <dd className="text-sm text-slate-200">
                         {field.fieldType === 'measurement'
                           ? displayValue(selectedRecord.measurements?.[field.id]?.value)
-                          : displayValue(recordGridValue(selectedRecord, field))}
+                          : displayFieldValue(field, recordGridValue(selectedRecord, field))}
                       </dd>
                     </div>
                   ))}
@@ -6275,7 +6637,7 @@ export function RecordDetailPage({ user }: { user: User }) {
                       ? record.measurements?.[field.id]?.resultId
                         ? `${record.measurements[field.id]?.value} ${record.measurements[field.id]?.unit} · ${record.measurements[field.id]?.status ?? 'pending'}`
                         : (record.measurements?.[field.id]?.status ?? '—')
-                      : displayValue(record.values[field.key])}
+                      : displayFieldValue(field, record.values[field.key])}
                 </dd>
               </div>
             ))}
