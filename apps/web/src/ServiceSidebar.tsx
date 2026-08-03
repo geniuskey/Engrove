@@ -164,11 +164,13 @@ export function ServiceShell({
               className="flex min-w-0 items-center gap-2.5"
               to={workspaceBase ? `${workspaceBase}/data` : '/workspaces'}
             >
-              <span
-                className={`grid shrink-0 place-items-center rounded-md bg-gradient-to-br from-sky-300 to-cyan-500 font-mono font-bold text-slate-950 ${expanded ? 'size-8 text-[11px]' : 'size-7 text-[10px]'}`}
-              >
-                E
-              </span>
+              <img
+                alt=""
+                className={`shrink-0 ${expanded ? 'size-8' : 'size-7'}`}
+                height={expanded ? 32 : 28}
+                src="/engrove-mark.png"
+                width={expanded ? 32 : 28}
+              />
               {expanded && (
                 <span className="truncate text-sm font-semibold tracking-tight">Engrove</span>
               )}

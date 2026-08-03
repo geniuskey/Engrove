@@ -252,9 +252,7 @@ function AuthCard({ title, children }: PropsWithChildren<{ title: string }>) {
           />
           <div>
             <Link to="/" className="relative inline-flex items-center gap-3 text-slate-100">
-              <span className="grid size-10 place-items-center rounded-xl bg-gradient-to-br from-sky-300 to-cyan-500 font-mono text-sm font-black text-[#082f49] shadow-lg shadow-sky-950/30">
-                E
-              </span>
+              <img alt="" className="size-10" height="40" src="/engrove-mark.png" width="40" />
               <span>
                 <span className="block font-semibold tracking-tight">Engrove</span>
                 <span className="block font-mono text-[10px] uppercase tracking-[0.2em] text-sky-400">
@@ -287,9 +285,7 @@ function AuthCard({ title, children }: PropsWithChildren<{ title: string }>) {
         <section className="flex min-h-[600px] items-center p-6 sm:p-10 lg:p-12">
           <div className="mx-auto w-full max-w-md">
             <Link to="/" className="inline-flex items-center gap-3 text-slate-100 lg:hidden">
-              <span className="grid size-10 place-items-center rounded-xl bg-gradient-to-br from-sky-300 to-cyan-500 font-mono text-sm font-black text-[#082f49]">
-                E
-              </span>
+              <img alt="" className="size-10" height="40" src="/engrove-mark.png" width="40" />
               <span className="font-semibold">Engrove</span>
             </Link>
             <p className="mt-10 font-mono text-[10px] uppercase tracking-[0.2em] text-sky-400 lg:mt-0">
@@ -1887,9 +1883,13 @@ function AppContent() {
     return (
       <main className="product-grid grid min-h-screen place-items-center bg-slate-950 p-10 text-slate-300">
         <div className="text-center">
-          <span className="mx-auto grid size-12 animate-pulse place-items-center rounded-2xl bg-gradient-to-br from-sky-300 to-cyan-500 font-mono font-black text-[#082f49]">
-            E
-          </span>
+          <img
+            alt=""
+            className="mx-auto size-12 animate-pulse"
+            height="48"
+            src="/engrove-mark.png"
+            width="48"
+          />
           <p className="mt-4 text-sm text-slate-400">{t('app.loading')}</p>
         </div>
       </main>

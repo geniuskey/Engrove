@@ -94,6 +94,10 @@ describe('App', () => {
 
     const projectNav = await screen.findByRole('navigation', { name: 'Project navigation' });
     expect(screen.getByLabelText('Service sidebar')).toHaveClass('service-sidebar');
+    expect(screen.getByRole('link', { name: 'Engrove home' }).querySelector('img')).toHaveAttribute(
+      'src',
+      '/engrove-mark.png',
+    );
     expect(projectNav).toHaveTextContent('Overview');
     expect(projectNav).toHaveTextContent('Engineering records');
     expect(projectNav).toHaveTextContent('Files & datasets');
