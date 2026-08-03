@@ -1,7 +1,22 @@
 import { Button } from '@engrove/ui';
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react';
 import { Link, useParams } from 'react-router';
 import { allowed, api, ErrorText, inputClass, type User } from './App.js';
+import {
+  ContextMenu,
+  type ContextMenuItem,
+  type ContextMenuModel,
+  menuFromKeyboard,
+  menuFromPointer,
+} from './ContextMenu.js';
 
 interface FileObject {
   id: string;
@@ -44,6 +59,7 @@ export function FilesDatasetsPage({ user }: { user: User }) {
   const [preview, setPreview] = useState<unknown>();
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
+  const [contextMenu, setContextMenu] = useState<ContextMenuModel>();
   const refresh = useCallback(async () => {
     try {
       const [fileResult, datasetResult] = await Promise.all([
@@ -162,6 +178,144 @@ export function FilesDatasetsPage({ user }: { user: User }) {
     }
   }
 
+  async function copyResourceValue(label: string, value: string) {
+    try {
+      if (!navigator.clipboard) throw new Error('Clipboard is unavailable.');
+      await navigator.clipboard.writeText(value);
+      setMessage(`${label} copied.`);
+    } catch {
+      setMessage('Clipboard access was denied by the browser.');
+    }
+  }
+
+  function downloadFile(file: FileObject) {
+    return mutate(async () => {
+      const result = await api<{ url: string }>(`${base}/files/${file.id}/download`);
+      window.location.assign(result.url);
+    });
+  }
+
+  function changeFileLifecycle(file: FileObject) {
+    return mutate(() =>
+      api(`${base}/files/${file.id}/${file.archived_at ? 'restore' : 'archive'}`, {
+        method: file.archived_at ? 'POST' : 'PATCH',
+        ...(file.archived_at
+          ? {}
+          : { body: JSON.stringify({ reason: 'Archived from file library' }) }),
+      }),
+    );
+  }
+
+  function changeDatasetLifecycle(dataset: Dataset) {
+    return mutate(() =>
+      api(`${base}/datasets/${dataset.id}/${dataset.archived_at ? 'restore' : 'archive'}`, {
+        method: dataset.archived_at ? 'POST' : 'PATCH',
+        ...(dataset.archived_at
+          ? {}
+          : { body: JSON.stringify({ reason: 'Archived from dataset library' }) }),
+      }),
+    );
+  }
+
+  function fileContextItems(file: FileObject): ContextMenuItem[] {
+    return [
+      { label: 'Download file', icon: '↓', onSelect: () => void downloadFile(file) },
+      {
+        label: 'Copy file name',
+        icon: '⧉',
+        separatorBefore: true,
+        onSelect: () => void copyResourceValue('File name', file.original_name),
+      },
+      {
+        label: 'Copy file ID',
+        icon: '#',
+        onSelect: () => void copyResourceValue('File ID', file.id),
+      },
+      {
+        label: 'Copy SHA-256',
+        icon: '◇',
+        onSelect: () => void copyResourceValue('SHA-256', file.checksum),
+      },
+      ...(allowed(user, file.archived_at ? 'file.restore' : 'file.archive')
+        ? [
+            {
+              label: file.archived_at ? 'Restore file' : 'Archive file',
+              icon: file.archived_at ? '↺' : '×',
+              tone: file.archived_at ? ('default' as const) : ('danger' as const),
+              separatorBefore: true,
+              onSelect: () => void changeFileLifecycle(file),
+            },
+          ]
+        : []),
+    ];
+  }
+
+  function datasetContextItems(dataset: Dataset): ContextMenuItem[] {
+    return [
+      ...(dataset.status === 'ready'
+        ? [
+            {
+              label: 'Preview dataset',
+              icon: '↗',
+              onSelect: () =>
+                void mutate(async () =>
+                  setPreview(await api(`${base}/datasets/${dataset.id}/preview`)),
+                ),
+            } satisfies ContextMenuItem,
+          ]
+        : []),
+      ...(dataset.status === 'failed' && allowed(user, 'job.retry')
+        ? [
+            {
+              label: 'Retry processing',
+              icon: '↺',
+              onSelect: () =>
+                void mutate(() => api(`${base}/datasets/${dataset.id}/retry`, { method: 'POST' })),
+            } satisfies ContextMenuItem,
+          ]
+        : []),
+      {
+        label: 'Copy dataset name',
+        icon: '⧉',
+        separatorBefore: true,
+        onSelect: () => void copyResourceValue('Dataset name', dataset.name),
+      },
+      {
+        label: 'Copy dataset ID',
+        icon: '#',
+        onSelect: () => void copyResourceValue('Dataset ID', dataset.id),
+      },
+      ...(allowed(user, dataset.archived_at ? 'dataset.restore' : 'dataset.archive')
+        ? [
+            {
+              label: dataset.archived_at ? 'Restore dataset' : 'Archive dataset',
+              icon: dataset.archived_at ? '↺' : '×',
+              tone: dataset.archived_at ? ('default' as const) : ('danger' as const),
+              separatorBefore: true,
+              onSelect: () => void changeDatasetLifecycle(dataset),
+            },
+          ]
+        : []),
+    ];
+  }
+
+  function openResourceMenu(
+    event: ReactMouseEvent<HTMLElement>,
+    label: string,
+    items: ContextMenuItem[],
+  ) {
+    setContextMenu(menuFromPointer(event, label, items));
+  }
+
+  function openResourceMenuFromKeyboard(
+    event: ReactKeyboardEvent<HTMLElement>,
+    label: string,
+    items: ContextMenuItem[],
+  ) {
+    const menu = menuFromKeyboard(event, label, items);
+    if (menu) setContextMenu(menu);
+  }
+
   return (
     <>
       <Link className="text-sm text-slate-400 hover:text-sky-300" to={base}>
@@ -171,7 +325,8 @@ export function FilesDatasetsPage({ user }: { user: User }) {
         Files &amp; datasets
       </h1>
       <p className="mt-3 text-slate-400">
-        Immutable file versions, processing lineage, and previews.
+        Immutable file versions, processing lineage, and previews. Right-click a resource for quick
+        actions.
       </p>
       <ErrorText>{message}</ErrorText>
 
@@ -211,7 +366,17 @@ export function FilesDatasetsPage({ user }: { user: User }) {
             </thead>
             <tbody>
               {files.map((file) => (
-                <tr className="border-t border-slate-800" key={file.id}>
+                <tr
+                  className="border-t border-slate-800"
+                  key={file.id}
+                  onContextMenu={(event) =>
+                    openResourceMenu(event, file.original_name, fileContextItems(file))
+                  }
+                  onKeyDown={(event) =>
+                    openResourceMenuFromKeyboard(event, file.original_name, fileContextItems(file))
+                  }
+                  tabIndex={0}
+                >
                   <td className="p-3">
                     <strong>{file.series_name}</strong>
                     <div className="text-slate-500">
@@ -222,39 +387,13 @@ export function FilesDatasetsPage({ user }: { user: User }) {
                   <td>{file.archived_at ? 'archived' : file.status}</td>
                   <td className="font-mono text-xs">{file.checksum.slice(0, 12)}…</td>
                   <td className="space-x-2">
-                    <button
-                      className="text-sky-400"
-                      onClick={() =>
-                        void mutate(async () => {
-                          const result = await api<{ url: string }>(
-                            `${base}/files/${file.id}/download`,
-                          );
-                          window.location.assign(result.url);
-                        })
-                      }
-                    >
+                    <button className="text-sky-400" onClick={() => void downloadFile(file)}>
                       Download
                     </button>
                     {allowed(user, file.archived_at ? 'file.restore' : 'file.archive') && (
                       <button
                         className="text-sky-400"
-                        onClick={() =>
-                          void mutate(() =>
-                            api(
-                              `${base}/files/${file.id}/${file.archived_at ? 'restore' : 'archive'}`,
-                              {
-                                method: file.archived_at ? 'POST' : 'PATCH',
-                                ...(file.archived_at
-                                  ? {}
-                                  : {
-                                      body: JSON.stringify({
-                                        reason: 'Archived from file library',
-                                      }),
-                                    }),
-                              },
-                            ),
-                          )
-                        }
+                        onClick={() => void changeFileLifecycle(file)}
                       >
                         {file.archived_at ? 'Restore' : 'Archive'}
                       </button>
@@ -359,6 +498,13 @@ export function FilesDatasetsPage({ user }: { user: User }) {
             <article
               className="rounded-2xl border border-slate-800 bg-slate-900/55 p-5 shadow-lg shadow-slate-950/10 transition hover:border-slate-700"
               key={dataset.id}
+              onContextMenu={(event) =>
+                openResourceMenu(event, dataset.name, datasetContextItems(dataset))
+              }
+              onKeyDown={(event) =>
+                openResourceMenuFromKeyboard(event, dataset.name, datasetContextItems(dataset))
+              }
+              tabIndex={0}
             >
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
@@ -400,23 +546,7 @@ export function FilesDatasetsPage({ user }: { user: User }) {
                   {allowed(user, dataset.archived_at ? 'dataset.restore' : 'dataset.archive') && (
                     <button
                       className="text-sky-400"
-                      onClick={() =>
-                        void mutate(() =>
-                          api(
-                            `${base}/datasets/${dataset.id}/${dataset.archived_at ? 'restore' : 'archive'}`,
-                            {
-                              method: dataset.archived_at ? 'POST' : 'PATCH',
-                              ...(dataset.archived_at
-                                ? {}
-                                : {
-                                    body: JSON.stringify({
-                                      reason: 'Archived from dataset library',
-                                    }),
-                                  }),
-                            },
-                          ),
-                        )
-                      }
+                      onClick={() => void changeDatasetLifecycle(dataset)}
                     >
                       {dataset.archived_at ? 'Restore' : 'Archive'}
                     </button>
@@ -438,6 +568,7 @@ export function FilesDatasetsPage({ user }: { user: User }) {
           {JSON.stringify(preview, null, 2)}
         </pre>
       )}
+      <ContextMenu menu={contextMenu} onClose={() => setContextMenu(undefined)} />
     </>
   );
 }

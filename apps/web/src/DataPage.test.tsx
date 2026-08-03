@@ -234,6 +234,22 @@ describe('DataPage', () => {
     expect(screen.getByText('1 records · page 1 of 1')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'New record' })).toBeInTheDocument();
     expect(screen.getByRole('navigation', { name: 'Data navigation' })).toBeInTheDocument();
+    const sampleRow = screen.getByRole('button', { name: 'Quick view Sample Two' }).closest('tr');
+    expect(sampleRow).not.toBeNull();
+    fireEvent.contextMenu(sampleRow!, { clientX: 120, clientY: 140 });
+    expect(screen.getByRole('menu', { name: 'Sample Two' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Select row' }));
+    expect(screen.getByText('1 selected')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+
+    const quickViewButton = screen.getByRole('button', { name: 'Quick view Sample Two' });
+    fireEvent.keyDown(quickViewButton, { key: 'F10', shiftKey: true });
+    expect(screen.getByRole('menu', { name: 'Sample Two' })).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole('menuitem', { name: 'Open quick view' }), {
+      key: 'Escape',
+    });
+    expect(screen.queryByRole('menu', { name: 'Sample Two' })).not.toBeInTheDocument();
+
     fireEvent.click(screen.getByRole('button', { name: 'Sort by Serial' }));
     await waitFor(() =>
       expect(

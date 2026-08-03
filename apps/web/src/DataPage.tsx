@@ -4,6 +4,7 @@ import {
   type FormEvent,
   type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
@@ -15,6 +16,13 @@ import {
 import { createPortal } from 'react-dom';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { allowed, api, ApiError, ErrorText, inputClass, NoticeText, type User } from './App.js';
+import {
+  ContextMenu,
+  type ContextMenuItem,
+  type ContextMenuModel,
+  menuFromKeyboard,
+  menuFromPointer,
+} from './ContextMenu.js';
 import { useI18n } from './i18n.js';
 import { useServiceSidebarPortal } from './ServiceSidebar.js';
 
@@ -1310,10 +1318,14 @@ function GalleryRecordsView({
   fields,
   records,
   onOpen,
+  onContextMenu,
+  onContextMenuKeyDown,
 }: {
   fields: FieldDefinition[];
   records: DynamicRecord[];
   onOpen: (record: DynamicRecord) => void;
+  onContextMenu: (event: ReactMouseEvent<HTMLElement>, record: DynamicRecord) => void;
+  onContextMenuKeyDown: (event: ReactKeyboardEvent<HTMLElement>, record: DynamicRecord) => void;
 }) {
   return (
     <div className="grid gap-3 p-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
@@ -1321,6 +1333,9 @@ function GalleryRecordsView({
         <article
           className="group overflow-hidden rounded-lg border border-slate-800 bg-slate-900/55 hover:border-slate-700"
           key={record.id}
+          onContextMenu={(event) => onContextMenu(event, record)}
+          onKeyDown={(event) => onContextMenuKeyDown(event, record)}
+          tabIndex={0}
         >
           <div className="h-16 border-b border-slate-800 bg-gradient-to-br from-sky-500/15 via-slate-900 to-cyan-500/10" />
           <div className="p-3">
@@ -1355,6 +1370,8 @@ function KanbanRecordsView({
   canUpdate,
   onMove,
   onOpen,
+  onContextMenu,
+  onContextMenuKeyDown,
 }: {
   field: FieldDefinition;
   records: DynamicRecord[];
@@ -1362,6 +1379,8 @@ function KanbanRecordsView({
   canUpdate: boolean;
   onMove: (record: DynamicRecord, value: string) => Promise<void>;
   onOpen: (record: DynamicRecord) => void;
+  onContextMenu: (event: ReactMouseEvent<HTMLElement>, record: DynamicRecord) => void;
+  onContextMenuKeyDown: (event: ReactKeyboardEvent<HTMLElement>, record: DynamicRecord) => void;
 }) {
   const lanes = [{ key: '', label: 'No value' }, ...(field.config.options ?? [])];
   return (
@@ -1388,6 +1407,9 @@ function KanbanRecordsView({
                 <article
                   className="rounded-md border border-slate-800 bg-slate-950/75 p-2.5 shadow-sm"
                   key={record.id}
+                  onContextMenu={(event) => onContextMenu(event, record)}
+                  onKeyDown={(event) => onContextMenuKeyDown(event, record)}
+                  tabIndex={0}
                 >
                   <button
                     className="w-full truncate text-left text-xs font-medium text-slate-200 hover:text-sky-300"
@@ -1431,12 +1453,16 @@ function CalendarRecordsView({
   records,
   onMonthChange,
   onOpen,
+  onContextMenu,
+  onContextMenuKeyDown,
 }: {
   field: FieldDefinition;
   month: Date;
   records: DynamicRecord[];
   onMonthChange: (month: Date) => void;
   onOpen: (record: DynamicRecord) => void;
+  onContextMenu: (event: ReactMouseEvent<HTMLElement>, record: DynamicRecord) => void;
+  onContextMenuKeyDown: (event: ReactKeyboardEvent<HTMLElement>, record: DynamicRecord) => void;
 }) {
   const year = month.getFullYear();
   const monthIndex = month.getMonth();
@@ -1497,6 +1523,8 @@ function CalendarRecordsView({
                   className="block w-full truncate rounded bg-sky-500/10 px-1.5 py-1 text-left text-[10px] text-sky-300 hover:bg-sky-500/20"
                   key={record.id}
                   onClick={() => onOpen(record)}
+                  onContextMenu={(event) => onContextMenu(event, record)}
+                  onKeyDown={(event) => onContextMenuKeyDown(event, record)}
                   type="button"
                 >
                   {record.displayName}
@@ -1876,6 +1904,7 @@ export function DataPage({
   const projectId = workspaceData?.backingProjectId ?? params.projectId ?? '';
   const workspaceMode = Boolean(workspaceData);
   const [search, setSearch] = useSearchParams();
+  const navigate = useNavigate();
   const base = projectPath(workspaceId, projectId);
   const [objectTypes, setObjectTypes] = useState<ObjectType[]>([]);
   const [fields, setFields] = useState<FieldDefinition[]>([]);
@@ -1930,6 +1959,7 @@ export function DataPage({
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [messageTone, setMessageTone] = useState<'info' | 'success' | 'error'>('info');
+  const [contextMenu, setContextMenu] = useState<ContextMenuModel>();
   const [csvResult, setCsvResult] = useState<CsvResult>();
   const appliedViewKey = useRef('');
   const pendingViewId = useRef('');
@@ -2881,6 +2911,235 @@ export function DataPage({
     }
   }
 
+  async function copyContextValue(label: string, value: string) {
+    try {
+      if (!navigator.clipboard) throw new Error('Clipboard is unavailable.');
+      await navigator.clipboard.writeText(value);
+      setMessageTone('success');
+      setMessage(`${label} copied.`);
+    } catch {
+      setMessageTone('error');
+      setMessage('Clipboard access was denied by the browser.');
+    }
+  }
+
+  async function archiveRecord(record: DynamicRecord) {
+    if (!window.confirm(`Archive “${record.displayName}”? History is preserved.`)) return;
+    try {
+      await api(`${base}/object-types/${record.objectTypeId}/records/${record.id}/archive`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: 'Archived from record context menu' }),
+      });
+      setSelectedRows((current) => {
+        const next = new Set(current);
+        next.delete(record.id);
+        return next;
+      });
+      if (selectedRecord?.id === record.id) setSelectedRecord(undefined);
+      setMessageTone('success');
+      setMessage(`“${record.displayName}” archived.`);
+      await loadRecords();
+    } catch (cause) {
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : 'Record could not be archived.');
+    }
+  }
+
+  function recordContextItems(record: DynamicRecord): ContextMenuItem[] {
+    const selectedRow = selectedRows.has(record.id);
+    return [
+      {
+        label: 'Open quick view',
+        icon: '↗',
+        onSelect: () => setSelectedRecord(record),
+      },
+      ...(!workspaceMode
+        ? [
+            {
+              label: 'Open full record',
+              icon: '□',
+              onSelect: () =>
+                void navigate(`${base}/data/${record.objectTypeId}/records/${record.id}`),
+            } satisfies ContextMenuItem,
+          ]
+        : []),
+      {
+        label: selectedRow ? 'Deselect row' : 'Select row',
+        icon: selectedRow ? '−' : '✓',
+        separatorBefore: true,
+        onSelect: () =>
+          setSelectedRows((current) => {
+            const next = new Set(current);
+            if (next.has(record.id)) next.delete(record.id);
+            else next.add(record.id);
+            return next;
+          }),
+      },
+      {
+        label: 'Copy record name',
+        icon: '⧉',
+        onSelect: () => void copyContextValue('Record name', record.displayName),
+      },
+      {
+        label: 'Copy record ID',
+        icon: '#',
+        onSelect: () => void copyContextValue('Record ID', record.id),
+      },
+      ...(allowed(user, 'record.archive')
+        ? [
+            {
+              label: 'Archive record',
+              icon: '×',
+              tone: 'danger' as const,
+              separatorBefore: true,
+              onSelect: () => void archiveRecord(record),
+            },
+          ]
+        : []),
+    ];
+  }
+
+  function openRecordContextMenu(event: ReactMouseEvent<HTMLElement>, record: DynamicRecord) {
+    setContextMenu(menuFromPointer(event, record.displayName, recordContextItems(record)));
+  }
+
+  function openRecordContextMenuFromKeyboard(
+    event: ReactKeyboardEvent<HTMLElement>,
+    record: DynamicRecord,
+  ) {
+    const menu = menuFromKeyboard(event, record.displayName, recordContextItems(record));
+    if (menu) setContextMenu(menu);
+  }
+
+  function viewContextItems(view: RecordView): ContextMenuItem[] {
+    return [
+      { label: 'Open view', icon: '↗', onSelect: () => chooseView(view.id) },
+      ...(allowed(user, 'schema.manage')
+        ? [
+            {
+              label: 'Rename view',
+              icon: '✎',
+              disabled: viewBusy,
+              onSelect: () => void renameView(view),
+            },
+            {
+              label: 'Duplicate view',
+              icon: '⧉',
+              disabled: viewBusy,
+              onSelect: () => void duplicateView(view),
+            },
+            {
+              label: 'Archive view',
+              icon: '×',
+              disabled: viewBusy,
+              tone: 'danger' as const,
+              separatorBefore: true,
+              onSelect: () => void archiveView(view),
+            },
+          ]
+        : []),
+    ];
+  }
+
+  function columnContextItems(field: FieldDefinition): ContextMenuItem[] {
+    const sortable = !['relation', 'multi_select', 'measurement', 'range'].includes(
+      field.fieldType,
+    );
+    const filterable = !['measurement', 'range'].includes(field.fieldType);
+    return [
+      {
+        label: 'Sort ascending',
+        icon: '↑',
+        disabled: !sortable,
+        onSelect: () => {
+          setSortField(field.id);
+          setSortDirection('asc');
+          setPage(1);
+        },
+      },
+      {
+        label: 'Sort descending',
+        icon: '↓',
+        disabled: !sortable,
+        onSelect: () => {
+          setSortField(field.id);
+          setSortDirection('desc');
+          setPage(1);
+        },
+      },
+      {
+        label: 'Filter this column',
+        icon: '⌕',
+        disabled: !filterable,
+        separatorBefore: true,
+        onSelect: () => {
+          setFilterField(field.id);
+          setFilterOperator('eq');
+          setFilterValue('');
+          setDebouncedFilterValue('');
+          setActiveTool('filter');
+          setPage(1);
+        },
+      },
+      {
+        label: 'Reset column width',
+        icon: '↔',
+        disabled: fieldWidths[field.id] === undefined,
+        onSelect: () =>
+          setFieldWidths((current) => {
+            const next = { ...current };
+            delete next[field.id];
+            return next;
+          }),
+      },
+      {
+        label: 'Hide column',
+        icon: '◫',
+        separatorBefore: true,
+        onSelect: () => setHiddenFieldIds((current) => new Set([...current, field.id])),
+      },
+    ];
+  }
+
+  function systemColumnContextItems(column: SystemFieldWidthKey, label: string): ContextMenuItem[] {
+    const sortable = column !== 'contextProject';
+    const sortKey = column === 'displayName' ? 'displayName' : 'updatedAt';
+    return [
+      {
+        label: 'Sort ascending',
+        icon: '↑',
+        disabled: !sortable,
+        onSelect: () => {
+          setSortField(sortKey);
+          setSortDirection('asc');
+          setPage(1);
+        },
+      },
+      {
+        label: 'Sort descending',
+        icon: '↓',
+        disabled: !sortable,
+        onSelect: () => {
+          setSortField(sortKey);
+          setSortDirection('desc');
+          setPage(1);
+        },
+      },
+      {
+        label: `Reset ${label} width`,
+        icon: '↔',
+        disabled: systemFieldWidths[column] === undefined,
+        separatorBefore: true,
+        onSelect: () =>
+          setSystemFieldWidths((current) => {
+            const next = { ...current };
+            delete next[column];
+            return next;
+          }),
+      },
+    ];
+  }
+
   return (
     <>
       <div className="flex justify-end">
@@ -2992,11 +3251,27 @@ export function DataPage({
                         )}
                         {!viewsLoading &&
                           views.map((view) => (
-                            <div className="group/view relative flex items-center" key={view.id}>
+                            <div
+                              className="group/view relative flex items-center"
+                              key={view.id}
+                              onContextMenu={(event) =>
+                                setContextMenu(
+                                  menuFromPointer(event, view.name, viewContextItems(view)),
+                                )
+                              }
+                            >
                               <button
                                 aria-label={view.name}
                                 className={`min-w-0 flex-1 rounded-md px-2 py-1.5 text-left text-xs ${selectedViewId === view.id ? 'bg-sky-500/15 text-sky-200' : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'}`}
                                 onClick={() => chooseView(view.id)}
+                                onKeyDown={(event) => {
+                                  const menu = menuFromKeyboard(
+                                    event,
+                                    view.name,
+                                    viewContextItems(view),
+                                  );
+                                  if (menu) setContextMenu(menu);
+                                }}
                                 type="button"
                               >
                                 <span className="flex min-w-0 items-center gap-2">
@@ -3720,6 +3995,7 @@ export function DataPage({
                 {activeViewType === 'grid' &&
                   allowed(user, 'record.update') &&
                   ' · double-click a cell or focus it and press Enter. Save with Enter or by leaving the cell; cancel with Escape.'}
+                {' · Right-click a record or column for more actions. Keyboard: Shift+F10.'}
               </p>
               <p>Changes are shared across every view of this table.</p>
             </div>
@@ -3785,6 +4061,23 @@ export function DataPage({
                       <th
                         aria-label={t('data.name')}
                         className="sticky left-0 z-30 border-b border-r border-slate-800 bg-slate-900 px-1.5 py-1"
+                        onContextMenu={(event) =>
+                          setContextMenu(
+                            menuFromPointer(
+                              event,
+                              t('data.name'),
+                              systemColumnContextItems('displayName', t('data.name')),
+                            ),
+                          )
+                        }
+                        onKeyDown={(event) => {
+                          const menu = menuFromKeyboard(
+                            event,
+                            t('data.name'),
+                            systemColumnContextItems('displayName', t('data.name')),
+                          );
+                          if (menu) setContextMenu(menu);
+                        }}
                         style={{ width: displayNameWidth }}
                       >
                         <button
@@ -3824,6 +4117,23 @@ export function DataPage({
                         <th
                           aria-label={t('data.project')}
                           className="relative border-b border-r border-slate-800 px-2.5 py-2"
+                          onContextMenu={(event) =>
+                            setContextMenu(
+                              menuFromPointer(
+                                event,
+                                t('data.project'),
+                                systemColumnContextItems('contextProject', t('data.project')),
+                              ),
+                            )
+                          }
+                          onKeyDown={(event) => {
+                            const menu = menuFromKeyboard(
+                              event,
+                              t('data.project'),
+                              systemColumnContextItems('contextProject', t('data.project')),
+                            );
+                            if (menu) setContextMenu(menu);
+                          }}
                           style={{ width: contextProjectWidth }}
                         >
                           {t('data.project')}
@@ -3852,6 +4162,11 @@ export function DataPage({
                           aria-label={field.name}
                           className={`relative border-b border-r border-slate-800 px-1.5 py-1 ${dragTarget?.fieldId === field.id ? (dragTarget.position === 'before' ? 'border-l-2 border-l-sky-400' : 'border-r-2 border-r-sky-400') : ''}`}
                           key={field.id}
+                          onContextMenu={(event) =>
+                            setContextMenu(
+                              menuFromPointer(event, field.name, columnContextItems(field)),
+                            )
+                          }
                           style={{ width: fieldWidths[field.id] ?? DEFAULT_FIELD_WIDTH }}
                           onDragOver={(event: ReactDragEvent<HTMLTableCellElement>) => {
                             if (!draggedFieldId || draggedFieldId === field.id) return;
@@ -3875,6 +4190,14 @@ export function DataPage({
                             );
                             setDraggedFieldId('');
                             setDragTarget(undefined);
+                          }}
+                          onKeyDown={(event) => {
+                            const menu = menuFromKeyboard(
+                              event,
+                              field.name,
+                              columnContextItems(field),
+                            );
+                            if (menu) setContextMenu(menu);
                           }}
                         >
                           <div className="flex min-w-0 items-center gap-1">
@@ -4043,6 +4366,23 @@ export function DataPage({
                       <th
                         aria-label={t('data.updated')}
                         className="relative border-b border-r border-slate-800 px-1.5 py-1"
+                        onContextMenu={(event) =>
+                          setContextMenu(
+                            menuFromPointer(
+                              event,
+                              t('data.updated'),
+                              systemColumnContextItems('updatedAt', t('data.updated')),
+                            ),
+                          )
+                        }
+                        onKeyDown={(event) => {
+                          const menu = menuFromKeyboard(
+                            event,
+                            t('data.updated'),
+                            systemColumnContextItems('updatedAt', t('data.updated')),
+                          );
+                          if (menu) setContextMenu(menu);
+                        }}
                         style={{ width: updatedAtWidth }}
                       >
                         <button
@@ -4088,6 +4428,8 @@ export function DataPage({
                       <tr
                         className={`${selectedRows.has(record.id) ? 'bg-sky-500/5' : 'bg-slate-950/30'} hover:bg-slate-900/40`}
                         key={record.id}
+                        onContextMenu={(event) => openRecordContextMenu(event, record)}
+                        onKeyDown={(event) => openRecordContextMenuFromKeyboard(event, record)}
                       >
                         <td className="border-b border-r border-slate-800 px-3 text-xs text-slate-600">
                           <span className="flex items-center gap-2">
@@ -4255,6 +4597,8 @@ export function DataPage({
                 <GalleryRecordsView
                   fields={visibleFields}
                   records={records.items}
+                  onContextMenu={openRecordContextMenu}
+                  onContextMenuKeyDown={openRecordContextMenuFromKeyboard}
                   onOpen={setSelectedRecord}
                 />
               )}
@@ -4266,6 +4610,8 @@ export function DataPage({
                       field={kanbanField}
                       groups={records.groups}
                       records={records.items}
+                      onContextMenu={openRecordContextMenu}
+                      onContextMenuKeyDown={openRecordContextMenuFromKeyboard}
                       onMove={(record, value) => saveGridCell(record, kanbanField, value)}
                       onOpen={setSelectedRecord}
                     />
@@ -4283,6 +4629,8 @@ export function DataPage({
                       field={calendarField}
                       month={calendarMonth}
                       records={records.items}
+                      onContextMenu={openRecordContextMenu}
+                      onContextMenuKeyDown={openRecordContextMenuFromKeyboard}
                       onMonthChange={(month) => {
                         setCalendarMonth(month);
                         setPage(1);
@@ -4549,6 +4897,7 @@ export function DataPage({
           </aside>
         </div>
       )}
+      <ContextMenu menu={contextMenu} onClose={() => setContextMenu(undefined)} />
     </>
   );
 }

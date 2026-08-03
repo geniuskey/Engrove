@@ -77,6 +77,15 @@ describe('VisualizationsPage record dashboard cards', () => {
 
     expect(await screen.findByText('Open issues')).toBeInTheDocument();
     expect(await screen.findByText('7')).toBeInTheDocument();
+    const card = screen.getByText('Open issues').closest('article');
+    expect(card).not.toBeNull();
+    fireEvent.contextMenu(card!, { clientX: 80, clientY: 100 });
+    expect(screen.getByRole('menu', { name: 'Open issues' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Open source table' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Duplicate card' })).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole('menuitem', { name: 'Copy card title' }), {
+      key: 'Escape',
+    });
     fireEvent.change(screen.getByPlaceholderText('Card title'), {
       target: { value: 'All issues' },
     });

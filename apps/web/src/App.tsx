@@ -19,15 +19,32 @@ import {
   useParams,
   useSearchParams,
 } from 'react-router';
-import { DataPage, RecordDetailPage, type WorkspaceDataContext } from './DataPage.js';
-import { FilesDatasetsPage } from './FilesDatasetsPage.js';
+import type { WorkspaceDataContext } from './DataPage.js';
 import { I18nProvider, useI18n } from './i18n.js';
 import { ServiceShell } from './ServiceSidebar.js';
-import { TasksPage } from './TasksPage.js';
+
+const DataPage = lazy(() =>
+  import('./DataPage.js').then((module) => ({ default: module.DataPage })),
+);
+const RecordDetailPage = lazy(() =>
+  import('./DataPage.js').then((module) => ({ default: module.RecordDetailPage })),
+);
+const FilesDatasetsPage = lazy(() =>
+  import('./FilesDatasetsPage.js').then((module) => ({ default: module.FilesDatasetsPage })),
+);
+const TasksPage = lazy(() =>
+  import('./TasksPage.js').then((module) => ({ default: module.TasksPage })),
+);
 
 const VisualizationsPage = lazy(() =>
   import('./VisualizationsPage.js').then((module) => ({ default: module.VisualizationsPage })),
 );
+
+function PageLoader({ children, label }: PropsWithChildren<{ label: string }>) {
+  return (
+    <Suspense fallback={<p className="text-slate-400">Loading {label}…</p>}>{children}</Suspense>
+  );
+}
 
 const apiBase = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000';
 type Theme = 'light' | 'dark';
@@ -691,7 +708,11 @@ function WorkspaceDataPage({ user }: { user: User }) {
         <div className="h-64 rounded-2xl border border-slate-800 bg-slate-900/35" />
       </div>
     );
-  return <DataPage user={user} workspaceData={context} />;
+  return (
+    <PageLoader label="workspace data">
+      <DataPage user={user} workspaceData={context} />
+    </PageLoader>
+  );
 }
 
 function WorkspaceIndexPage() {
@@ -1387,29 +1408,53 @@ function AppContent() {
         />
         <Route
           path="/workspaces/:workspaceId/projects/:projectId/data"
-          element={protectedElement(user && <DataPage user={user} />)}
+          element={protectedElement(
+            user && (
+              <PageLoader label="records">
+                <DataPage user={user} />
+              </PageLoader>
+            ),
+          )}
         />
         <Route
           path="/workspaces/:workspaceId/projects/:projectId/files-datasets"
-          element={protectedElement(user && <FilesDatasetsPage user={user} />)}
+          element={protectedElement(
+            user && (
+              <PageLoader label="files and datasets">
+                <FilesDatasetsPage user={user} />
+              </PageLoader>
+            ),
+          )}
         />
         <Route
           path="/workspaces/:workspaceId/projects/:projectId/visualizations"
           element={protectedElement(
             user && (
-              <Suspense fallback={<p className="text-slate-400">Loading chart studio…</p>}>
+              <PageLoader label="chart studio">
                 <VisualizationsPage user={user} />
-              </Suspense>
+              </PageLoader>
             ),
           )}
         />
         <Route
           path="/workspaces/:workspaceId/projects/:projectId/tasks"
-          element={protectedElement(user && <TasksPage user={user} />)}
+          element={protectedElement(
+            user && (
+              <PageLoader label="tasks">
+                <TasksPage user={user} />
+              </PageLoader>
+            ),
+          )}
         />
         <Route
           path="/workspaces/:workspaceId/projects/:projectId/data/:objectTypeId/records/:recordId"
-          element={protectedElement(user && <RecordDetailPage user={user} />)}
+          element={protectedElement(
+            user && (
+              <PageLoader label="record details">
+                <RecordDetailPage user={user} />
+              </PageLoader>
+            ),
+          )}
         />
         <Route path="/members" element={protectedElement(<MembersPage />)} />
         <Route path="/audit" element={protectedElement(<AuditPage />)} />

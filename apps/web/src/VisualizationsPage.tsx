@@ -12,14 +12,23 @@ import type { EChartsOption } from 'echarts';
 import {
   type CSSProperties,
   type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from 'react';
-import { Link, useParams } from 'react-router';
+import { Link, useNavigate, useParams } from 'react-router';
 import { allowed, api, ErrorText, inputClass, type User } from './App.js';
+import {
+  ContextMenu,
+  type ContextMenuItem,
+  type ContextMenuModel,
+  menuFromKeyboard,
+  menuFromPointer,
+} from './ContextMenu.js';
 
 echarts.use([
   BarChart,
@@ -624,6 +633,7 @@ function nextCardPlacement(cards: DashboardCard[], width: number, height: number
 
 export function VisualizationsPage({ user }: { user: User }) {
   const { workspaceId, projectId } = useParams();
+  const navigate = useNavigate();
   const base = `/workspaces/${workspaceId}/projects/${projectId}`;
   const [datasets, setDatasets] = useState<Dataset[]>([]),
     [charts, setCharts] = useState<Chart[]>([]),
@@ -642,6 +652,7 @@ export function VisualizationsPage({ user }: { user: User }) {
   const [recordChartType, setRecordChartType] = useState<'bar' | 'donut'>('bar');
   const [recordGroupFieldId, setRecordGroupFieldId] = useState('');
   const [recordListFieldIds, setRecordListFieldIds] = useState<string[]>([]);
+  const [contextMenu, setContextMenu] = useState<ContextMenuModel>();
   const refresh = useCallback(async () => {
     try {
       const [d, c, b, m] = await Promise.all([
@@ -1009,6 +1020,105 @@ export function VisualizationsPage({ user }: { user: User }) {
       }),
     );
   }
+  async function duplicateDashboardCard(card: DashboardCard) {
+    if (!dashboard) return;
+    const placement = nextCardPlacement(dashboard.cards, card.width, card.height);
+    await mutate(() =>
+      api(`${base}/dashboards/${dashboard.id}/revisions`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: dashboard.name,
+          description: dashboard.description,
+          changeNote: `Duplicated ${card.config.title ?? 'dashboard card'}`,
+          cards: [
+            ...dashboard.cards.map(dashboardCardInput),
+            {
+              ...dashboardCardInput(card),
+              ...placement,
+              position: Math.max(-1, ...dashboard.cards.map((item) => item.position)) + 1,
+            },
+          ],
+        }),
+      }),
+    );
+  }
+  async function copyDashboardValue(label: string, value: string) {
+    try {
+      if (!navigator.clipboard) throw new Error('Clipboard is unavailable.');
+      await navigator.clipboard.writeText(value);
+      setMessage(`${label} copied.`);
+    } catch {
+      setMessage('Clipboard access was denied by the browser.');
+    }
+  }
+  function dashboardCardContextItems(card: DashboardCard): ContextMenuItem[] {
+    const recordConfig = ['record_kpi', 'record_chart', 'record_list'].includes(card.card_type)
+      ? (card.config as RecordKpiConfig | RecordChartConfig | RecordListConfig)
+      : undefined;
+    return [
+      ...(recordConfig
+        ? [
+            {
+              label: 'Open source table',
+              icon: '↗',
+              onSelect: () =>
+                void navigate(`${base}/data?type=${recordConfig.source.objectTypeId}`),
+            } satisfies ContextMenuItem,
+          ]
+        : []),
+      {
+        label: 'Copy card title',
+        icon: '⧉',
+        onSelect: () =>
+          void copyDashboardValue('Card title', card.config.title ?? 'Dashboard card'),
+      },
+      ...(recordConfig
+        ? [
+            {
+              label: 'Copy source name',
+              icon: '#',
+              onSelect: () => void copyDashboardValue('Source name', recordConfig.source.tableName),
+            } satisfies ContextMenuItem,
+          ]
+        : []),
+      ...(allowed(user, 'dashboard.manage')
+        ? [
+            {
+              label: 'Duplicate card',
+              icon: '＋',
+              separatorBefore: true,
+              onSelect: () => void duplicateDashboardCard(card),
+            },
+            {
+              label: 'Remove card',
+              icon: '×',
+              tone: 'danger' as const,
+              onSelect: () => void removeDashboardCard(card.id),
+            },
+          ]
+        : []),
+    ];
+  }
+  function openDashboardCardMenu(event: ReactMouseEvent<HTMLElement>, card: DashboardCard) {
+    setContextMenu(
+      menuFromPointer(
+        event,
+        card.config.title ?? 'Dashboard card',
+        dashboardCardContextItems(card),
+      ),
+    );
+  }
+  function openDashboardCardMenuFromKeyboard(
+    event: ReactKeyboardEvent<HTMLElement>,
+    card: DashboardCard,
+  ) {
+    const menu = menuFromKeyboard(
+      event,
+      card.config.title ?? 'Dashboard card',
+      dashboardCardContextItems(card),
+    );
+    if (menu) setContextMenu(menu);
+  }
   const metricValue = (card: DashboardCard) =>
     (card.config as { metric?: string }).metric === 'total_samples'
       ? metrics?.total_samples
@@ -1026,7 +1136,8 @@ export function VisualizationsPage({ user }: { user: User }) {
         Charts &amp; dashboards
       </h1>
       <p className="mt-3 text-slate-400">
-        Every chart source and dashboard card is pinned to an immutable revision.
+        Every chart source and dashboard card is pinned to an immutable revision. Right-click a card
+        for source and layout actions.
       </p>
       <ErrorText>{message}</ErrorText>
       {allowed(user, 'dashboard.manage') && (
@@ -1309,6 +1420,8 @@ export function VisualizationsPage({ user }: { user: User }) {
               <article
                 className="dashboard-card relative rounded-xl border border-slate-800 bg-slate-900/60 p-4"
                 key={card.id}
+                onContextMenu={(event) => openDashboardCardMenu(event, card)}
+                onKeyDown={(event) => openDashboardCardMenuFromKeyboard(event, card)}
                 style={
                   {
                     '--dashboard-column': `${card.x + 1} / span ${card.width}`,
@@ -1316,6 +1429,7 @@ export function VisualizationsPage({ user }: { user: User }) {
                     '--dashboard-height': card.height,
                   } as CSSProperties
                 }
+                tabIndex={0}
               >
                 <div className="flex items-start justify-between gap-3">
                   <h3 className="text-sm font-medium text-slate-300">{card.config.title}</h3>
@@ -1360,6 +1474,7 @@ export function VisualizationsPage({ user }: { user: User }) {
           <p className="mt-5 text-slate-500">No dashboard has been published.</p>
         )}
       </section>
+      <ContextMenu menu={contextMenu} onClose={() => setContextMenu(undefined)} />
     </>
   );
 }
