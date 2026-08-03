@@ -208,7 +208,9 @@ describe('DataPage', () => {
             objectTypeId: '019fbcf9-e020-71da-935a-6a6a728b3792',
             name: createViewBody.name,
             viewType: createViewBody.viewType,
-            config: createViewBody.config,
+            config: Object.fromEntries(
+              Object.entries(createViewBody.config as Record<string, unknown>).reverse(),
+            ),
             rowVersion: 1,
             archivedAt: null,
             updatedAt: '2026-08-01T00:00:00.000Z',
@@ -605,6 +607,11 @@ describe('DataPage', () => {
         '?type=t1234567890abcd&view=v1234567890abcd',
       ),
     );
+
+    confirmMock.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'All records' }));
+    expect(confirmMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Review queue' }));
 
     const densitySelect = screen.getByRole('combobox', { name: 'Row density' });
     fireEvent.change(densitySelect, {

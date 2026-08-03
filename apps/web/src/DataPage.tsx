@@ -795,6 +795,23 @@ function canonicalTableIdentifier(identifier: string): string {
   return /^m[0-9a-z]{14}$/.test(identifier) ? `t${identifier.slice(1)}` : identifier;
 }
 
+function stableJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableJsonValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, item]) => item !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, stableJsonValue(item)]),
+    );
+  }
+  return value;
+}
+
+function viewConfigsEqual(left: RecordViewConfig, right: RecordViewConfig): boolean {
+  return JSON.stringify(stableJsonValue(left)) === JSON.stringify(stableJsonValue(right));
+}
+
 function isStructuredFieldType(type: FieldType): boolean {
   return type === 'spectral_data' || type === 'tabular_data';
 }
@@ -2922,7 +2939,7 @@ export function DataPage({
     workspaceMode,
   ]);
   const viewDirty = Boolean(
-    selectedView && JSON.stringify(currentViewConfig) !== JSON.stringify(selectedView.config),
+    selectedView && !viewConfigsEqual(currentViewConfig, selectedView.config),
   );
 
   useEffect(() => {
