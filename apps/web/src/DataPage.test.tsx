@@ -48,6 +48,7 @@ describe('DataPage', () => {
     const patchBodies: Array<Record<string, unknown>> = [];
     let createViewBody: Record<string, unknown> | undefined;
     let updateViewBody: Record<string, unknown> | undefined;
+    let schemaUpdateBody: Record<string, unknown> | undefined;
     let inlineCreateBody: Record<string, unknown> | undefined;
     let createdViewCount = 0;
     const recordQueryBodies: Array<Record<string, unknown>> = [];
@@ -117,6 +118,22 @@ describe('DataPage', () => {
               projectionStatus: 'ready',
             },
           ],
+        });
+      }
+      if (url.endsWith('/fields/019fbcf9-e020-71da-935a-6a6a728b3794')) {
+        schemaUpdateBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return json({
+          id: '019fbcf9-e020-71da-935a-6a6a728b3794',
+          objectTypeId: '019fbcf9-e020-71da-935a-6a6a728b3792',
+          name: schemaUpdateBody.name,
+          key: 'serial',
+          description: schemaUpdateBody.description,
+          fieldType: 'decimal',
+          required: schemaUpdateBody.required,
+          unique: schemaUpdateBody.unique,
+          position: schemaUpdateBody.position,
+          config: schemaUpdateBody.config,
+          projectionStatus: 'ready',
         });
       }
       if (url.endsWith('/views')) {
@@ -245,6 +262,48 @@ describe('DataPage', () => {
     expect(screen.getByRole('button', { name: 'Export CSV' })).toHaveClass('engrove-button');
     expect(screen.getByRole('button', { name: 'New record' })).toHaveClass('engrove-button');
     expect(screen.getByRole('navigation', { name: 'Data navigation' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Schema' }));
+    expect(screen.getByRole('heading', { name: 'Schema editor' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Edit Serial' })).toBeInTheDocument();
+    expect(screen.getByText('Index ready')).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search fields' }), {
+      target: { value: 'state' },
+    });
+    expect(screen.queryByRole('button', { name: 'Edit field Serial' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit field State' })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search fields' }), {
+      target: { value: '' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add field' }));
+    expect(screen.getByRole('heading', { name: 'Add a field' })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Field name' }), {
+      target: { value: 'Inspection status' },
+    });
+    expect(screen.getByRole('textbox', { name: 'Stable field key' })).toHaveValue(
+      'inspection-status',
+    );
+    fireEvent.change(screen.getByRole('combobox', { name: 'Field type' }), {
+      target: { value: 'single_select' },
+    });
+    expect(screen.getByRole('textbox', { name: 'Select options' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit field Serial' }));
+    expect(screen.getByRole('heading', { name: 'Edit Serial' })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Field description' }), {
+      target: { value: 'A durable sample identifier.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() =>
+      expect(schemaUpdateBody).toEqual({
+        name: 'Serial',
+        description: 'A durable sample identifier.',
+        required: true,
+        unique: true,
+        position: 0,
+        config: {},
+      }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Close schema editor' }));
+    expect(screen.queryByRole('heading', { name: 'Schema editor' })).not.toBeInTheDocument();
     const moreTableActions = screen.getByText('⋯').closest('details');
     expect(moreTableActions).not.toHaveAttribute('open');
     fireEvent.click(screen.getByText('⋯'));

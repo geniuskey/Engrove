@@ -451,6 +451,139 @@ const fieldTypes: FieldType[] = [
   'dataset',
 ];
 
+const fieldTypeMeta: Record<
+  FieldType,
+  {
+    label: string;
+    description: string;
+    icon: string;
+    group: 'Basic' | 'Choice' | 'Linked' | 'Engineering';
+  }
+> = {
+  text: {
+    label: 'Text',
+    description: 'Short names, codes, and labels',
+    icon: 'Aa',
+    group: 'Basic',
+  },
+  long_text: {
+    label: 'Long text',
+    description: 'Notes and multi-line descriptions',
+    icon: '¶',
+    group: 'Basic',
+  },
+  integer: { label: 'Integer', description: 'Whole numbers', icon: '#', group: 'Basic' },
+  decimal: { label: 'Decimal', description: 'Numbers with precision', icon: '.0', group: 'Basic' },
+  boolean: { label: 'Checkbox', description: 'Yes or no values', icon: '✓', group: 'Basic' },
+  date: { label: 'Date', description: 'Calendar dates', icon: '◷', group: 'Basic' },
+  datetime: { label: 'Date & time', description: 'Timestamped events', icon: '◴', group: 'Basic' },
+  single_select: {
+    label: 'Single select',
+    description: 'One option from a controlled list',
+    icon: '▾',
+    group: 'Choice',
+  },
+  multi_select: {
+    label: 'Multi select',
+    description: 'Multiple controlled labels',
+    icon: '≡',
+    group: 'Choice',
+  },
+  user: { label: 'User', description: 'Organization member reference', icon: '@', group: 'Linked' },
+  relation: {
+    label: 'Relation',
+    description: 'Records from another table',
+    icon: '↗',
+    group: 'Linked',
+  },
+  file: { label: 'File', description: 'Uploaded file reference', icon: '⌑', group: 'Linked' },
+  dataset: {
+    label: 'Dataset',
+    description: 'Processed dataset reference',
+    icon: '▦',
+    group: 'Linked',
+  },
+  quantity: {
+    label: 'Quantity',
+    description: 'A value with compatible units',
+    icon: 'u',
+    group: 'Engineering',
+  },
+  measurement: {
+    label: 'Measurement',
+    description: 'Traceable measured result',
+    icon: 'μ',
+    group: 'Engineering',
+  },
+  range: {
+    label: 'Range',
+    description: 'Lower and upper engineering bounds',
+    icon: '↔',
+    group: 'Engineering',
+  },
+};
+
+function schemaFieldKey(name: string): string {
+  return name
+    .normalize('NFKD')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+}
+
+function fieldSupportsUnique(type: FieldType): boolean {
+  return [
+    'text',
+    'long_text',
+    'integer',
+    'decimal',
+    'date',
+    'datetime',
+    'single_select',
+    'user',
+    'quantity',
+  ].includes(type);
+}
+
+function selectOptionsFromText(value: string): Array<{ key: string; label: string }> {
+  return value
+    .split(/\n|,/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line, index) => {
+      const separator = line.indexOf(':');
+      const explicitKey = separator > 0 ? line.slice(0, separator).trim() : '';
+      const label = separator > 0 ? line.slice(separator + 1).trim() : line;
+      return { key: schemaFieldKey(explicitKey || label) || `option-${index + 1}`, label };
+    });
+}
+
+function schemaFieldConfig(type: FieldType, data: FormData): Record<string, unknown> {
+  if (type === 'single_select' || type === 'multi_select') {
+    return { options: selectOptionsFromText(String(data.get('options') ?? '')) };
+  }
+  if (type === 'relation') {
+    return {
+      targetObjectTypeId: data.get('targetObjectTypeId'),
+      multiple: data.get('multiple') === 'on',
+    };
+  }
+  if (['quantity', 'measurement', 'range'].includes(type)) {
+    return {
+      dimension: data.get('dimension'),
+      canonicalUnit: data.get('canonicalUnit'),
+      allowedUnits: String(data.get('allowedUnits') ?? '')
+        .split(',')
+        .map((unit) => unit.trim())
+        .filter(Boolean),
+      displayPrecision: Number(data.get('displayPrecision') ?? 3),
+    };
+  }
+  return {};
+}
+
 function projectPath(workspaceId: string, projectId: string): string {
   return `/workspaces/${workspaceId}/projects/${projectId}`;
 }
@@ -2015,6 +2148,13 @@ export function DataPage({
   const [selectedRecord, setSelectedRecord] = useState<DynamicRecord>();
   const [bulkBusy, setBulkBusy] = useState(false);
   const [showSchema, setShowSchema] = useState(false);
+  const [schemaSearch, setSchemaSearch] = useState('');
+  const [schemaSelection, setSchemaSelection] = useState<'new' | string>('new');
+  const [schemaFieldType, setSchemaFieldType] = useState<FieldType>('text');
+  const [schemaFieldName, setSchemaFieldName] = useState('');
+  const [schemaFieldKeyValue, setSchemaFieldKeyValue] = useState('');
+  const [schemaKeyEdited, setSchemaKeyEdited] = useState(false);
+  const [schemaBusy, setSchemaBusy] = useState(false);
   const [showNewRecord, setShowNewRecord] = useState(false);
   const [showInlineRecord, setShowInlineRecord] = useState(false);
   const [typesLoading, setTypesLoading] = useState(true);
@@ -2060,6 +2200,17 @@ export function DataPage({
       );
     });
   }, [fieldOrderIds, fields]);
+  const filteredSchemaFields = useMemo(() => {
+    const query = schemaSearch.trim().toLowerCase();
+    if (!query) return orderedFields;
+    return orderedFields.filter(
+      (field) =>
+        field.name.toLowerCase().includes(query) ||
+        field.key.toLowerCase().includes(query) ||
+        fieldTypeMeta[field.fieldType].label.toLowerCase().includes(query),
+    );
+  }, [orderedFields, schemaSearch]);
+  const selectedSchemaField = fields.find((field) => field.id === schemaSelection);
   const visibleFields = useMemo(
     () => orderedFields.filter((field) => !hiddenFieldIds.has(field.id)),
     [hiddenFieldIds, orderedFields],
@@ -2583,38 +2734,28 @@ export function DataPage({
     }
   }
 
+  function beginNewSchemaField() {
+    setSchemaSelection('new');
+    setSchemaFieldName('');
+    setSchemaFieldKeyValue('');
+    setSchemaKeyEdited(false);
+    setSchemaFieldType('text');
+  }
+
   async function createField(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
     const type = String(data.get('fieldType')) as FieldType;
-    const config: Record<string, unknown> = {};
-    if (type === 'single_select' || type === 'multi_select') {
-      config.options = String(data.get('options') ?? '')
-        .split(',')
-        .map((label) => label.trim())
-        .filter(Boolean)
-        .map((label) => ({ key: label.toLowerCase().replace(/[^a-z0-9]+/g, '-'), label }));
-    }
-    if (type === 'relation') {
-      config.targetObjectTypeId = data.get('targetObjectTypeId');
-      config.multiple = data.get('multiple') === 'on';
-    }
-    if (['quantity', 'measurement', 'range'].includes(type)) {
-      config.dimension = data.get('dimension');
-      config.canonicalUnit = data.get('canonicalUnit');
-      config.allowedUnits = String(data.get('allowedUnits') ?? '')
-        .split(',')
-        .map((unit) => unit.trim())
-        .filter(Boolean);
-      config.displayPrecision = Number(data.get('displayPrecision') ?? 3);
-    }
+    const config = schemaFieldConfig(type, data);
+    setSchemaBusy(true);
     try {
-      await api(`${base}/object-types/${selectedId}/fields`, {
+      const created = await api<FieldDefinition>(`${base}/object-types/${selectedId}/fields`, {
         method: 'POST',
         body: JSON.stringify({
           name: data.get('name'),
           key: data.get('key'),
+          description: data.get('description'),
           fieldType: type,
           required: data.get('required') === 'on',
           unique: data.get('unique') === 'on',
@@ -2624,9 +2765,57 @@ export function DataPage({
       });
       form.reset();
       await Promise.all([loadDataContext(), loadRecords()]);
+      setSchemaSelection(created.id);
+      setSchemaFieldName('');
+      setSchemaFieldKeyValue('');
+      setSchemaKeyEdited(false);
+      setSchemaFieldType('text');
+      setMessageTone('success');
+      setMessage(`${created.name} field created.`);
     } catch (cause) {
       setMessageTone('error');
       setMessage(cause instanceof Error ? cause.message : 'Field creation failed.');
+    } finally {
+      setSchemaBusy(false);
+    }
+  }
+
+  async function updateField(event: FormEvent<HTMLFormElement>, field: FieldDefinition) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    setSchemaBusy(true);
+    try {
+      const updated = await api<FieldDefinition>(
+        `${base}/object-types/${selectedId}/fields/${field.id}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
+            name: data.get('name'),
+            description: data.get('description'),
+            required: data.get('required') === 'on',
+            unique: data.get('unique') === 'on',
+            position: Number(data.get('position') ?? field.position),
+            config: [
+              'single_select',
+              'multi_select',
+              'relation',
+              'quantity',
+              'measurement',
+              'range',
+            ].includes(field.fieldType)
+              ? schemaFieldConfig(field.fieldType, data)
+              : field.config,
+          }),
+        },
+      );
+      await Promise.all([loadDataContext(), loadRecords()]);
+      setMessageTone('success');
+      setMessage(`${updated.name} field updated.`);
+    } catch (cause) {
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : 'Field update failed.');
+    } finally {
+      setSchemaBusy(false);
     }
   }
 
@@ -3909,7 +4098,15 @@ export function DataPage({
               </div>
               <div className="flex flex-wrap gap-2">
                 {allowed(user, 'schema.manage') && (
-                  <Button variant="quiet" onClick={() => setShowSchema((value) => !value)}>
+                  <Button
+                    aria-expanded={showSchema}
+                    variant="quiet"
+                    onClick={() => {
+                      const next = !showSchema;
+                      setShowSchema(next);
+                      if (next) setSchemaSelection(fields[0]?.id ?? 'new');
+                    }}
+                  >
                     {t('data.schema')}
                   </Button>
                 )}
@@ -3975,80 +4172,634 @@ export function DataPage({
             </div>
 
             {showSchema && allowed(user, 'schema.manage') && (
-              <div className="mt-2 rounded-lg border border-slate-700 bg-slate-900 p-3">
-                <h3 className="text-lg font-semibold">Schema editor</h3>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {fields.map((field) => (
-                    <span
-                      className="rounded-full border border-slate-700 px-3 py-1 text-xs"
-                      key={field.id}
-                    >
-                      {field.name} · {field.fieldType}
-                      {field.unique ? ' · unique' : ''}
-                    </span>
-                  ))}
-                </div>
-                <form
-                  className="mt-5 grid gap-3 md:grid-cols-3"
-                  onSubmit={(event) => void createField(event)}
-                >
-                  <input className={inputClass} name="name" placeholder="Field name" required />
-                  <input className={inputClass} name="key" placeholder="field-key" required />
-                  <select className={inputClass} name="fieldType">
-                    {availableFieldTypes.map((type) => (
-                      <option key={type}>{type}</option>
-                    ))}
-                  </select>
-                  <input
-                    className={inputClass}
-                    name="options"
-                    placeholder="Select options, comma separated"
-                  />
-                  <select className={inputClass} name="targetObjectTypeId" defaultValue="">
-                    <option value="">Relation target…</option>
-                    {objectTypes.map((objectType) => (
-                      <option key={objectType.id} value={objectType.id}>
-                        {objectType.name}
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    className={inputClass}
-                    name="dimension"
-                    placeholder="Dimension (for example length)"
-                  />
-                  <input
-                    className={inputClass}
-                    name="canonicalUnit"
-                    placeholder="Canonical unit (m)"
-                  />
-                  <input
-                    className={inputClass}
-                    name="allowedUnits"
-                    placeholder="Allowed units: m, mm, um"
-                  />
-                  <input
-                    className={inputClass}
-                    name="displayPrecision"
-                    type="number"
-                    min="0"
-                    max="34"
-                    defaultValue="3"
-                  />
-                  <div className="flex items-center gap-4 px-2 text-sm text-slate-300">
-                    <label>
-                      <input name="required" type="checkbox" /> Required
-                    </label>
-                    <label>
-                      <input name="unique" type="checkbox" /> Unique
-                    </label>
-                    <label>
-                      <input name="multiple" type="checkbox" /> Multiple
-                    </label>
+              <section
+                aria-labelledby="schema-editor-title"
+                className="mt-2 overflow-hidden rounded-xl border border-slate-700 bg-slate-950/80 shadow-xl shadow-black/15"
+              >
+                <header className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 bg-slate-900/70 px-4 py-3">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-sm font-semibold text-slate-100" id="schema-editor-title">
+                        Schema editor
+                      </h3>
+                      <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-400">
+                        {fields.length} {fields.length === 1 ? 'field' : 'fields'}
+                      </span>
+                      {fields.some((field) => field.projectionStatus !== 'ready') && (
+                        <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-300">
+                          {fields.filter((field) => field.projectionStatus !== 'ready').length}{' '}
+                          needs attention
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Manage the structure and validation rules for {selected.pluralName}.
+                    </p>
                   </div>
-                  <Button type="submit">Add field</Button>
-                </form>
-              </div>
+                  <button
+                    aria-label="Close schema editor"
+                    className="grid size-7 place-items-center rounded-md text-sm text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+                    onClick={() => setShowSchema(false)}
+                    type="button"
+                  >
+                    ×
+                  </button>
+                </header>
+
+                <div className="grid min-h-[30rem] lg:grid-cols-[minmax(16rem,0.8fr)_minmax(24rem,1.2fr)]">
+                  <aside className="border-b border-slate-800 bg-slate-900/35 p-3 lg:border-b-0 lg:border-r">
+                    <div className="flex gap-2">
+                      <div className="relative min-w-0 flex-1">
+                        <span
+                          aria-hidden="true"
+                          className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-xs text-slate-600"
+                        >
+                          ⌕
+                        </span>
+                        <input
+                          aria-label="Search fields"
+                          className={`${inputClass} pl-7`}
+                          placeholder="Search fields"
+                          type="search"
+                          value={schemaSearch}
+                          onChange={(event) => setSchemaSearch(event.target.value)}
+                        />
+                      </div>
+                      <Button
+                        aria-label="Add field"
+                        className="shrink-0"
+                        variant="quiet"
+                        onClick={beginNewSchemaField}
+                        type="button"
+                      >
+                        + Add
+                      </Button>
+                    </div>
+
+                    <div className="mt-3 max-h-[27rem] space-y-1 overflow-y-auto pr-1">
+                      {filteredSchemaFields.map((field) => {
+                        const meta = fieldTypeMeta[field.fieldType];
+                        const active = schemaSelection === field.id;
+                        return (
+                          <button
+                            aria-label={`Edit field ${field.name}`}
+                            className={`group flex w-full items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors ${
+                              active
+                                ? 'border-sky-400/30 bg-sky-400/10'
+                                : 'border-transparent hover:border-slate-800 hover:bg-slate-900'
+                            }`}
+                            key={field.id}
+                            onClick={() => setSchemaSelection(field.id)}
+                            type="button"
+                          >
+                            <span
+                              aria-hidden="true"
+                              className={`grid size-8 shrink-0 place-items-center rounded-lg border font-mono text-[11px] ${
+                                active
+                                  ? 'border-sky-400/25 bg-sky-400/10 text-sky-300'
+                                  : 'border-slate-800 bg-slate-950/50 text-slate-500'
+                              }`}
+                            >
+                              {meta.icon}
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="flex items-center gap-1.5">
+                                <span className="truncate text-xs font-medium text-slate-200">
+                                  {field.name}
+                                </span>
+                                {field.required && (
+                                  <span className="text-[9px] font-semibold uppercase text-amber-300">
+                                    Required
+                                  </span>
+                                )}
+                              </span>
+                              <span className="mt-0.5 block truncate font-mono text-[10px] text-slate-600">
+                                {field.key} · {meta.label}
+                              </span>
+                            </span>
+                            <span
+                              aria-label={`Projection ${field.projectionStatus}`}
+                              className={`mt-1 size-1.5 shrink-0 rounded-full ${
+                                field.projectionStatus === 'ready'
+                                  ? 'bg-emerald-400'
+                                  : field.projectionStatus === 'failed'
+                                    ? 'bg-rose-400'
+                                    : 'animate-pulse bg-amber-400'
+                              }`}
+                              title={`Projection ${field.projectionStatus}`}
+                            />
+                          </button>
+                        );
+                      })}
+                      {filteredSchemaFields.length === 0 && (
+                        <div className="rounded-lg border border-dashed border-slate-800 px-4 py-8 text-center">
+                          <p className="text-xs font-medium text-slate-400">No matching fields</p>
+                          <p className="mt-1 text-[11px] text-slate-600">
+                            Try a field name, key, or type.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </aside>
+
+                  <div className="p-4 sm:p-5">
+                    {schemaSelection === 'new' || !selectedSchemaField ? (
+                      <form onSubmit={(event) => void createField(event)}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-[10px] font-semibold uppercase tracking-widest text-sky-400">
+                              New field
+                            </p>
+                            <h4 className="mt-1 text-base font-semibold text-slate-100">
+                              Add a field
+                            </h4>
+                            <p className="mt-1 max-w-xl text-xs leading-relaxed text-slate-500">
+                              Choose a data type first. Only the settings relevant to that type will
+                              appear.
+                            </p>
+                          </div>
+                          <span
+                            aria-hidden="true"
+                            className="grid size-10 shrink-0 place-items-center rounded-xl border border-sky-400/20 bg-sky-400/10 font-mono text-sm text-sky-300"
+                          >
+                            {fieldTypeMeta[schemaFieldType].icon}
+                          </span>
+                        </div>
+
+                        <div className="mt-5 grid gap-4 sm:grid-cols-2">
+                          <label className="text-xs font-medium text-slate-300">
+                            Field name
+                            <input
+                              aria-label="Field name"
+                              autoFocus
+                              className={`${inputClass} mt-1.5`}
+                              maxLength={120}
+                              name="name"
+                              placeholder="e.g. Inspection status"
+                              required
+                              value={schemaFieldName}
+                              onChange={(event) => {
+                                const value = event.target.value;
+                                setSchemaFieldName(value);
+                                if (!schemaKeyEdited) {
+                                  setSchemaFieldKeyValue(
+                                    schemaFieldKey(value) || `field-${fields.length + 1}`,
+                                  );
+                                }
+                              }}
+                            />
+                          </label>
+                          <label className="text-xs font-medium text-slate-300">
+                            Stable field key
+                            <input
+                              aria-label="Stable field key"
+                              className={`${inputClass} mt-1.5 font-mono`}
+                              maxLength={64}
+                              name="key"
+                              pattern="[a-z][a-z0-9-]{1,63}"
+                              placeholder="inspection-status"
+                              required
+                              value={schemaFieldKeyValue}
+                              onChange={(event) => {
+                                setSchemaKeyEdited(true);
+                                setSchemaFieldKeyValue(event.target.value.toLowerCase());
+                              }}
+                            />
+                            <span className="mt-1 block text-[10px] font-normal text-slate-600">
+                              Used by imports and API integrations; it cannot change later.
+                            </span>
+                          </label>
+                          <label className="text-xs font-medium text-slate-300 sm:col-span-2">
+                            Field type
+                            <select
+                              aria-label="Field type"
+                              className={`${inputClass} mt-1.5`}
+                              name="fieldType"
+                              value={schemaFieldType}
+                              onChange={(event) =>
+                                setSchemaFieldType(event.target.value as FieldType)
+                              }
+                            >
+                              {(['Basic', 'Choice', 'Linked', 'Engineering'] as const).map(
+                                (group) => {
+                                  const groupTypes = availableFieldTypes.filter(
+                                    (type) => fieldTypeMeta[type].group === group,
+                                  );
+                                  if (!groupTypes.length) return null;
+                                  return (
+                                    <optgroup key={group} label={group}>
+                                      {groupTypes.map((type) => (
+                                        <option key={type} value={type}>
+                                          {fieldTypeMeta[type].label} —{' '}
+                                          {fieldTypeMeta[type].description}
+                                        </option>
+                                      ))}
+                                    </optgroup>
+                                  );
+                                },
+                              )}
+                            </select>
+                          </label>
+                          <label className="text-xs font-medium text-slate-300 sm:col-span-2">
+                            Description <span className="font-normal text-slate-600">Optional</span>
+                            <textarea
+                              aria-label="Field description"
+                              className={`${inputClass} mt-1.5 min-h-20 resize-y`}
+                              maxLength={500}
+                              name="description"
+                              placeholder="Explain what belongs in this field."
+                            />
+                          </label>
+
+                          {['single_select', 'multi_select'].includes(schemaFieldType) && (
+                            <label className="text-xs font-medium text-slate-300 sm:col-span-2">
+                              Options
+                              <textarea
+                                aria-label="Select options"
+                                className={`${inputClass} mt-1.5 min-h-28 resize-y font-mono`}
+                                name="options"
+                                placeholder={'ready: Ready\nblocked: Blocked\napproved: Approved'}
+                                required
+                              />
+                              <span className="mt-1 block text-[10px] font-normal text-slate-600">
+                                One option per line. Use “stable-key: Display label” to preserve API
+                                values.
+                              </span>
+                            </label>
+                          )}
+
+                          {schemaFieldType === 'relation' && (
+                            <label className="text-xs font-medium text-slate-300 sm:col-span-2">
+                              Related table
+                              <select
+                                aria-label="Related table"
+                                className={`${inputClass} mt-1.5`}
+                                defaultValue=""
+                                name="targetObjectTypeId"
+                                required
+                              >
+                                <option disabled value="">
+                                  Select a table…
+                                </option>
+                                {objectTypes.map((objectType) => (
+                                  <option key={objectType.id} value={objectType.id}>
+                                    {objectType.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          )}
+
+                          {['quantity', 'measurement', 'range'].includes(schemaFieldType) && (
+                            <>
+                              <label className="text-xs font-medium text-slate-300">
+                                Dimension
+                                <input
+                                  aria-label="Engineering dimension"
+                                  className={`${inputClass} mt-1.5`}
+                                  name="dimension"
+                                  placeholder="length"
+                                  required
+                                />
+                              </label>
+                              <label className="text-xs font-medium text-slate-300">
+                                Canonical unit
+                                <input
+                                  aria-label="Canonical unit"
+                                  className={`${inputClass} mt-1.5 font-mono`}
+                                  name="canonicalUnit"
+                                  placeholder="m"
+                                  required
+                                />
+                              </label>
+                              <label className="text-xs font-medium text-slate-300 sm:col-span-2">
+                                Allowed units
+                                <input
+                                  aria-label="Allowed units"
+                                  className={`${inputClass} mt-1.5 font-mono`}
+                                  name="allowedUnits"
+                                  placeholder="m, mm, μm"
+                                  required
+                                />
+                              </label>
+                              <label className="text-xs font-medium text-slate-300">
+                                Display precision
+                                <input
+                                  aria-label="Display precision"
+                                  className={`${inputClass} mt-1.5`}
+                                  defaultValue="3"
+                                  max="34"
+                                  min="0"
+                                  name="displayPrecision"
+                                  type="number"
+                                />
+                              </label>
+                            </>
+                          )}
+                        </div>
+
+                        <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-3 rounded-lg border border-slate-800 bg-slate-900/45 px-3 py-2.5 text-xs text-slate-300">
+                          <label className="flex cursor-pointer items-center gap-2">
+                            <input
+                              className="accent-sky-500"
+                              disabled={records.total > 0}
+                              name="required"
+                              title={
+                                records.total > 0
+                                  ? 'Add the field first, backfill existing records, then make it required.'
+                                  : undefined
+                              }
+                              type="checkbox"
+                            />
+                            Required value
+                          </label>
+                          {fieldSupportsUnique(schemaFieldType) && (
+                            <label className="flex cursor-pointer items-center gap-2">
+                              <input className="accent-sky-500" name="unique" type="checkbox" />
+                              Unique values
+                            </label>
+                          )}
+                          {schemaFieldType === 'relation' && (
+                            <label className="flex cursor-pointer items-center gap-2">
+                              <input className="accent-sky-500" name="multiple" type="checkbox" />
+                              Allow multiple records
+                            </label>
+                          )}
+                          {records.total > 0 && (
+                            <span className="text-[10px] text-slate-600">
+                              Required becomes available after existing records are backfilled.
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="mt-5 flex items-center justify-end gap-2 border-t border-slate-800 pt-4">
+                          <button
+                            className="rounded-md px-3 py-2 text-xs text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+                            onClick={() => setShowSchema(false)}
+                            type="button"
+                          >
+                            Cancel
+                          </button>
+                          <Button
+                            disabled={
+                              schemaBusy || !schemaFieldName.trim() || !schemaFieldKeyValue.trim()
+                            }
+                            type="submit"
+                          >
+                            {schemaBusy ? 'Adding…' : 'Add field'}
+                          </Button>
+                        </div>
+                      </form>
+                    ) : (
+                      <form
+                        key={selectedSchemaField.id}
+                        onSubmit={(event) => void updateField(event, selectedSchemaField)}
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="text-[10px] font-semibold uppercase tracking-widest text-sky-400">
+                              {fieldTypeMeta[selectedSchemaField.fieldType].label} field
+                            </p>
+                            <h4 className="mt-1 text-base font-semibold text-slate-100">
+                              Edit {selectedSchemaField.name}
+                            </h4>
+                            <p className="mt-1 max-w-xl text-xs leading-relaxed text-slate-500">
+                              Update labels and validation without breaking existing API references.
+                            </p>
+                          </div>
+                          <span
+                            className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${
+                              selectedSchemaField.projectionStatus === 'ready'
+                                ? 'bg-emerald-500/10 text-emerald-300'
+                                : selectedSchemaField.projectionStatus === 'failed'
+                                  ? 'bg-rose-500/10 text-rose-300'
+                                  : 'bg-amber-500/10 text-amber-300'
+                            }`}
+                          >
+                            {selectedSchemaField.projectionStatus === 'ready'
+                              ? 'Index ready'
+                              : selectedSchemaField.projectionStatus === 'failed'
+                                ? 'Index failed'
+                                : 'Index rebuilding'}
+                          </span>
+                        </div>
+
+                        <div className="mt-4 grid grid-cols-2 gap-3 rounded-lg border border-slate-800 bg-slate-900/40 p-3">
+                          <div>
+                            <p className="text-[10px] font-medium uppercase tracking-wide text-slate-600">
+                              Type
+                            </p>
+                            <p className="mt-1 text-xs text-slate-300">
+                              {fieldTypeMeta[selectedSchemaField.fieldType].label}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-[10px] font-medium uppercase tracking-wide text-slate-600">
+                              Stable key
+                            </p>
+                            <p className="mt-1 truncate font-mono text-xs text-slate-300">
+                              {selectedSchemaField.key}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="mt-5 grid gap-4 sm:grid-cols-2">
+                          <label className="text-xs font-medium text-slate-300 sm:col-span-2">
+                            Field name
+                            <input
+                              aria-label="Field name"
+                              className={`${inputClass} mt-1.5`}
+                              defaultValue={selectedSchemaField.name}
+                              maxLength={120}
+                              name="name"
+                              required
+                            />
+                          </label>
+                          <label className="text-xs font-medium text-slate-300 sm:col-span-2">
+                            Description <span className="font-normal text-slate-600">Optional</span>
+                            <textarea
+                              aria-label="Field description"
+                              className={`${inputClass} mt-1.5 min-h-20 resize-y`}
+                              defaultValue={selectedSchemaField.description}
+                              maxLength={500}
+                              name="description"
+                              placeholder="Explain what belongs in this field."
+                            />
+                          </label>
+
+                          {['single_select', 'multi_select'].includes(
+                            selectedSchemaField.fieldType,
+                          ) && (
+                            <label className="text-xs font-medium text-slate-300 sm:col-span-2">
+                              Options
+                              <textarea
+                                aria-label="Select options"
+                                className={`${inputClass} mt-1.5 min-h-28 resize-y font-mono`}
+                                defaultValue={(selectedSchemaField.config.options ?? [])
+                                  .map((option) => `${option.key}: ${option.label}`)
+                                  .join('\n')}
+                                name="options"
+                                required
+                              />
+                              <span className="mt-1 block text-[10px] font-normal text-slate-600">
+                                Changing stable option keys can invalidate existing values. Prefer
+                                editing labels only.
+                              </span>
+                            </label>
+                          )}
+
+                          {selectedSchemaField.fieldType === 'relation' && (
+                            <>
+                              <label className="text-xs font-medium text-slate-300 sm:col-span-2">
+                                Related table
+                                <select
+                                  aria-label="Related table"
+                                  aria-readonly="true"
+                                  className={`${inputClass} mt-1.5 opacity-70`}
+                                  disabled
+                                  value={selectedSchemaField.config.targetObjectTypeId ?? ''}
+                                >
+                                  {objectTypes.map((objectType) => (
+                                    <option key={objectType.id} value={objectType.id}>
+                                      {objectType.name}
+                                    </option>
+                                  ))}
+                                </select>
+                                <input
+                                  name="targetObjectTypeId"
+                                  type="hidden"
+                                  value={selectedSchemaField.config.targetObjectTypeId ?? ''}
+                                />
+                                <span className="mt-1 block text-[10px] font-normal text-slate-600">
+                                  The target is locked after creation to protect linked records.
+                                </span>
+                              </label>
+                            </>
+                          )}
+
+                          {['quantity', 'measurement', 'range'].includes(
+                            selectedSchemaField.fieldType,
+                          ) && (
+                            <>
+                              <label className="text-xs font-medium text-slate-300">
+                                Dimension
+                                <input
+                                  aria-label="Engineering dimension"
+                                  className={`${inputClass} mt-1.5 opacity-70`}
+                                  defaultValue={selectedSchemaField.config.dimension}
+                                  name="dimension"
+                                  readOnly
+                                />
+                              </label>
+                              <label className="text-xs font-medium text-slate-300">
+                                Canonical unit
+                                <input
+                                  aria-label="Canonical unit"
+                                  className={`${inputClass} mt-1.5 font-mono opacity-70`}
+                                  defaultValue={selectedSchemaField.config.canonicalUnit}
+                                  name="canonicalUnit"
+                                  readOnly
+                                />
+                              </label>
+                              <label className="text-xs font-medium text-slate-300 sm:col-span-2">
+                                Allowed units
+                                <input
+                                  aria-label="Allowed units"
+                                  className={`${inputClass} mt-1.5 font-mono`}
+                                  defaultValue={selectedSchemaField.config.allowedUnits?.join(', ')}
+                                  name="allowedUnits"
+                                  required
+                                />
+                              </label>
+                              <label className="text-xs font-medium text-slate-300">
+                                Display precision
+                                <input
+                                  aria-label="Display precision"
+                                  className={`${inputClass} mt-1.5`}
+                                  defaultValue={selectedSchemaField.config.displayPrecision ?? 3}
+                                  max="34"
+                                  min="0"
+                                  name="displayPrecision"
+                                  type="number"
+                                />
+                              </label>
+                            </>
+                          )}
+
+                          <label className="text-xs font-medium text-slate-300">
+                            Order
+                            <input
+                              aria-label="Field order"
+                              className={`${inputClass} mt-1.5`}
+                              defaultValue={selectedSchemaField.position}
+                              min="0"
+                              name="position"
+                              type="number"
+                            />
+                          </label>
+                        </div>
+
+                        <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-3 rounded-lg border border-slate-800 bg-slate-900/45 px-3 py-2.5 text-xs text-slate-300">
+                          <label className="flex cursor-pointer items-center gap-2">
+                            <input
+                              className="accent-sky-500"
+                              defaultChecked={selectedSchemaField.required}
+                              name="required"
+                              type="checkbox"
+                            />
+                            Required value
+                          </label>
+                          {fieldSupportsUnique(selectedSchemaField.fieldType) && (
+                            <label className="flex cursor-pointer items-center gap-2">
+                              <input
+                                className="accent-sky-500"
+                                defaultChecked={selectedSchemaField.unique}
+                                name="unique"
+                                type="checkbox"
+                              />
+                              Unique values
+                            </label>
+                          )}
+                          {selectedSchemaField.fieldType === 'relation' && (
+                            <label className="flex cursor-pointer items-center gap-2">
+                              <input
+                                className="accent-sky-500"
+                                defaultChecked={selectedSchemaField.config.multiple}
+                                name="multiple"
+                                type="checkbox"
+                              />
+                              Allow multiple records
+                            </label>
+                          )}
+                        </div>
+
+                        {selectedSchemaField.projectionStatus !== 'ready' && (
+                          <p
+                            className={`mt-4 rounded-lg border px-3 py-2 text-xs ${
+                              selectedSchemaField.projectionStatus === 'failed'
+                                ? 'border-rose-500/20 bg-rose-500/5 text-rose-300'
+                                : 'border-amber-500/20 bg-amber-500/5 text-amber-300'
+                            }`}
+                          >
+                            {selectedSchemaField.projectionStatus === 'failed'
+                              ? 'This field index failed to build. Values remain available, but filtering may be incomplete.'
+                              : 'This field index is rebuilding. Filtering and sorting may take a moment to catch up.'}
+                          </p>
+                        )}
+
+                        <div className="mt-5 flex items-center justify-between gap-3 border-t border-slate-800 pt-4">
+                          <p className="text-[10px] text-slate-600">
+                            Type and stable key are protected after creation.
+                          </p>
+                          <Button disabled={schemaBusy} type="submit">
+                            {schemaBusy ? 'Saving…' : 'Save changes'}
+                          </Button>
+                        </div>
+                      </form>
+                    )}
+                  </div>
+                </div>
+              </section>
             )}
 
             <div className="mt-2 overflow-hidden rounded-lg border border-slate-800 bg-slate-900/45 shadow-sm">
