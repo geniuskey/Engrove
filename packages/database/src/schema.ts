@@ -13,6 +13,7 @@ import {
   pgTable,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
@@ -144,6 +145,64 @@ export const memberships = pgTable(
   },
   (table) => [
     uniqueIndex('memberships_organization_user_key').on(table.organizationId, table.userId),
+  ],
+);
+
+export const memberGroups = pgTable(
+  'member_groups',
+  {
+    id: uuid('id').primaryKey(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'restrict' }),
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+    color: text('color').notNull().default('sky'),
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
+    archivedBy: uuid('archived_by').references(() => users.id, { onDelete: 'restrict' }),
+    ...auditColumns,
+  },
+  (table) => [
+    unique('member_groups_organization_id_key').on(table.organizationId, table.id),
+    uniqueIndex('member_groups_active_organization_name_key')
+      .on(table.organizationId, sql`lower(${table.name})`)
+      .where(sql`${table.archivedAt} is null`),
+    index('member_groups_organization_idx').on(table.organizationId, table.name, table.id),
+    check(
+      'member_groups_color_check',
+      sql`${table.color} in ('slate', 'sky', 'emerald', 'amber', 'rose', 'violet')`,
+    ),
+  ],
+);
+
+export const memberGroupMemberships = pgTable(
+  'member_group_memberships',
+  {
+    id: uuid('id').primaryKey(),
+    organizationId: uuid('organization_id').notNull(),
+    groupId: uuid('group_id').notNull(),
+    userId: uuid('user_id').notNull(),
+    assignedBy: uuid('assigned_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.organizationId, table.groupId],
+      foreignColumns: [memberGroups.organizationId, memberGroups.id],
+      name: 'member_group_memberships_organization_group_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.organizationId, table.userId],
+      foreignColumns: [memberships.organizationId, memberships.userId],
+      name: 'member_group_memberships_organization_user_fk',
+    }).onDelete('cascade'),
+    uniqueIndex('member_group_memberships_group_user_key').on(table.groupId, table.userId),
+    index('member_group_memberships_organization_user_idx').on(table.organizationId, table.userId),
   ],
 );
 

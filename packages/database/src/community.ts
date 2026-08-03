@@ -1077,6 +1077,255 @@ export async function updateMemberRole(
   });
 }
 
+export type MemberGroupColor = 'slate' | 'sky' | 'emerald' | 'amber' | 'rose' | 'violet';
+
+export interface MemberGroupRow {
+  id: string;
+  name: string;
+  description: string;
+  color: MemberGroupColor;
+  memberIds: string[];
+  updatedAt: string;
+}
+
+function mapMemberGroupConflict(error: unknown): never {
+  if (
+    typeof error === 'object' &&
+    error &&
+    'code' in error &&
+    error.code === '23505' &&
+    'constraint' in error &&
+    error.constraint === 'member_groups_active_organization_name_key'
+  ) {
+    throw new RepositoryError(
+      'MEMBER_GROUP_NAME_CONFLICT',
+      409,
+      'An active group already uses this name.',
+    );
+  }
+  throw error;
+}
+
+export async function listMemberGroups(pool: Pool, actor: ActorSession): Promise<MemberGroupRow[]> {
+  const result = await pool.query<{
+    id: string;
+    name: string;
+    description: string;
+    color: MemberGroupColor;
+    member_ids: string[];
+    updated_at: Date;
+  }>(
+    `select g.id, g.name, g.description, g.color, g.updated_at,
+            coalesce(array_agg(gm.user_id order by gm.user_id)
+              filter (where gm.user_id is not null), '{}') as member_ids
+     from member_groups g
+     left join member_group_memberships gm
+       on gm.organization_id = g.organization_id and gm.group_id = g.id
+     where g.organization_id = $1 and g.archived_at is null
+     group by g.id
+     order by lower(g.name), g.id`,
+    [actor.organizationId],
+  );
+  return result.rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    color: row.color,
+    memberIds: row.member_ids,
+    updatedAt: row.updated_at.toISOString(),
+  }));
+}
+
+export async function createMemberGroup(
+  pool: Pool,
+  actor: ActorSession,
+  input: { name: string; description: string; color: MemberGroupColor; requestId: string },
+): Promise<MemberGroupRow> {
+  try {
+    return await transaction(pool, async (client) => {
+      const id = uuidv7();
+      const result = await client.query<{
+        id: string;
+        name: string;
+        description: string;
+        color: MemberGroupColor;
+        updated_at: Date;
+      }>(
+        `insert into member_groups (id, organization_id, name, description, color, created_by)
+         values ($1, $2, $3, $4, $5, $6)
+         returning id, name, description, color, updated_at`,
+        [
+          id,
+          actor.organizationId,
+          input.name.trim(),
+          input.description.trim(),
+          input.color,
+          actor.actorId,
+        ],
+      );
+      await appendAudit(client, {
+        organizationId: actor.organizationId,
+        actorId: actor.actorId,
+        action: 'member_group.created',
+        targetType: 'member_group',
+        targetId: id,
+        requestId: input.requestId,
+        payload: { name: input.name.trim(), color: input.color },
+      });
+      const row = result.rows[0]!;
+      return {
+        id: row.id,
+        name: row.name,
+        description: row.description,
+        color: row.color,
+        memberIds: [],
+        updatedAt: row.updated_at.toISOString(),
+      };
+    });
+  } catch (error) {
+    return mapMemberGroupConflict(error);
+  }
+}
+
+export async function updateMemberGroup(
+  pool: Pool,
+  actor: ActorSession,
+  input: {
+    groupId: string;
+    name: string;
+    description: string;
+    color: MemberGroupColor;
+    requestId: string;
+  },
+): Promise<void> {
+  try {
+    await transaction(pool, async (client) => {
+      const current = await client.query<{ name: string; description: string; color: string }>(
+        `select name, description, color from member_groups
+         where organization_id = $1 and id = $2 and archived_at is null for update`,
+        [actor.organizationId, input.groupId],
+      );
+      if (!current.rows[0])
+        throw new RepositoryError('MEMBER_GROUP_NOT_FOUND', 404, 'Group was not found.');
+      await client.query(
+        `update member_groups set name = $3, description = $4, color = $5, updated_at = now()
+         where organization_id = $1 and id = $2`,
+        [
+          actor.organizationId,
+          input.groupId,
+          input.name.trim(),
+          input.description.trim(),
+          input.color,
+        ],
+      );
+      await appendAudit(client, {
+        organizationId: actor.organizationId,
+        actorId: actor.actorId,
+        action: 'member_group.updated',
+        targetType: 'member_group',
+        targetId: input.groupId,
+        requestId: input.requestId,
+        payload: {
+          from: current.rows[0],
+          to: {
+            name: input.name.trim(),
+            description: input.description.trim(),
+            color: input.color,
+          },
+        },
+      });
+    });
+  } catch (error) {
+    return mapMemberGroupConflict(error);
+  }
+}
+
+export async function replaceMemberGroupMembers(
+  pool: Pool,
+  actor: ActorSession,
+  input: { groupId: string; memberIds: string[]; requestId: string },
+): Promise<void> {
+  await transaction(pool, async (client) => {
+    const group = await client.query(
+      `select 1 from member_groups
+       where organization_id = $1 and id = $2 and archived_at is null for update`,
+      [actor.organizationId, input.groupId],
+    );
+    if (!group.rowCount)
+      throw new RepositoryError('MEMBER_GROUP_NOT_FOUND', 404, 'Group was not found.');
+    const uniqueMemberIds = [...new Set(input.memberIds)];
+    const available = uniqueMemberIds.length
+      ? await client.query<{ user_id: string }>(
+          `select user_id from memberships
+           where organization_id = $1 and user_id = any($2::uuid[])`,
+          [actor.organizationId, uniqueMemberIds],
+        )
+      : { rows: [] };
+    if (available.rows.length !== uniqueMemberIds.length) {
+      throw new RepositoryError(
+        'MEMBER_GROUP_MEMBER_NOT_FOUND',
+        404,
+        'One or more selected members are unavailable.',
+      );
+    }
+    const previous = await client.query<{ user_id: string }>(
+      `select user_id from member_group_memberships
+       where organization_id = $1 and group_id = $2 order by user_id`,
+      [actor.organizationId, input.groupId],
+    );
+    await client.query(
+      'delete from member_group_memberships where organization_id = $1 and group_id = $2',
+      [actor.organizationId, input.groupId],
+    );
+    for (const memberId of uniqueMemberIds) {
+      await client.query(
+        `insert into member_group_memberships
+          (id, organization_id, group_id, user_id, assigned_by)
+         values ($1, $2, $3, $4, $5)`,
+        [uuidv7(), actor.organizationId, input.groupId, memberId, actor.actorId],
+      );
+    }
+    await appendAudit(client, {
+      organizationId: actor.organizationId,
+      actorId: actor.actorId,
+      action: 'member_group.members_replaced',
+      targetType: 'member_group',
+      targetId: input.groupId,
+      requestId: input.requestId,
+      payload: {
+        previousMemberIds: previous.rows.map((row) => row.user_id),
+        memberIds: uniqueMemberIds,
+      },
+    });
+  });
+}
+
+export async function archiveMemberGroup(
+  pool: Pool,
+  actor: ActorSession,
+  groupId: string,
+  requestId: string,
+): Promise<void> {
+  await transaction(pool, async (client) => {
+    const result = await client.query<{ name: string }>(
+      `update member_groups set archived_at = now(), archived_by = $3, updated_at = now()
+       where organization_id = $1 and id = $2 and archived_at is null returning name`,
+      [actor.organizationId, groupId, actor.actorId],
+    );
+    if (!result.rows[0])
+      throw new RepositoryError('MEMBER_GROUP_NOT_FOUND', 404, 'Group was not found.');
+    await appendAudit(client, {
+      organizationId: actor.organizationId,
+      actorId: actor.actorId,
+      action: 'member_group.archived',
+      targetType: 'member_group',
+      targetId: groupId,
+      requestId,
+      payload: { name: result.rows[0].name },
+    });
+  });
+}
+
 export async function listAuditEvents(
   pool: Pool,
   actor: ActorSession,

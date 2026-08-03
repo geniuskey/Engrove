@@ -83,6 +83,30 @@ interface Member {
   role: Role;
 }
 
+type MemberGroupColor = 'slate' | 'sky' | 'emerald' | 'amber' | 'rose' | 'violet';
+
+interface MemberGroup {
+  id: string;
+  name: string;
+  description: string;
+  color: MemberGroupColor;
+  memberIds: string[];
+  updatedAt: string;
+}
+
+const memberGroupColors: Array<{ value: MemberGroupColor; label: string; hex: string }> = [
+  { value: 'slate', label: 'Slate', hex: '#94a3b8' },
+  { value: 'sky', label: 'Sky', hex: '#38bdf8' },
+  { value: 'emerald', label: 'Emerald', hex: '#34d399' },
+  { value: 'amber', label: 'Amber', hex: '#fbbf24' },
+  { value: 'rose', label: 'Rose', hex: '#fb7185' },
+  { value: 'violet', label: 'Violet', hex: '#a78bfa' },
+];
+
+function memberGroupColor(color: MemberGroupColor): string {
+  return memberGroupColors.find((candidate) => candidate.value === color)?.hex ?? '#38bdf8';
+}
+
 const onboardingSteps = [
   { key: 'create-project', label: 'Create a workspace and project' },
   { key: 'install-template', label: 'Install the Test & Characterization template' },
@@ -1181,10 +1205,48 @@ function PilotPage({ user }: { user: User }) {
   );
 }
 
-function MembersPage() {
+export function MembersPage() {
   const { items, error, refresh } = useAsyncList<Member>(() => api('/members'), []);
+  const {
+    items: groups,
+    error: groupsError,
+    refresh: refreshGroups,
+  } = useAsyncList<MemberGroup>(() => api('/member-groups'), []);
   const [generatedUrl, setGeneratedUrl] = useState('');
   const [message, setMessage] = useState('');
+  const [messageTone, setMessageTone] = useState<'success' | 'error'>('success');
+  const [selectedGroupId, setSelectedGroupId] = useState('');
+  const [groupMemberDraft, setGroupMemberDraft] = useState<Set<string>>(() => new Set());
+  const [memberSearch, setMemberSearch] = useState('');
+  const [groupSearch, setGroupSearch] = useState('');
+  const [showCreateGroup, setShowCreateGroup] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const selectedGroup = groups.find((group) => group.id === selectedGroupId);
+  const normalizedMemberSearch = memberSearch.trim().toLowerCase();
+  const normalizedGroupSearch = groupSearch.trim().toLowerCase();
+  const filteredMembers = items.filter(
+    (member) =>
+      !normalizedMemberSearch ||
+      member.displayName.toLowerCase().includes(normalizedMemberSearch) ||
+      member.email.toLowerCase().includes(normalizedMemberSearch) ||
+      member.role.toLowerCase().includes(normalizedMemberSearch),
+  );
+  const filteredGroups = groups.filter(
+    (group) =>
+      !normalizedGroupSearch ||
+      group.name.toLowerCase().includes(normalizedGroupSearch) ||
+      group.description.toLowerCase().includes(normalizedGroupSearch),
+  );
+
+  useEffect(() => {
+    if (selectedGroupId && groups.some((group) => group.id === selectedGroupId)) return;
+    setSelectedGroupId(groups[0]?.id ?? '');
+  }, [groups, selectedGroupId]);
+
+  useEffect(() => {
+    setGroupMemberDraft(new Set(selectedGroup?.memberIds ?? []));
+  }, [selectedGroup]);
+
   async function invite(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -1194,8 +1256,10 @@ function MembersPage() {
         body: JSON.stringify({ email: data.get('email'), role: data.get('role') }),
       });
       setGeneratedUrl(result.invitationUrl);
-      setMessage('');
+      setMessageTone('success');
+      setMessage('Invitation link generated.');
     } catch (cause) {
+      setMessageTone('error');
       setMessage(cause instanceof Error ? cause.message : 'Invitation failed.');
     }
   }
@@ -1206,48 +1270,422 @@ function MembersPage() {
         body: JSON.stringify({ role: nextRole }),
       });
       await refresh();
+      setMessageTone('success');
+      setMessage('Member role updated.');
     } catch (cause) {
+      setMessageTone('error');
       setMessage(cause instanceof Error ? cause.message : 'Role update failed.');
     }
   }
+
+  async function createGroup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    setBusy(true);
+    try {
+      const created = await api<MemberGroup>('/member-groups', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: data.get('name'),
+          description: data.get('description'),
+          color: data.get('color'),
+        }),
+      });
+      form.reset();
+      await refreshGroups();
+      setSelectedGroupId(created.id);
+      setShowCreateGroup(false);
+      setMessageTone('success');
+      setMessage(`${created.name} group created.`);
+    } catch (cause) {
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : 'Group creation failed.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveGroup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedGroup) return;
+    const data = new FormData(event.currentTarget);
+    setBusy(true);
+    try {
+      await api(`/member-groups/${selectedGroup.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: data.get('name'),
+          description: data.get('description'),
+          color: data.get('color'),
+        }),
+      });
+      await api(`/member-groups/${selectedGroup.id}/members`, {
+        method: 'PATCH',
+        body: JSON.stringify({ memberIds: [...groupMemberDraft] }),
+      });
+      await refreshGroups();
+      setMessageTone('success');
+      setMessage(`${String(data.get('name'))} group updated.`);
+    } catch (cause) {
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : 'Group update failed.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function archiveGroup(group: MemberGroup) {
+    if (!window.confirm(`Archive “${group.name}”? Members will keep their organization roles.`)) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await api(`/member-groups/${group.id}/archive`, { method: 'POST' });
+      await refreshGroups();
+      setMessageTone('success');
+      setMessage(`${group.name} group archived.`);
+    } catch (cause) {
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : 'Group could not be archived.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
-    <>
-      <h1 className="text-4xl font-semibold">Members</h1>
-      <div className="mt-8 divide-y divide-slate-800 rounded-2xl border border-slate-800">
-        {items.map((member) => (
-          <div className="flex items-center justify-between p-5" key={member.userId}>
-            <span>
-              <strong>{member.displayName}</strong>
-              <span className="ml-3 text-sm text-slate-500">{member.email}</span>
-            </span>
-            <select
-              className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
-              value={member.role}
-              onChange={(event) => void changeRole(member.userId, event.target.value as Role)}
-            >
-              {['owner', 'admin', 'engineer', 'contributor', 'viewer'].map((value) => (
-                <option key={value}>{value}</option>
-              ))}
-            </select>
-          </div>
-        ))}
+    <section>
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-widest text-sky-400">Organization</p>
+          <h1 className="mt-1 text-3xl font-semibold">Members & groups</h1>
+          <p className="mt-2 text-sm text-slate-500">
+            Manage access roles and organize people into reusable teams.
+          </p>
+        </div>
+        <div className="flex gap-2 text-xs text-slate-400">
+          <span className="rounded-full border border-slate-800 px-3 py-1.5">
+            {items.length} members
+          </span>
+          <span className="rounded-full border border-slate-800 px-3 py-1.5">
+            {groups.length} groups
+          </span>
+        </div>
       </div>
-      <form className="mt-10 max-w-xl space-y-4" onSubmit={(event) => void invite(event)}>
-        <Field label="Invite email" name="email" type="email" />
-        <label className="block text-sm text-slate-300">
-          Role
-          <select className={inputClass} name="role" defaultValue="contributor">
-            <option>admin</option>
-            <option>engineer</option>
-            <option>contributor</option>
-            <option>viewer</option>
-          </select>
-        </label>
-        <Button type="submit">Generate invitation URL</Button>
-      </form>
-      {generatedUrl && <textarea className={`${inputClass} mt-4`} readOnly value={generatedUrl} />}
-      <ErrorText>{error || message}</ErrorText>
-    </>
+
+      <div className="mt-6 grid gap-4 lg:grid-cols-2">
+        <section className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/45">
+          <header className="border-b border-slate-800 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-slate-100">Member directory</h2>
+                <p className="mt-1 text-xs text-slate-500">Roles control product access.</p>
+              </div>
+              <details className="relative">
+                <summary className="cursor-pointer list-none rounded-md border border-slate-700 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800">
+                  Invite member
+                </summary>
+                <div className="absolute right-0 top-10 z-40 w-80 rounded-xl border border-slate-700 bg-slate-950 p-4 shadow-2xl">
+                  <form className="space-y-3" onSubmit={(event) => void invite(event)}>
+                    <Field label="Invite email" name="email" type="email" />
+                    <label className="block text-xs font-medium text-slate-300">
+                      Role
+                      <select
+                        className={`${inputClass} mt-1.5`}
+                        name="role"
+                        defaultValue="contributor"
+                      >
+                        <option>admin</option>
+                        <option>engineer</option>
+                        <option>contributor</option>
+                        <option>viewer</option>
+                      </select>
+                    </label>
+                    <Button className="w-full" type="submit">
+                      Generate invitation link
+                    </Button>
+                  </form>
+                  {generatedUrl && (
+                    <textarea
+                      aria-label="Invitation URL"
+                      className={`${inputClass} mt-3 min-h-20 text-xs`}
+                      readOnly
+                      value={generatedUrl}
+                    />
+                  )}
+                </div>
+              </details>
+            </div>
+            <input
+              aria-label="Search members"
+              className={`${inputClass} mt-3`}
+              placeholder="Search name, email, or role"
+              type="search"
+              value={memberSearch}
+              onChange={(event) => setMemberSearch(event.target.value)}
+            />
+          </header>
+          <div className="max-h-96 divide-y divide-slate-800 overflow-y-auto">
+            {filteredMembers.map((member) => {
+              const memberGroups = groups.filter((group) =>
+                group.memberIds.includes(member.userId),
+              );
+              return (
+                <article className="flex items-center gap-3 px-4 py-3" key={member.userId}>
+                  <span className="grid size-8 shrink-0 place-items-center rounded-full bg-slate-800 text-xs font-semibold text-slate-300">
+                    {member.displayName.slice(0, 2).toUpperCase()}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-slate-200">
+                      {member.displayName}
+                    </p>
+                    <p className="truncate text-xs text-slate-500">{member.email}</p>
+                    {memberGroups.length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {memberGroups.map((group) => (
+                          <button
+                            className="rounded-full border border-slate-800 px-2 py-0.5 text-[10px] text-slate-400 hover:text-slate-200"
+                            key={group.id}
+                            onClick={() => setSelectedGroupId(group.id)}
+                            type="button"
+                          >
+                            <span
+                              aria-hidden="true"
+                              className="mr-1 inline-block size-1.5 rounded-full"
+                              style={{ backgroundColor: memberGroupColor(group.color) }}
+                            />
+                            {group.name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <select
+                    aria-label={`Role for ${member.displayName}`}
+                    className="rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-300"
+                    value={member.role}
+                    onChange={(event) => void changeRole(member.userId, event.target.value as Role)}
+                  >
+                    {['owner', 'admin', 'engineer', 'contributor', 'viewer'].map((value) => (
+                      <option key={value}>{value}</option>
+                    ))}
+                  </select>
+                </article>
+              );
+            })}
+            {filteredMembers.length === 0 && (
+              <p className="p-8 text-center text-xs text-slate-500">No matching members.</p>
+            )}
+          </div>
+        </section>
+
+        <section className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/45">
+          <header className="border-b border-slate-800 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-slate-100">Groups</h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  Groups organize members without changing access.
+                </p>
+              </div>
+              <Button
+                aria-expanded={showCreateGroup}
+                variant="quiet"
+                onClick={() => setShowCreateGroup((value) => !value)}
+                type="button"
+              >
+                + New group
+              </Button>
+            </div>
+            {showCreateGroup && (
+              <form className="mt-3 grid gap-2" onSubmit={(event) => void createGroup(event)}>
+                <input
+                  aria-label="New group name"
+                  autoFocus
+                  className={inputClass}
+                  maxLength={80}
+                  name="name"
+                  placeholder="e.g. Materials laboratory"
+                  required
+                />
+                <textarea
+                  aria-label="New group description"
+                  className={`${inputClass} min-h-20 resize-y`}
+                  maxLength={500}
+                  name="description"
+                  placeholder="What this group works on"
+                />
+                <div className="flex items-center gap-2">
+                  <select
+                    aria-label="New group color"
+                    className={`${inputClass} flex-1`}
+                    defaultValue="sky"
+                    name="color"
+                  >
+                    {memberGroupColors.map((color) => (
+                      <option key={color.value} value={color.value}>
+                        {color.label}
+                      </option>
+                    ))}
+                  </select>
+                  <Button disabled={busy} type="submit">
+                    {busy ? 'Creating…' : 'Create'}
+                  </Button>
+                </div>
+              </form>
+            )}
+            <input
+              aria-label="Search groups"
+              className={`${inputClass} mt-3`}
+              placeholder="Search groups"
+              type="search"
+              value={groupSearch}
+              onChange={(event) => setGroupSearch(event.target.value)}
+            />
+          </header>
+
+          <div className="grid sm:grid-cols-2">
+            <nav
+              aria-label="Member groups"
+              className="max-h-96 overflow-y-auto border-b border-slate-800 p-2 sm:border-b-0 sm:border-r"
+            >
+              {filteredGroups.map((group) => (
+                <button
+                  aria-current={selectedGroupId === group.id ? 'true' : undefined}
+                  className={`flex w-full items-center gap-2 rounded-md px-2 py-2 text-left ${
+                    selectedGroupId === group.id
+                      ? 'bg-sky-500/10 text-sky-200'
+                      : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+                  }`}
+                  key={group.id}
+                  onClick={() => setSelectedGroupId(group.id)}
+                  type="button"
+                >
+                  <span
+                    aria-hidden="true"
+                    className="size-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: memberGroupColor(group.color) }}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-xs font-medium">{group.name}</span>
+                    <span className="block text-[10px] text-slate-600">
+                      {group.memberIds.length} members
+                    </span>
+                  </span>
+                </button>
+              ))}
+              {filteredGroups.length === 0 && (
+                <p className="p-5 text-center text-xs text-slate-500">No groups yet.</p>
+              )}
+            </nav>
+
+            <div className="min-w-0 p-4">
+              {selectedGroup ? (
+                <form key={selectedGroup.id} onSubmit={(event) => void saveGroup(event)}>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-medium uppercase tracking-widest text-sky-400">
+                        Group details
+                      </p>
+                      <h3 className="mt-1 truncate text-sm font-semibold text-slate-200">
+                        {selectedGroup.name}
+                      </h3>
+                    </div>
+                    <button
+                      aria-label={`Archive group ${selectedGroup.name}`}
+                      className="rounded px-2 py-1 text-xs text-slate-500 hover:bg-rose-500/10 hover:text-rose-300"
+                      disabled={busy}
+                      onClick={() => void archiveGroup(selectedGroup)}
+                      type="button"
+                    >
+                      Archive
+                    </button>
+                  </div>
+                  <input
+                    aria-label="Group name"
+                    className={`${inputClass} mt-3`}
+                    defaultValue={selectedGroup.name}
+                    maxLength={80}
+                    name="name"
+                    required
+                  />
+                  <textarea
+                    aria-label="Group description"
+                    className={`${inputClass} mt-2 min-h-20 resize-y`}
+                    defaultValue={selectedGroup.description}
+                    maxLength={500}
+                    name="description"
+                    placeholder="Group description"
+                  />
+                  <select
+                    aria-label="Group color"
+                    className={`${inputClass} mt-2`}
+                    defaultValue={selectedGroup.color}
+                    name="color"
+                  >
+                    {memberGroupColors.map((color) => (
+                      <option key={color.value} value={color.value}>
+                        {color.label}
+                      </option>
+                    ))}
+                  </select>
+                  <fieldset className="mt-4">
+                    <legend className="text-xs font-medium text-slate-300">
+                      Members · {groupMemberDraft.size}
+                    </legend>
+                    <div className="mt-2 max-h-48 space-y-1 overflow-y-auto rounded-lg border border-slate-800 p-2">
+                      {filteredMembers.map((member) => (
+                        <label
+                          className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                          key={member.userId}
+                        >
+                          <input
+                            aria-label={`Add ${member.displayName} to ${selectedGroup.name}`}
+                            checked={groupMemberDraft.has(member.userId)}
+                            className="accent-sky-500"
+                            type="checkbox"
+                            onChange={(event) => {
+                              setGroupMemberDraft((current) => {
+                                const next = new Set(current);
+                                if (event.target.checked) next.add(member.userId);
+                                else next.delete(member.userId);
+                                return next;
+                              });
+                            }}
+                          />
+                          <span className="min-w-0 flex-1 truncate">{member.displayName}</span>
+                          <span className="truncate text-[10px] text-slate-600">{member.role}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+                  <Button className="mt-4 w-full" disabled={busy} type="submit">
+                    {busy ? 'Saving…' : 'Save group'}
+                  </Button>
+                </form>
+              ) : (
+                <div className="p-6 text-center">
+                  <p className="text-sm font-medium text-slate-400">Create your first group</p>
+                  <p className="mt-1 text-xs text-slate-600">
+                    Group members by team, laboratory, discipline, or responsibility.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+      </div>
+
+      {message && (
+        <p
+          aria-live="polite"
+          className={`mt-4 text-sm ${messageTone === 'error' ? 'text-rose-300' : 'text-emerald-300'}`}
+        >
+          {message}
+        </p>
+      )}
+      <ErrorText>{error || groupsError}</ErrorText>
+    </section>
   );
 }
 

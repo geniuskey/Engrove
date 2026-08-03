@@ -1,9 +1,10 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiStatus, App } from './App.js';
+import { ApiStatus, App, MembersPage } from './App.js';
 
 afterEach(() => {
+  cleanup();
   vi.restoreAllMocks();
   window.localStorage.clear();
   delete document.documentElement.dataset.theme;
@@ -134,6 +135,112 @@ describe('App', () => {
     expect(screen.getByRole('link', { name: '프로젝트' })).toBeInTheDocument();
     expect(document.documentElement).toHaveAttribute('lang', 'ko');
     expect(window.localStorage.getItem('engrove-locale')).toBe('ko');
+  });
+
+  it('creates groups and assigns multiple members without changing their roles', async () => {
+    let groups = [
+      {
+        id: '019fbcf9-e020-71da-935a-6a6a728b3705',
+        name: 'Materials lab',
+        description: 'Materials testing team',
+        color: 'emerald',
+        memberIds: ['019fbcf9-e020-71da-935a-6a6a728b3702'],
+        updatedAt: '2026-08-03T00:00:00.000Z',
+      },
+    ];
+    let groupUpdate: Record<string, unknown> | undefined;
+    let groupMembers: Record<string, unknown> | undefined;
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/member-groups/019fbcf9-e020-71da-935a-6a6a728b3705/members')) {
+        groupMembers = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return json({ updated: true });
+      }
+      if (url.endsWith('/members')) {
+        return json({
+          items: [
+            {
+              userId: '019fbcf9-e020-71da-935a-6a6a728b3702',
+              email: 'owner@example.com',
+              displayName: 'Owner',
+              role: 'owner',
+            },
+            {
+              userId: '019fbcf9-e020-71da-935a-6a6a728b3704',
+              email: 'engineer@example.com',
+              displayName: 'Engineer',
+              role: 'engineer',
+            },
+          ],
+        });
+      }
+      if (url.endsWith('/member-groups') && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        const created = {
+          id: '019fbcf9-e020-71da-935a-6a6a728b3706',
+          name: String(body.name),
+          description: String(body.description),
+          color: String(body.color),
+          memberIds: [],
+          updatedAt: '2026-08-03T01:00:00.000Z',
+        };
+        groups = [...groups, created];
+        return json(created);
+      }
+      if (url.endsWith('/member-groups')) return json({ items: groups });
+      if (url.endsWith('/member-groups/019fbcf9-e020-71da-935a-6a6a728b3705')) {
+        groupUpdate = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return json({ updated: true });
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+
+    render(
+      <MemoryRouter>
+        <MembersPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Members & groups' })).toBeInTheDocument();
+    expect(
+      (await screen.findAllByRole('button', { name: 'Materials lab' })).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByRole('combobox', { name: 'Role for Owner' })).toHaveValue('owner');
+    const ownerMembership = await screen.findByRole('checkbox', {
+      name: 'Add Owner to Materials lab',
+    });
+    await waitFor(() => expect(ownerMembership).toBeChecked());
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Add Engineer to Materials lab' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Group name' }), {
+      target: { value: 'Materials & Spectroscopy' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save group' }));
+    await waitFor(() =>
+      expect(groupUpdate).toMatchObject({
+        name: 'Materials & Spectroscopy',
+        description: 'Materials testing team',
+        color: 'emerald',
+      }),
+    );
+    await waitFor(() =>
+      expect(groupMembers).toEqual({
+        memberIds: ['019fbcf9-e020-71da-935a-6a6a728b3702', '019fbcf9-e020-71da-935a-6a6a728b3704'],
+      }),
+    );
+    expect(screen.getByRole('combobox', { name: 'Role for Engineer' })).toHaveValue('engineer');
+
+    fireEvent.click(screen.getByRole('button', { name: '+ New group' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'New group name' }), {
+      target: { value: 'Quality review' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    expect(
+      await screen.findByRole('button', { name: /^Quality review.*0 members$/ }),
+    ).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/member-groups$/),
+      expect.objectContaining({ method: 'POST' }),
+    );
   });
 });
 

@@ -13,9 +13,11 @@ import {
 } from '@nestjs/common';
 import {
   acceptInvitation,
+  archiveMemberGroup,
   authenticateSession,
   completePasswordReset,
   completeSetup,
+  createMemberGroup,
   createProject,
   createSession,
   createWorkspace,
@@ -26,15 +28,18 @@ import {
   issueSecurityToken,
   listAuditEvents,
   listLegacyConfigurableDataProjects,
+  listMemberGroups,
   listMembers,
   listProjects,
   listWorkspaces,
   recordAuthenticationEvent,
+  replaceMemberGroupMembers,
   revokeAllUserSessions,
   revokeSecurityToken,
   revokeSession,
   setProjectArchived,
   updateMemberRole,
+  updateMemberGroup,
   updateProject,
   verifyCsrf,
   type ActorSession,
@@ -47,6 +52,7 @@ import type { Runtime } from './runtime.js';
 
 const SESSION_COOKIE = 'engrove_session';
 const CSRF_COOKIE = 'engrove_csrf';
+const memberGroupColor = z.enum(['slate', 'sky', 'emerald', 'amber', 'rose', 'violet']);
 let runtime: Runtime | undefined;
 
 export function installCommunityRuntime(value: Runtime): void {
@@ -484,6 +490,85 @@ export class CommunityController {
       requestId(request),
     );
     return { updated: true };
+  }
+
+  @Get('member-groups')
+  async memberGroups(@Req() request: Request) {
+    const actor = await requireActor(request, 'member.manage');
+    return { items: await listMemberGroups(appRuntime().pool, actor) };
+  }
+
+  @Post('member-groups')
+  async createMemberGroup(@Req() request: Request, @Body() unparsed: unknown) {
+    const actor = await requireActor(request, 'member.manage', true);
+    const body = z
+      .object({
+        name: z.string().trim().min(1).max(80),
+        description: z.string().trim().max(500).optional(),
+        color: memberGroupColor.optional(),
+      })
+      .strict()
+      .parse(unparsed);
+    return createMemberGroup(appRuntime().pool, actor, {
+      name: body.name,
+      description: body.description ?? '',
+      color: body.color ?? 'sky',
+      requestId: requestId(request),
+    });
+  }
+
+  @Patch('member-groups/:groupId')
+  async updateMemberGroup(
+    @Req() request: Request,
+    @Param('groupId') unparsedGroupId: string,
+    @Body() unparsed: unknown,
+  ) {
+    const actor = await requireActor(request, 'member.manage', true);
+    const body = z
+      .object({
+        name: z.string().trim().min(1).max(80),
+        description: z.string().trim().max(500),
+        color: memberGroupColor,
+      })
+      .strict()
+      .parse(unparsed);
+    await updateMemberGroup(appRuntime().pool, actor, {
+      groupId: z.string().uuid().parse(unparsedGroupId),
+      ...body,
+      requestId: requestId(request),
+    });
+    return { updated: true };
+  }
+
+  @Patch('member-groups/:groupId/members')
+  async replaceMemberGroupMembers(
+    @Req() request: Request,
+    @Param('groupId') unparsedGroupId: string,
+    @Body() unparsed: unknown,
+  ) {
+    const actor = await requireActor(request, 'member.manage', true);
+    const body = z
+      .object({ memberIds: z.array(z.string().uuid()).max(500) })
+      .strict()
+      .parse(unparsed);
+    await replaceMemberGroupMembers(appRuntime().pool, actor, {
+      groupId: z.string().uuid().parse(unparsedGroupId),
+      memberIds: body.memberIds,
+      requestId: requestId(request),
+    });
+    return { updated: true };
+  }
+
+  @Post('member-groups/:groupId/archive')
+  async archiveMemberGroup(@Req() request: Request, @Param('groupId') unparsedGroupId: string) {
+    const actor = await requireActor(request, 'member.manage', true);
+    await archiveMemberGroup(
+      appRuntime().pool,
+      actor,
+      z.string().uuid().parse(unparsedGroupId),
+      requestId(request),
+    );
+    return { archived: true };
   }
 
   @Post('members/:userId/revoke-sessions')

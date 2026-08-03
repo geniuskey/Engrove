@@ -1,16 +1,21 @@
 import type { Pool } from 'pg';
 import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
 import {
+  archiveMemberGroup,
+  createMemberGroup,
   createProject,
   createWorkspace,
   ensureWorkspaceDataProject,
   listProjects,
+  listMemberGroups,
+  replaceMemberGroupMembers,
   RepositoryError,
   ScopedEngineeringRepository,
   ScopedFileDatasetRepository,
   ScopedProjectRepository,
   ScopedTaskRepository,
   ScopedVisualizationRepository,
+  updateMemberGroup,
   createPool,
   type ActorSession,
 } from '../src/index.js';
@@ -349,5 +354,54 @@ describe.sequential('workspace data with PostgreSQL', () => {
         requestId: 'invalid-record',
       }),
     ).rejects.toMatchObject({ code: 'FIELD_VALIDATION_FAILED' });
+  });
+
+  it('creates, assigns, updates, and archives organization member groups', async () => {
+    const secondUserId = '019fbcf9-e020-71da-935a-6a6a728b3710';
+    await pool.query(
+      `insert into users (id, email, display_name, password_hash)
+       values ($1, 'engineer@example.com', 'Engineer', 'not-used')`,
+      [secondUserId],
+    );
+    await pool.query(
+      `insert into memberships (id, organization_id, user_id, role, created_by)
+       values ('019fbcf9-e020-71da-935a-6a6a728b3711', $1, $2, 'engineer', $3)`,
+      [organizationId, secondUserId, actorId],
+    );
+    const group = await createMemberGroup(pool, actor, {
+      name: 'Materials lab',
+      description: 'Materials testing team',
+      color: 'emerald',
+      requestId: 'group-create',
+    });
+    await replaceMemberGroupMembers(pool, actor, {
+      groupId: group.id,
+      memberIds: [actorId, secondUserId],
+      requestId: 'group-members',
+    });
+    expect(await listMemberGroups(pool, actor)).toMatchObject([
+      {
+        id: group.id,
+        name: 'Materials lab',
+        color: 'emerald',
+        memberIds: [actorId, secondUserId],
+      },
+    ]);
+
+    await updateMemberGroup(pool, actor, {
+      groupId: group.id,
+      name: 'Materials & Spectroscopy',
+      description: 'Shared instruments and materials testing',
+      color: 'violet',
+      requestId: 'group-update',
+    });
+    expect((await listMemberGroups(pool, actor))[0]).toMatchObject({
+      name: 'Materials & Spectroscopy',
+      color: 'violet',
+      memberIds: [actorId, secondUserId],
+    });
+
+    await archiveMemberGroup(pool, actor, group.id, 'group-archive');
+    expect(await listMemberGroups(pool, actor)).toEqual([]);
   });
 });
