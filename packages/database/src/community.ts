@@ -1077,6 +1077,62 @@ export async function updateMemberRole(
   });
 }
 
+export async function updateMemberRoles(
+  pool: Pool,
+  actor: ActorSession,
+  memberIds: string[],
+  role: MemberRole,
+  requestId: string,
+): Promise<number> {
+  const uniqueMemberIds = [...new Set(memberIds)];
+  if (uniqueMemberIds.length === 0) return 0;
+  return transaction(pool, async (client) => {
+    const organizationMembers = await client.query<{ user_id: string; role: MemberRole }>(
+      `select user_id, role from memberships
+       where organization_id = $1
+       order by user_id for update`,
+      [actor.organizationId],
+    );
+    const requested = new Set(uniqueMemberIds);
+    const current = organizationMembers.rows.filter((member) => requested.has(member.user_id));
+    if (current.length !== uniqueMemberIds.length) {
+      throw new RepositoryError('MEMBER_NOT_FOUND', 404, 'One or more members were not found.');
+    }
+
+    if (role !== 'owner') {
+      const ownerCount = organizationMembers.rows.filter(
+        (member) => member.role === 'owner',
+      ).length;
+      const selectedOwnerCount = current.filter((member) => member.role === 'owner').length;
+      if (ownerCount - selectedOwnerCount <= 0) {
+        throw new RepositoryError('LAST_OWNER_REQUIRED', 409, 'The last Owner cannot be demoted.');
+      }
+    }
+
+    const changed = current.filter((member) => member.role !== role);
+    if (changed.length === 0) return 0;
+    await client.query(
+      `update memberships set role = $3, updated_at = now()
+       where organization_id = $1 and user_id = any($2::uuid[])`,
+      [actor.organizationId, changed.map((member) => member.user_id), role],
+    );
+    await appendAudit(client, {
+      organizationId: actor.organizationId,
+      actorId: actor.actorId,
+      action: 'membership.roles_changed',
+      targetType: 'organization',
+      targetId: actor.organizationId,
+      requestId,
+      payload: {
+        memberIds: changed.map((member) => member.user_id),
+        from: Object.fromEntries(changed.map((member) => [member.user_id, member.role])),
+        to: role,
+      },
+    });
+    return changed.length;
+  });
+}
+
 export type MemberGroupColor = 'slate' | 'sky' | 'emerald' | 'amber' | 'rose' | 'violet';
 
 export interface MemberGroupRow {

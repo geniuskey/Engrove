@@ -16,6 +16,7 @@ import {
   ScopedTaskRepository,
   ScopedVisualizationRepository,
   updateMemberGroup,
+  updateMemberRoles,
   createPool,
   type ActorSession,
 } from '../src/index.js';
@@ -403,5 +404,37 @@ describe.sequential('workspace data with PostgreSQL', () => {
 
     await archiveMemberGroup(pool, actor, group.id, 'group-archive');
     expect(await listMemberGroups(pool, actor)).toEqual([]);
+  });
+
+  it('changes multiple member roles atomically and preserves the last owner', async () => {
+    const memberIds = [
+      '019fbcf9-e020-71da-935a-6a6a728b3720',
+      '019fbcf9-e020-71da-935a-6a6a728b3721',
+    ];
+    await pool.query(
+      `insert into users (id, email, display_name, password_hash) values
+       ($1, 'first@example.com', 'First member', 'not-used'),
+       ($2, 'second@example.com', 'Second member', 'not-used')`,
+      memberIds,
+    );
+    await pool.query(
+      `insert into memberships (id, organization_id, user_id, role, created_by) values
+       ('019fbcf9-e020-71da-935a-6a6a728b3722', $1, $2, 'contributor', $4),
+       ('019fbcf9-e020-71da-935a-6a6a728b3723', $1, $3, 'viewer', $4)`,
+      [organizationId, memberIds[0], memberIds[1], actorId],
+    );
+
+    await expect(
+      updateMemberRoles(pool, actor, memberIds, 'engineer', 'bulk-role-change'),
+    ).resolves.toBe(2);
+    await expect(
+      pool.query<{ role: string }>(
+        'select role from memberships where user_id = any($1::uuid[]) order by user_id',
+        [memberIds],
+      ),
+    ).resolves.toMatchObject({ rows: [{ role: 'engineer' }, { role: 'engineer' }] });
+    await expect(
+      updateMemberRoles(pool, actor, [actorId], 'admin', 'last-owner-change'),
+    ).rejects.toMatchObject({ code: 'LAST_OWNER_REQUIRED' });
   });
 });

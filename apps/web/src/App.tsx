@@ -2,6 +2,7 @@ import { can, type Action, type Role } from '@engrove/permissions';
 import type { HealthResponse } from '@engrove/shared';
 import { Button } from '@engrove/ui';
 import {
+  type DragEvent,
   type FormEvent,
   lazy,
   type PropsWithChildren,
@@ -102,6 +103,7 @@ const memberGroupColors: Array<{ value: MemberGroupColor; label: string; hex: st
   { value: 'rose', label: 'Rose', hex: '#fb7185' },
   { value: 'violet', label: 'Violet', hex: '#a78bfa' },
 ];
+const memberRoles: Role[] = ['owner', 'admin', 'engineer', 'contributor', 'viewer'];
 
 function memberGroupColor(color: MemberGroupColor): string {
   return memberGroupColors.find((candidate) => candidate.value === color)?.hex ?? '#38bdf8';
@@ -1217,6 +1219,8 @@ export function MembersPage() {
   const [messageTone, setMessageTone] = useState<'success' | 'error'>('success');
   const [selectedGroupId, setSelectedGroupId] = useState('');
   const [groupMemberDraft, setGroupMemberDraft] = useState<Set<string>>(() => new Set());
+  const [selectedMemberIds, setSelectedMemberIds] = useState<Set<string>>(() => new Set());
+  const [bulkRole, setBulkRole] = useState<Role>('contributor');
   const [memberSearch, setMemberSearch] = useState('');
   const [groupSearch, setGroupSearch] = useState('');
   const [showCreateGroup, setShowCreateGroup] = useState(false);
@@ -1263,19 +1267,71 @@ export function MembersPage() {
       setMessage(cause instanceof Error ? cause.message : 'Invitation failed.');
     }
   }
-  async function changeRole(userId: string, nextRole: Role) {
+  function toggleMemberSelection(userId: string, checked: boolean) {
+    setSelectedMemberIds((current) => {
+      const next = new Set(current);
+      if (checked) next.add(userId);
+      else next.delete(userId);
+      return next;
+    });
+  }
+
+  async function changeSelectedRoles() {
+    if (selectedMemberIds.size === 0) return;
+    setBusy(true);
     try {
-      await api(`/members/${userId}/role`, {
+      await api('/members/roles', {
         method: 'PATCH',
-        body: JSON.stringify({ role: nextRole }),
+        body: JSON.stringify({ memberIds: [...selectedMemberIds], role: bulkRole }),
       });
       await refresh();
       setMessageTone('success');
-      setMessage('Member role updated.');
+      setMessage(`${selectedMemberIds.size} selected members changed to ${bulkRole}.`);
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'Role update failed.');
+      setMessage(cause instanceof Error ? cause.message : 'Roles could not be updated.');
+    } finally {
+      setBusy(false);
     }
+  }
+
+  async function addMembersToGroup(group: MemberGroup, memberIds: string[]) {
+    const nextMemberIds = [...new Set([...group.memberIds, ...memberIds])];
+    const addedCount = nextMemberIds.length - group.memberIds.length;
+    setSelectedGroupId(group.id);
+    if (addedCount === 0) {
+      setMessageTone('success');
+      setMessage(`Selected members are already in ${group.name}.`);
+      return;
+    }
+    setBusy(true);
+    try {
+      await api(`/member-groups/${group.id}/members`, {
+        method: 'PATCH',
+        body: JSON.stringify({ memberIds: nextMemberIds }),
+      });
+      await refreshGroups();
+      setMessageTone('success');
+      setMessage(`${addedCount} member${addedCount === 1 ? '' : 's'} added to ${group.name}.`);
+    } catch (cause) {
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : 'Members could not be added.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function startMemberDrag(event: DragEvent<HTMLElement>, memberId: string) {
+    const memberIds = selectedMemberIds.has(memberId) ? [...selectedMemberIds] : [memberId];
+    if (!selectedMemberIds.has(memberId)) setSelectedMemberIds(new Set([memberId]));
+    event.dataTransfer.effectAllowed = 'copy';
+    event.dataTransfer.setData('text/plain', memberIds.join(','));
+  }
+
+  function dropMembersOnGroup(event: DragEvent<HTMLElement>, group: MemberGroup) {
+    event.preventDefault();
+    const memberIds = event.dataTransfer.getData('text/plain').split(',').filter(Boolean);
+    if (memberIds.length > 0) void addMembersToGroup(group, memberIds);
   }
 
   async function createGroup(event: FormEvent<HTMLFormElement>) {
@@ -1360,7 +1416,7 @@ export function MembersPage() {
           <p className="text-xs font-medium uppercase tracking-widest text-sky-400">Organization</p>
           <h1 className="mt-1 text-3xl font-semibold">Members & groups</h1>
           <p className="mt-2 text-sm text-slate-500">
-            Manage access roles and organize people into reusable teams.
+            Select people for bulk access changes, or drag them directly into a group.
           </p>
         </div>
         <div className="flex gap-2 text-xs text-slate-400">
@@ -1374,7 +1430,7 @@ export function MembersPage() {
       </div>
 
       <div className="mt-6 grid gap-4 lg:grid-cols-2">
-        <section className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/45">
+        <section className="rounded-xl border border-slate-800 bg-slate-900/45">
           <header className="border-b border-slate-800 p-4">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -1424,14 +1480,69 @@ export function MembersPage() {
               value={memberSearch}
               onChange={(event) => setMemberSearch(event.target.value)}
             />
+            <p className="mt-2 text-xs text-slate-600">{filteredMembers.length} members shown</p>
           </header>
-          <div className="max-h-96 divide-y divide-slate-800 overflow-y-auto">
+          {selectedMemberIds.size > 0 && (
+            <div
+              aria-label="Bulk member actions"
+              className="border-b border-sky-500/20 bg-sky-500/5 p-3"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="mr-auto text-xs font-semibold text-sky-200">
+                  {selectedMemberIds.size} selected
+                </span>
+                <select
+                  aria-label="Role for selected members"
+                  className="rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-300"
+                  value={bulkRole}
+                  onChange={(event) => setBulkRole(event.target.value as Role)}
+                >
+                  {memberRoles.map((value) => (
+                    <option key={value}>{value}</option>
+                  ))}
+                </select>
+                <Button disabled={busy} onClick={() => void changeSelectedRoles()} type="button">
+                  Apply role
+                </Button>
+              </div>
+              <button
+                className="mt-2 text-xs text-slate-500 hover:text-slate-200"
+                onClick={() => setSelectedMemberIds(new Set())}
+                type="button"
+              >
+                Clear selection
+              </button>
+            </div>
+          )}
+          <div className="divide-y divide-slate-800 overflow-y-auto" style={{ maxHeight: '34rem' }}>
             {filteredMembers.map((member) => {
               const memberGroups = groups.filter((group) =>
                 group.memberIds.includes(member.userId),
               );
               return (
-                <article className="flex items-center gap-3 px-4 py-3" key={member.userId}>
+                <article
+                  className={`flex items-center gap-2 px-3 py-3 transition ${
+                    selectedMemberIds.has(member.userId) ? 'bg-sky-500/5' : 'hover:bg-slate-800'
+                  }`}
+                  key={member.userId}
+                >
+                  <input
+                    aria-label={`Select ${member.displayName}`}
+                    checked={selectedMemberIds.has(member.userId)}
+                    className="accent-sky-500"
+                    type="checkbox"
+                    onChange={(event) => toggleMemberSelection(member.userId, event.target.checked)}
+                  />
+                  <button
+                    aria-label={`Drag ${member.displayName}`}
+                    className="cursor-grab select-none px-1 text-sm text-slate-600 hover:text-slate-200 active:cursor-grabbing"
+                    draggable
+                    title="Drag into a group"
+                    type="button"
+                    onDragStart={(event) => startMemberDrag(event, member.userId)}
+                  >
+                    ⋮⋮
+                  </button>
                   <span className="grid size-8 shrink-0 place-items-center rounded-full bg-slate-800 text-xs font-semibold text-slate-300">
                     {member.displayName.slice(0, 2).toUpperCase()}
                   </span>
@@ -1460,16 +1571,9 @@ export function MembersPage() {
                       </div>
                     )}
                   </div>
-                  <select
-                    aria-label={`Role for ${member.displayName}`}
-                    className="rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-300"
-                    value={member.role}
-                    onChange={(event) => void changeRole(member.userId, event.target.value as Role)}
-                  >
-                    {['owner', 'admin', 'engineer', 'contributor', 'viewer'].map((value) => (
-                      <option key={value}>{value}</option>
-                    ))}
-                  </select>
+                  <span className="rounded-md border border-slate-800 px-2 py-1 text-xs text-slate-400">
+                    {member.role}
+                  </span>
                 </article>
               );
             })}
@@ -1485,7 +1589,7 @@ export function MembersPage() {
               <div>
                 <h2 className="text-sm font-semibold text-slate-100">Groups</h2>
                 <p className="mt-1 text-xs text-slate-500">
-                  Groups organize members without changing access.
+                  Drop one member—or your current selection—onto a group.
                 </p>
               </div>
               <Button
@@ -1547,18 +1651,25 @@ export function MembersPage() {
           <div className="grid sm:grid-cols-2">
             <nav
               aria-label="Member groups"
-              className="max-h-96 overflow-y-auto border-b border-slate-800 p-2 sm:border-b-0 sm:border-r"
+              className="overflow-y-auto border-b border-slate-800 p-2 sm:border-b-0 sm:border-r"
+              style={{ maxHeight: '34rem' }}
             >
               {filteredGroups.map((group) => (
                 <button
                   aria-current={selectedGroupId === group.id ? 'true' : undefined}
-                  className={`flex w-full items-center gap-2 rounded-md px-2 py-2 text-left ${
+                  aria-label={`${group.name}, ${group.memberIds.length} member${group.memberIds.length === 1 ? '' : 's'}. Drop members here`}
+                  className={`flex w-full items-center gap-2 rounded-md border px-2 py-2 text-left transition ${
                     selectedGroupId === group.id
-                      ? 'bg-sky-500/10 text-sky-200'
-                      : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+                      ? 'border-sky-500/20 bg-sky-500/10 text-sky-200'
+                      : 'border-transparent text-slate-400 hover:bg-slate-800 hover:text-slate-200'
                   }`}
                   key={group.id}
                   onClick={() => setSelectedGroupId(group.id)}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = 'copy';
+                  }}
+                  onDrop={(event) => dropMembersOnGroup(event, group)}
                   type="button"
                 >
                   <span
@@ -1634,7 +1745,7 @@ export function MembersPage() {
                       Members · {groupMemberDraft.size}
                     </legend>
                     <div className="mt-2 max-h-48 space-y-1 overflow-y-auto rounded-lg border border-slate-800 p-2">
-                      {filteredMembers.map((member) => (
+                      {items.map((member) => (
                         <label
                           className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200"
                           key={member.userId}

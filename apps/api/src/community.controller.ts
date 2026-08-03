@@ -39,6 +39,7 @@ import {
   revokeSession,
   setProjectArchived,
   updateMemberRole,
+  updateMemberRoles,
   updateMemberGroup,
   updateProject,
   verifyCsrf,
@@ -490,6 +491,23 @@ export class CommunityController {
       requestId(request),
     );
     return { updated: true };
+  }
+
+  @Patch('members/roles')
+  async changeRoles(@Req() request: Request, @Body() unparsed: unknown) {
+    const actor = await requireActor(request, 'member.manage', true);
+    const body = z
+      .object({ memberIds: z.array(z.string().uuid()).min(1).max(500), role })
+      .strict()
+      .parse(unparsed);
+    const updated = await updateMemberRoles(
+      appRuntime().pool,
+      actor,
+      body.memberIds,
+      body.role,
+      requestId(request),
+    );
+    return { updated };
   }
 
   @Get('member-groups')
