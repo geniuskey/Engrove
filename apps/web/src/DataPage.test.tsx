@@ -45,6 +45,7 @@ function DataPageHarness({
 describe('DataPage', () => {
   it('renders an object-type grid with typed values and pagination state', async () => {
     let patchBody: Record<string, unknown> | undefined;
+    const patchBodies: Array<Record<string, unknown>> = [];
     let createViewBody: Record<string, unknown> | undefined;
     let updateViewBody: Record<string, unknown> | undefined;
     let inlineCreateBody: Record<string, unknown> | undefined;
@@ -192,15 +193,17 @@ describe('DataPage', () => {
       }
       if (url.endsWith('/records/019fbcf9-e020-71da-935a-6a6a728b3795')) {
         patchBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        patchBodies.push(patchBody);
         return json({
           id: '019fbcf9-e020-71da-935a-6a6a728b3795',
           objectTypeId: '019fbcf9-e020-71da-935a-6a6a728b3792',
-          displayName: 'Sample Two',
-          values: { serial: '3' },
-          relations: {},
-          fileReferences: {},
-          datasetReferences: {},
-          rowVersion: 2,
+          displayName: patchBody.displayName,
+          contextProjectId: patchBody.contextProjectId,
+          values: patchBody.values,
+          relations: patchBody.relations,
+          fileReferences: patchBody.fileReferences,
+          datasetReferences: patchBody.datasetReferences,
+          rowVersion: Number(patchBody.rowVersion) + 1,
           archivedAt: null,
           createdAt: '2026-08-01T00:00:00.000Z',
           updatedAt: '2026-08-01T01:00:00.000Z',
@@ -239,6 +242,35 @@ describe('DataPage', () => {
     expect(screen.getByText('1 records · page 1 of 1')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'New record' })).toBeInTheDocument();
     expect(screen.getByRole('navigation', { name: 'Data navigation' })).toBeInTheDocument();
+    const nameCell = screen.getByRole('button', { name: 'Edit Name for Sample Two' }).closest('td');
+    const serialCell = screen
+      .getByRole('button', { name: 'Edit Serial for Sample Two' })
+      .closest('td');
+    expect(nameCell).not.toBeNull();
+    expect(serialCell).not.toBeNull();
+    fireEvent.pointerDown(nameCell!, { button: 0, buttons: 1 });
+    fireEvent.pointerEnter(serialCell!, { buttons: 1 });
+    fireEvent.pointerUp(window);
+    expect(screen.getByText('2 cells selected')).toBeInTheDocument();
+    const clipboardSetData = vi.fn();
+    fireEvent.copy(screen.getByRole('grid'), {
+      clipboardData: { setData: clipboardSetData },
+    });
+    expect(clipboardSetData).toHaveBeenCalledWith('text/plain', 'Sample Two\t2');
+    fireEvent.paste(screen.getByRole('grid'), {
+      clipboardData: { getData: () => 'Sample Two\t7' },
+    });
+    await waitFor(() =>
+      expect(patchBodies.slice(0, 2)).toEqual([
+        expect.objectContaining({ displayName: 'Sample Two', rowVersion: 1 }),
+        expect.objectContaining({
+          displayName: 'Sample Two',
+          values: expect.objectContaining({ serial: '7' }),
+          rowVersion: 2,
+        }),
+      ]),
+    );
+    expect((await screen.findAllByText('2 cells pasted.')).length).toBeGreaterThan(0);
     const sampleRow = screen.getByRole('button', { name: 'Quick view Sample Two' }).closest('tr');
     expect(sampleRow).not.toBeNull();
     fireEvent.contextMenu(sampleRow!, { clientX: 120, clientY: 140 });

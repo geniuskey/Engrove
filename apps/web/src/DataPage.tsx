@@ -1,5 +1,6 @@
 import { Button } from '@engrove/ui';
 import {
+  type ClipboardEvent as ReactClipboardEvent,
   type FocusEvent,
   type FormEvent,
   type DragEvent as ReactDragEvent,
@@ -115,6 +116,34 @@ interface QueryResult {
   pageSize: number;
   total: number;
   groups?: Array<{ value: string | null; count: number }>;
+}
+
+type GridColumn =
+  | { key: 'displayName'; label: string; kind: 'displayName'; editable: true }
+  | { key: 'contextProject'; label: string; kind: 'contextProject'; editable: true }
+  | {
+      key: `field:${string}`;
+      label: string;
+      kind: 'field';
+      editable: boolean;
+      field: FieldDefinition;
+    };
+
+interface GridCellAddress {
+  rowId: string;
+  columnKey: GridColumn['key'];
+}
+
+interface GridSelection {
+  anchor: GridCellAddress;
+  focus: GridCellAddress;
+}
+
+interface GridSelectionBounds {
+  rowStart: number;
+  rowEnd: number;
+  columnStart: number;
+  columnEnd: number;
 }
 
 type RecordViewType = 'grid' | 'form' | 'gallery' | 'kanban' | 'calendar';
@@ -542,6 +571,34 @@ function gridValue(field: FieldDefinition | undefined, draft: GridEditorDraft): 
   return primary || undefined;
 }
 
+function parseClipboardGrid(text: string): string[][] {
+  const normalized = text.replace(/\r\n?/g, '\n').replace(/\n$/, '');
+  return normalized.split('\n').map((row) => row.split('\t'));
+}
+
+function clipboardSafeValue(value: string): string {
+  return value.replace(/[\t\r\n]+/g, ' ');
+}
+
+function selectionBounds(
+  selection: GridSelection | undefined,
+  records: DynamicRecord[],
+  columns: GridColumn[],
+): GridSelectionBounds | undefined {
+  if (!selection) return undefined;
+  const anchorRow = records.findIndex((record) => record.id === selection.anchor.rowId);
+  const focusRow = records.findIndex((record) => record.id === selection.focus.rowId);
+  const anchorColumn = columns.findIndex((column) => column.key === selection.anchor.columnKey);
+  const focusColumn = columns.findIndex((column) => column.key === selection.focus.columnKey);
+  if ([anchorRow, focusRow, anchorColumn, focusColumn].some((index) => index < 0)) return undefined;
+  return {
+    rowStart: Math.min(anchorRow, focusRow),
+    rowEnd: Math.max(anchorRow, focusRow),
+    columnStart: Math.min(anchorColumn, focusColumn),
+    columnEnd: Math.max(anchorColumn, focusColumn),
+  };
+}
+
 function GridCell({
   comfortable = false,
   field,
@@ -640,7 +697,7 @@ function GridCell({
   };
   return (
     <div
-      className="w-full min-w-0 max-w-full overflow-hidden p-1"
+      className="w-full min-w-0 max-w-full select-text overflow-hidden p-1"
       data-grid-cell-editor=""
       onBlur={handleBlur}
       onKeyDown={handleKeyDown}
@@ -1951,6 +2008,9 @@ export function DataPage({
   }>();
   const [layoutAnnouncement, setLayoutAnnouncement] = useState('');
   const [rowDensity, setRowDensity] = useState<'compact' | 'comfortable'>('compact');
+  const [gridSelection, setGridSelection] = useState<GridSelection>();
+  const [dragSelectingCells, setDragSelectingCells] = useState(false);
+  const [clipboardBusy, setClipboardBusy] = useState(false);
   const [selectedRows, setSelectedRows] = useState<Set<string>>(() => new Set());
   const [selectedRecord, setSelectedRecord] = useState<DynamicRecord>();
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -2004,6 +2064,37 @@ export function DataPage({
     () => orderedFields.filter((field) => !hiddenFieldIds.has(field.id)),
     [hiddenFieldIds, orderedFields],
   );
+  const gridColumns = useMemo<GridColumn[]>(
+    () => [
+      { key: 'displayName', label: t('data.name'), kind: 'displayName', editable: true },
+      ...(workspaceMode
+        ? ([
+            {
+              key: 'contextProject',
+              label: t('data.project'),
+              kind: 'contextProject',
+              editable: true,
+            },
+          ] satisfies GridColumn[])
+        : []),
+      ...visibleFields.map((field): GridColumn => ({
+        key: `field:${field.id}`,
+        label: field.name,
+        kind: 'field',
+        editable: field.fieldType !== 'measurement',
+        field,
+      })),
+    ],
+    [t, visibleFields, workspaceMode],
+  );
+  const gridSelectionBounds = useMemo(
+    () => selectionBounds(gridSelection, records.items, gridColumns),
+    [gridColumns, gridSelection, records.items],
+  );
+  const selectedGridCellCount = gridSelectionBounds
+    ? (gridSelectionBounds.rowEnd - gridSelectionBounds.rowStart + 1) *
+      (gridSelectionBounds.columnEnd - gridSelectionBounds.columnStart + 1)
+    : 0;
   const displayNameWidth = systemFieldWidths.displayName ?? DEFAULT_SYSTEM_FIELD_WIDTHS.displayName;
   const contextProjectWidth =
     systemFieldWidths.contextProject ?? DEFAULT_SYSTEM_FIELD_WIDTHS.contextProject;
@@ -2102,6 +2193,21 @@ export function DataPage({
   const viewDirty = Boolean(
     selectedView && JSON.stringify(currentViewConfig) !== JSON.stringify(selectedView.config),
   );
+
+  useEffect(() => {
+    const stopSelecting = () => setDragSelectingCells(false);
+    window.addEventListener('pointerup', stopSelecting);
+    window.addEventListener('pointercancel', stopSelecting);
+    return () => {
+      window.removeEventListener('pointerup', stopSelecting);
+      window.removeEventListener('pointercancel', stopSelecting);
+    };
+  }, []);
+
+  useEffect(() => {
+    setGridSelection(undefined);
+    setDragSelectingCells(false);
+  }, [activeViewType, page, selectedId, selectedViewId]);
 
   useEffect(() => {
     if (!viewDirty) return;
@@ -2566,11 +2672,287 @@ export function DataPage({
     }
   }
 
-  async function saveGridCell(
+  function beginGridCellSelection(
+    event: ReactPointerEvent<HTMLTableCellElement>,
+    address: GridCellAddress,
+  ) {
+    if (event.button !== 0) return;
+    if ((event.target as HTMLElement).closest('[data-grid-cell-editor]')) return;
+    event.currentTarget.focus({ preventScroll: true });
+    setGridSelection((current) => ({
+      anchor: event.shiftKey && current ? current.anchor : address,
+      focus: address,
+    }));
+    setDragSelectingCells(true);
+  }
+
+  function extendGridCellSelection(
+    event: ReactPointerEvent<HTMLTableCellElement>,
+    address: GridCellAddress,
+  ) {
+    if (!dragSelectingCells || event.buttons !== 1) return;
+    setGridSelection((current) => (current ? { ...current, focus: address } : undefined));
+  }
+
+  function gridCellSelectionClass(address: GridCellAddress): string {
+    if (!gridSelectionBounds) return '';
+    const rowIndex = records.items.findIndex((record) => record.id === address.rowId);
+    const columnIndex = gridColumns.findIndex((column) => column.key === address.columnKey);
+    const selectedCell =
+      rowIndex >= gridSelectionBounds.rowStart &&
+      rowIndex <= gridSelectionBounds.rowEnd &&
+      columnIndex >= gridSelectionBounds.columnStart &&
+      columnIndex <= gridSelectionBounds.columnEnd;
+    if (!selectedCell) return '';
+    const activeCell =
+      gridSelection?.anchor.rowId === address.rowId &&
+      gridSelection.anchor.columnKey === address.columnKey;
+    return `!bg-sky-500/15 outline outline-offset-[-1px] ${activeCell ? 'z-10 outline-2 outline-sky-300' : 'outline-1 outline-sky-500/60'}`;
+  }
+
+  function gridClipboardValue(record: DynamicRecord, column: GridColumn): string {
+    if (column.kind === 'displayName') return record.displayName;
+    if (column.kind === 'contextProject') {
+      return (
+        workspaceData?.projects.find((project) => project.id === record.contextProjectId)?.name ??
+        ''
+      );
+    }
+    const value = recordGridValue(record, column.field);
+    if (column.field.fieldType === 'measurement') {
+      return record.measurements?.[column.field.id]?.value ?? '';
+    }
+    const draft = gridEditorDraft(column.field, value);
+    if (column.field.fieldType === 'boolean') {
+      return draft.primary === 'true' ? 'Yes' : draft.primary === 'false' ? 'No' : '';
+    }
+    if (column.field.fieldType === 'single_select') {
+      return (
+        column.field.config.options?.find((option) => option.key === draft.primary)?.label ??
+        draft.primary
+      );
+    }
+    if (column.field.fieldType === 'range') {
+      return [draft.primary, draft.secondary].filter(Boolean).join(' .. ');
+    }
+    if (column.field.fieldType === 'quantity') {
+      return [draft.primary, draft.unit].filter(Boolean).join(' ');
+    }
+    return draft.primary;
+  }
+
+  function pastedGridValue(record: DynamicRecord, column: GridColumn, text: string): unknown {
+    if (column.kind === 'displayName') {
+      return gridValue(undefined, { primary: text, secondary: '', unit: '' });
+    }
+    if (column.kind !== 'field' || !column.editable) return undefined;
+    const field = column.field;
+    const draft = gridEditorDraft(field, recordGridValue(record, field));
+    let primary = text.trim();
+    if (field.fieldType === 'boolean') {
+      const normalized = primary.toLowerCase();
+      primary = ['yes', 'true', '1', 'y'].includes(normalized)
+        ? 'true'
+        : ['no', 'false', '0', 'n'].includes(normalized)
+          ? 'false'
+          : primary;
+    }
+    if (field.fieldType === 'single_select') {
+      primary =
+        field.config.options?.find(
+          (option) =>
+            option.key.toLowerCase() === primary.toLowerCase() ||
+            option.label.toLowerCase() === primary.toLowerCase(),
+        )?.key ?? primary;
+    }
+    if (field.fieldType === 'quantity') {
+      const pastedUnit = field.config.allowedUnits?.find((unit) =>
+        primary.toLowerCase().endsWith(` ${unit.toLowerCase()}`),
+      );
+      if (pastedUnit) {
+        primary = primary.slice(0, -(pastedUnit.length + 1));
+        draft.unit = pastedUnit;
+      }
+    }
+    if (field.fieldType === 'range') {
+      const [lower = '', upper = ''] = primary.split(/\s*(?:\.\.|…|–)\s*/, 2);
+      primary = lower;
+      draft.secondary = upper;
+    }
+    return gridValue(field, { ...draft, primary });
+  }
+
+  function handleGridCopy(event: ReactClipboardEvent<HTMLTableElement>) {
+    if (!gridSelectionBounds) return;
+    const text = records.items
+      .slice(gridSelectionBounds.rowStart, gridSelectionBounds.rowEnd + 1)
+      .map((record) =>
+        gridColumns
+          .slice(gridSelectionBounds.columnStart, gridSelectionBounds.columnEnd + 1)
+          .map((column) => clipboardSafeValue(gridClipboardValue(record, column)))
+          .join('\t'),
+      )
+      .join('\n');
+    event.clipboardData.setData('text/plain', text);
+    event.preventDefault();
+    setLayoutAnnouncement(`${selectedGridCellCount} cells copied.`);
+  }
+
+  async function pasteGridText(text: string) {
+    if (!gridSelection || clipboardBusy || !allowed(user, 'record.update')) return;
+    const matrix = parseClipboardGrid(text);
+    if (!matrix.length || !matrix.some((row) => row.length)) return;
+    const anchorRow = records.items.findIndex((record) => record.id === gridSelection.anchor.rowId);
+    const anchorColumn = gridColumns.findIndex(
+      (column) => column.key === gridSelection.anchor.columnKey,
+    );
+    if (anchorRow < 0 || anchorColumn < 0) return;
+
+    const targets: Array<{ rowIndex: number; columnIndex: number; value: string }> = [];
+    if (matrix.length === 1 && matrix[0]?.length === 1 && gridSelectionBounds) {
+      for (
+        let rowIndex = gridSelectionBounds.rowStart;
+        rowIndex <= gridSelectionBounds.rowEnd;
+        rowIndex += 1
+      ) {
+        for (
+          let columnIndex = gridSelectionBounds.columnStart;
+          columnIndex <= gridSelectionBounds.columnEnd;
+          columnIndex += 1
+        ) {
+          targets.push({ rowIndex, columnIndex, value: matrix[0]![0] ?? '' });
+        }
+      }
+    } else {
+      matrix.forEach((row, rowOffset) => {
+        row.forEach((value, columnOffset) => {
+          const rowIndex = anchorRow + rowOffset;
+          const columnIndex = anchorColumn + columnOffset;
+          if (records.items[rowIndex] && gridColumns[columnIndex]) {
+            targets.push({ rowIndex, columnIndex, value });
+          }
+        });
+      });
+    }
+    if (!targets.length) return;
+
+    setClipboardBusy(true);
+    const workingRecords = new Map(records.items.map((record) => [record.id, record]));
+    const failedRows = new Set<string>();
+    let updatedCount = 0;
+    let skippedCount = 0;
+    let failedCount = 0;
+    for (const target of targets) {
+      const originalRecord = records.items[target.rowIndex];
+      const column = gridColumns[target.columnIndex];
+      if (!originalRecord || !column || failedRows.has(originalRecord.id)) continue;
+      if (!column.editable) {
+        skippedCount += 1;
+        continue;
+      }
+      const record = workingRecords.get(originalRecord.id) ?? originalRecord;
+      try {
+        const updated =
+          column.kind === 'contextProject'
+            ? await updateProjectCellRecord(
+                record,
+                target.value.trim()
+                  ? (workspaceData?.projects.find(
+                      (project) =>
+                        project.id === target.value.trim() ||
+                        project.name.toLowerCase() === target.value.trim().toLowerCase(),
+                    )?.id ??
+                      (() => {
+                        throw new Error(`Project “${target.value.trim()}” was not found.`);
+                      })())
+                  : null,
+              )
+            : await updateGridCellRecord(
+                record,
+                column.kind === 'displayName' ? 'displayName' : column.field,
+                pastedGridValue(record, column, target.value),
+              );
+        workingRecords.set(updated.id, updated);
+        updatedCount += 1;
+      } catch {
+        failedRows.add(originalRecord.id);
+        failedCount += 1;
+      }
+    }
+    setClipboardBusy(false);
+    const lastTarget = targets.at(-1);
+    const lastRecord = lastTarget ? records.items[lastTarget.rowIndex] : undefined;
+    const lastColumn = lastTarget ? gridColumns[lastTarget.columnIndex] : undefined;
+    if (lastRecord && lastColumn) {
+      setGridSelection((current) =>
+        current
+          ? {
+              anchor: current.anchor,
+              focus: { rowId: lastRecord.id, columnKey: lastColumn.key },
+            }
+          : current,
+      );
+    }
+    setMessageTone(failedCount ? 'error' : 'success');
+    setMessage(
+      `${updatedCount} cells pasted${skippedCount ? ` · ${skippedCount} read-only cells skipped` : ''}${failedCount ? ` · ${failedCount} rows failed` : ''}.`,
+    );
+    setLayoutAnnouncement(`${updatedCount} cells pasted.`);
+  }
+
+  function handleGridPaste(event: ReactClipboardEvent<HTMLTableElement>) {
+    if (!gridSelection || !allowed(user, 'record.update')) return;
+    event.preventDefault();
+    void pasteGridText(event.clipboardData.getData('text/plain'));
+  }
+
+  function handleGridSelectionKeyDown(event: ReactKeyboardEvent<HTMLTableElement>) {
+    if (!gridSelection || (event.target as HTMLElement).closest('[data-grid-cell-editor]')) return;
+    const movement: Record<string, [number, number]> = {
+      ArrowUp: [-1, 0],
+      ArrowDown: [1, 0],
+      ArrowLeft: [0, -1],
+      ArrowRight: [0, 1],
+    };
+    if (event.key === 'Escape') {
+      setGridSelection(undefined);
+      setLayoutAnnouncement('Cell selection cleared.');
+      return;
+    }
+    const delta = movement[event.key];
+    if (!delta || event.metaKey || event.ctrlKey || event.altKey) return;
+    const focusRow = records.items.findIndex((record) => record.id === gridSelection.focus.rowId);
+    const focusColumn = gridColumns.findIndex(
+      (column) => column.key === gridSelection.focus.columnKey,
+    );
+    if (focusRow < 0 || focusColumn < 0) return;
+    event.preventDefault();
+    const nextRow = Math.max(0, Math.min(records.items.length - 1, focusRow + delta[0]));
+    const nextColumn = Math.max(0, Math.min(gridColumns.length - 1, focusColumn + delta[1]));
+    const nextAddress: GridCellAddress = {
+      rowId: records.items[nextRow]!.id,
+      columnKey: gridColumns[nextColumn]!.key,
+    };
+    setGridSelection((current) =>
+      current && event.shiftKey
+        ? { ...current, focus: nextAddress }
+        : { anchor: nextAddress, focus: nextAddress },
+    );
+  }
+
+  function storeUpdatedRecord(updated: DynamicRecord) {
+    setRecords((current) => ({
+      ...current,
+      items: current.items.map((item) => (item.id === updated.id ? updated : item)),
+    }));
+    setSelectedRecord((current) => (current?.id === updated.id ? updated : current));
+  }
+
+  async function updateGridCellRecord(
     record: DynamicRecord,
     target: 'displayName' | FieldDefinition,
     value: unknown,
-  ) {
+  ): Promise<DynamicRecord> {
     const values = { ...record.values };
     const relations = { ...(record.relations ?? {}) };
     const fileReferences = { ...(record.fileReferences ?? {}) };
@@ -2609,18 +2991,26 @@ export function DataPage({
           }),
         },
       );
-      setRecords((current) => ({
-        ...current,
-        items: current.items.map((item) => (item.id === updated.id ? updated : item)),
-      }));
-      setSelectedRecord((current) => (current?.id === updated.id ? updated : current));
+      storeUpdatedRecord(updated);
+      return updated;
     } catch (cause) {
       if (cause instanceof ApiError && cause.code === 'VERSION_CONFLICT') await loadRecords();
       throw cause;
     }
   }
 
-  async function saveProjectCell(record: DynamicRecord, contextProjectId: string | null) {
+  async function saveGridCell(
+    record: DynamicRecord,
+    target: 'displayName' | FieldDefinition,
+    value: unknown,
+  ): Promise<void> {
+    await updateGridCellRecord(record, target, value);
+  }
+
+  async function updateProjectCellRecord(
+    record: DynamicRecord,
+    contextProjectId: string | null,
+  ): Promise<DynamicRecord> {
     try {
       const updated = await api<DynamicRecord>(
         `${base}/object-types/${record.objectTypeId}/records/${record.id}`,
@@ -2637,15 +3027,19 @@ export function DataPage({
           }),
         },
       );
-      setRecords((current) => ({
-        ...current,
-        items: current.items.map((item) => (item.id === updated.id ? updated : item)),
-      }));
-      setSelectedRecord((current) => (current?.id === updated.id ? updated : current));
+      storeUpdatedRecord(updated);
+      return updated;
     } catch (cause) {
       if (cause instanceof ApiError && cause.code === 'VERSION_CONFLICT') await loadRecords();
       throw cause;
     }
+  }
+
+  async function saveProjectCell(
+    record: DynamicRecord,
+    contextProjectId: string | null,
+  ): Promise<void> {
+    await updateProjectCellRecord(record, contextProjectId);
   }
 
   async function saveRecordPanel(record: DynamicRecord, form: FormData) {
@@ -4034,8 +4428,14 @@ export function DataPage({
                   allowed(user, 'record.update') &&
                   ' · double-click a cell or focus it and press Enter. Save with Enter or by leaving the cell; cancel with Escape.'}
                 {' · Right-click a record or column for more actions. Keyboard: Shift+F10.'}
+                {activeViewType === 'grid' &&
+                  ' · Drag across cells to select; copy and paste with Ctrl/Cmd+C and Ctrl/Cmd+V.'}
               </p>
-              <p>Changes are shared across every view of this table.</p>
+              <p aria-live="polite">
+                {selectedGridCellCount > 0
+                  ? `${selectedGridCellCount} cells selected${clipboardBusy ? ' · Pasting…' : ''}`
+                  : 'Changes are shared across every view of this table.'}
+              </p>
             </div>
 
             <div
@@ -4056,8 +4456,13 @@ export function DataPage({
               )}
               {!recordsLoading && activeViewType === 'grid' && (
                 <table
-                  className="min-w-full table-fixed border-separate border-spacing-0 text-left text-sm"
+                  aria-multiselectable="true"
+                  className="min-w-full table-fixed select-none border-separate border-spacing-0 text-left text-sm"
+                  role="grid"
                   style={{ width: gridTableWidth }}
+                  onCopy={handleGridCopy}
+                  onKeyDown={handleGridSelectionKeyDown}
+                  onPaste={handleGridPaste}
                 >
                   <caption className="sr-only">
                     Editable spreadsheet view for {selected.pluralName}
@@ -4500,7 +4905,25 @@ export function DataPage({
                             </button>
                           </span>
                         </td>
-                        <td className="sticky left-0 z-10 border-b border-r border-slate-800 bg-slate-950">
+                        <td
+                          className={`sticky left-0 z-10 border-b border-r border-slate-800 bg-slate-950 ${gridCellSelectionClass({ rowId: record.id, columnKey: 'displayName' })}`}
+                          data-grid-cell=""
+                          data-grid-column-key="displayName"
+                          data-grid-row-id={record.id}
+                          onPointerDown={(event) =>
+                            beginGridCellSelection(event, {
+                              rowId: record.id,
+                              columnKey: 'displayName',
+                            })
+                          }
+                          onPointerEnter={(event) =>
+                            extendGridCellSelection(event, {
+                              rowId: record.id,
+                              columnKey: 'displayName',
+                            })
+                          }
+                          tabIndex={-1}
+                        >
                           {allowed(user, 'record.update') ? (
                             <GridCell
                               comfortable={rowDensity === 'comfortable'}
@@ -4516,11 +4939,29 @@ export function DataPage({
                           )}
                         </td>
                         {workspaceMode && (
-                          <td className="border-b border-r border-slate-800 px-1.5 py-1">
+                          <td
+                            className={`border-b border-r border-slate-800 px-1.5 py-1 ${gridCellSelectionClass({ rowId: record.id, columnKey: 'contextProject' })}`}
+                            data-grid-cell=""
+                            data-grid-column-key="contextProject"
+                            data-grid-row-id={record.id}
+                            onPointerDown={(event) =>
+                              beginGridCellSelection(event, {
+                                rowId: record.id,
+                                columnKey: 'contextProject',
+                              })
+                            }
+                            onPointerEnter={(event) =>
+                              extendGridCellSelection(event, {
+                                rowId: record.id,
+                                columnKey: 'contextProject',
+                              })
+                            }
+                            tabIndex={-1}
+                          >
                             {allowed(user, 'record.update') ? (
                               <select
                                 aria-label={`Project for ${record.displayName}`}
-                                className="min-h-7 w-full rounded border border-transparent bg-transparent px-1.5 text-xs text-slate-300 outline-none hover:border-slate-700 focus:border-sky-400"
+                                className="min-h-7 w-full select-text rounded border border-transparent bg-transparent px-1.5 text-xs text-slate-300 outline-none hover:border-slate-700 focus:border-sky-400"
                                 value={record.contextProjectId ?? ''}
                                 onChange={(event) =>
                                   void saveProjectCell(record, event.target.value || null).catch(
@@ -4553,7 +4994,26 @@ export function DataPage({
                           </td>
                         )}
                         {visibleFields.map((field) => (
-                          <td className="border-b border-r border-slate-800" key={field.id}>
+                          <td
+                            className={`border-b border-r border-slate-800 ${gridCellSelectionClass({ rowId: record.id, columnKey: `field:${field.id}` })}`}
+                            data-grid-cell=""
+                            data-grid-column-key={`field:${field.id}`}
+                            data-grid-row-id={record.id}
+                            key={field.id}
+                            onPointerDown={(event) =>
+                              beginGridCellSelection(event, {
+                                rowId: record.id,
+                                columnKey: `field:${field.id}`,
+                              })
+                            }
+                            onPointerEnter={(event) =>
+                              extendGridCellSelection(event, {
+                                rowId: record.id,
+                                columnKey: `field:${field.id}`,
+                              })
+                            }
+                            tabIndex={-1}
+                          >
                             {field.fieldType === 'measurement' ? (
                               <span className="block max-w-64 truncate px-2.5 py-2 text-xs text-slate-400">
                                 {record.measurements?.[field.id]?.resultId
