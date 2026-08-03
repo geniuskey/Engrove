@@ -4031,7 +4031,12 @@ export function DataPage({
               <p>Changes are shared across every view of this table.</p>
             </div>
 
-            <div className="mt-1.5 max-w-full overflow-x-auto rounded-md border border-slate-800">
+            <div
+              aria-label={`${selected.pluralName} table. Scroll horizontally to view more columns.`}
+              className="mt-1.5 w-full min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-md border border-slate-800"
+              role="region"
+              tabIndex={0}
+            >
               <p aria-live="polite" className="sr-only">
                 {layoutAnnouncement}
               </p>

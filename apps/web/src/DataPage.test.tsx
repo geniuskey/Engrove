@@ -229,6 +229,11 @@ describe('DataPage', () => {
 
     expect(await screen.findByRole('heading', { name: 'Samples' })).toBeInTheDocument();
     expect(
+      screen.getByRole('region', {
+        name: 'Samples table. Scroll horizontally to view more columns.',
+      }),
+    ).toHaveClass('w-full', 'min-w-0', 'max-w-full', 'overflow-x-auto');
+    expect(
       await screen.findByRole('button', { name: 'Quick view Sample Two' }),
     ).toBeInTheDocument();
     expect(screen.getByText('1 records · page 1 of 1')).toBeInTheDocument();
