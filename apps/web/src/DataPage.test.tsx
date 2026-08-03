@@ -50,7 +50,7 @@ describe('DataPage', () => {
     let inlineCreateBody: Record<string, unknown> | undefined;
     let createdViewCount = 0;
     const recordQueryBodies: Array<Record<string, unknown>> = [];
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const confirmMock = vi.spyOn(window, 'confirm').mockReturnValue(true);
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
       if (url.endsWith('/object-types')) {
@@ -405,6 +405,12 @@ describe('DataPage', () => {
     });
     expect(screen.getByRole('combobox', { name: 'Row density' })).toHaveValue('comfortable');
     expect(await screen.findByText('Unsaved')).toBeInTheDocument();
+    confirmMock.mockReturnValueOnce(false);
+    fireEvent.click(screen.getByRole('button', { name: 'All records' }));
+    expect(window.confirm).toHaveBeenCalledWith(
+      'Discard unsaved changes to this shared view? This cannot be undone.',
+    );
+    expect(screen.getByRole('button', { name: 'Review queue' })).toHaveClass('text-sky-200');
     fireEvent.click(screen.getByRole('button', { name: 'Save view' }));
     await waitFor(() =>
       expect(updateViewBody).toMatchObject({

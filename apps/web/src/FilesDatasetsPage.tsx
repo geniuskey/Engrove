@@ -74,10 +74,25 @@ export function FilesDatasetsPage({ user }: { user: User }) {
     }
   }, [base]);
   useEffect(() => void refresh(), [refresh]);
+  const processingResourceCount =
+    files.filter(
+      (file) => !file.archived_at && ['pending_upload', 'verifying'].includes(file.status),
+    ).length +
+    datasets.filter(
+      (dataset) => !dataset.archived_at && ['pending', 'processing'].includes(dataset.status),
+    ).length;
   useEffect(() => {
-    const interval = window.setInterval(() => void refresh(), 3_000);
-    return () => window.clearInterval(interval);
-  }, [refresh]);
+    if (!processingResourceCount) return;
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') void refresh();
+    };
+    const interval = window.setInterval(refreshWhenVisible, 3_000);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+    };
+  }, [processingResourceCount, refresh]);
 
   const tabular = useMemo(
     () =>
@@ -329,6 +344,11 @@ export function FilesDatasetsPage({ user }: { user: User }) {
         actions.
       </p>
       <ErrorText>{message}</ErrorText>
+      {processingResourceCount > 0 && (
+        <p aria-live="polite" className="mt-2 text-xs text-sky-300" role="status">
+          Processing {processingResourceCount} resource(s) · updates pause while this tab is hidden.
+        </p>
+      )}
 
       {allowed(user, 'file.upload') && (
         <form

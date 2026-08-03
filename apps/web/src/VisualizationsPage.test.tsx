@@ -13,6 +13,7 @@ afterEach(() => vi.restoreAllMocks());
 describe('VisualizationsPage record dashboard cards', () => {
   it('renders a live record KPI and pins a new cross-table card into a revision', async () => {
     const revisionRequests: Array<Record<string, unknown>> = [];
+    let recordQueryCount = 0;
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
       if (url.endsWith('/datasets')) return json({ items: [] });
@@ -43,8 +44,10 @@ describe('VisualizationsPage record dashboard cards', () => {
           ],
         });
       if (url.endsWith(`/object-types/${objectTypeId}/views`)) return json({ items: [] });
-      if (url.endsWith(`/object-types/${objectTypeId}/records/query`))
+      if (url.endsWith(`/object-types/${objectTypeId}/records/query`)) {
+        recordQueryCount += 1;
         return json({ items: [], page: 1, pageSize: 1, total: 7 });
+      }
       if (url.endsWith(`/dashboards/${dashboardId}/revisions`) && init?.method === 'POST') {
         revisionRequests.push(JSON.parse(String(init.body)) as Record<string, unknown>);
         return json({});
@@ -77,6 +80,9 @@ describe('VisualizationsPage record dashboard cards', () => {
 
     expect(await screen.findByText('Open issues')).toBeInTheDocument();
     expect(await screen.findByText('7')).toBeInTheDocument();
+    const initialQueryCount = recordQueryCount;
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh live data' }));
+    await waitFor(() => expect(recordQueryCount).toBeGreaterThan(initialQueryCount));
     const card = screen.getByText('Open issues').closest('article');
     expect(card).not.toBeNull();
     fireEvent.contextMenu(card!, { clientX: 80, clientY: 100 });

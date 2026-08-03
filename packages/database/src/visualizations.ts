@@ -512,7 +512,7 @@ export class ScopedVisualizationRepository {
           );
         if (config.source?.viewId) {
           const view = await client.query(
-            'select 1 from record_views where project_id=$1 and object_type_id=$2 and id=$3 and archived_at is null',
+            'select 1 from record_views where project_id=$1 and object_type_id=$2 and id=$3',
             [this.scope.projectId, objectTypeId, config.source.viewId],
           );
           if (!view.rowCount)

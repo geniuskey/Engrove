@@ -2096,6 +2096,16 @@ export function DataPage({
     selectedView && JSON.stringify(currentViewConfig) !== JSON.stringify(selectedView.config),
   );
 
+  useEffect(() => {
+    if (!viewDirty) return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warnBeforeUnload);
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload);
+  }, [viewDirty]);
+
   function cycleSort(column: string) {
     if (sortField !== column) {
       setSortField(column);
@@ -2666,7 +2676,25 @@ export function DataPage({
     setMessage(`${created.displayName} created. The next blank row is ready.`);
   }
 
-  function chooseView(viewId: string) {
+  function confirmDiscardViewChanges() {
+    return (
+      !viewDirty ||
+      window.confirm('Discard unsaved changes to this shared view? This cannot be undone.')
+    );
+  }
+
+  function chooseObjectType(objectTypeId: string) {
+    if (objectTypeId === selectedId || !confirmDiscardViewChanges()) return;
+    setPage(1);
+    setSortField('displayName');
+    setSortDirection('asc');
+    setFilterField('');
+    setFilterValue('');
+    setSearch({ type: objectTypeId });
+  }
+
+  function chooseView(viewId: string, force = false) {
+    if (viewId === selectedViewId || (!force && !confirmDiscardViewChanges())) return;
     setSelectedRows(new Set());
     setSelectedRecord(undefined);
     const view = views.find((candidate) => candidate.id === viewId);
@@ -2869,7 +2897,7 @@ export function DataPage({
         }),
       });
       setViews((current) => current.filter((view) => view.id !== target.id));
-      if (selectedViewId === target.id) chooseView('all');
+      if (selectedViewId === target.id) chooseView('all', true);
       setMessageTone('success');
       setMessage(`View “${target.name}” archived.`);
     } catch (cause) {
@@ -3204,14 +3232,7 @@ export function DataPage({
                     <button
                       aria-expanded={activeTable}
                       className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs ${activeTable ? 'bg-slate-800 font-medium text-slate-100' : 'text-slate-300 hover:bg-slate-800'}`}
-                      onClick={() => {
-                        setPage(1);
-                        setSortField('displayName');
-                        setSortDirection('asc');
-                        setFilterField('');
-                        setFilterValue('');
-                        setSearch({ type: objectType.id });
-                      }}
+                      onClick={() => chooseObjectType(objectType.id)}
                       type="button"
                     >
                       <span className="w-3 text-[10px] text-slate-500">
@@ -3641,6 +3662,16 @@ export function DataPage({
                     >
                       {viewBusy ? t('data.saving') : t('data.saveView')}
                     </button>
+                    {viewDirty && (
+                      <button
+                        className="rounded-lg px-3 py-2 text-sm text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                        disabled={viewBusy}
+                        onClick={() => applyViewConfig(selectedView.config)}
+                        type="button"
+                      >
+                        Discard changes
+                      </button>
+                    )}
                     <button
                       aria-label={`Archive view ${selectedView.name}`}
                       className="rounded-lg px-2 py-2 text-sm text-slate-500 hover:bg-rose-500/10 hover:text-rose-300"

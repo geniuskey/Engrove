@@ -271,7 +271,7 @@ function applyFilter(
   return rows.filter((row) => test(row, node));
 }
 
-function EChart({ option }: { option: EChartsOption }) {
+function EChart({ option, ariaLabel }: { option: EChartsOption; ariaLabel: string }) {
   const host = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!host.current) return;
@@ -297,7 +297,7 @@ function EChart({ option }: { option: EChartsOption }) {
       instance.dispose();
     };
   }, [option]);
-  return <div className="h-64 w-full" ref={host} />;
+  return <div aria-label={ariaLabel} className="h-64 w-full" ref={host} role="img" />;
 }
 
 function percentile(sorted: number[], fraction: number) {
@@ -319,6 +319,7 @@ function ChartView({
 }) {
   const [option, setOption] = useState<EChartsOption>();
   const [error, setError] = useState('');
+  const [ariaLabel, setAriaLabel] = useState('Pinned data chart');
   useEffect(
     () =>
       void (async () => {
@@ -347,6 +348,7 @@ function ChartView({
               columns.set(`${source.source_key}:${column.id}`, column.name);
           }
           const config = revision.config;
+          setAriaLabel(`${config.title}. ${revision.chart_type} chart.`);
           const axisName = (axis: AxisConfig) =>
             `${axis.label}${axis.displayUnit ? ` (${axis.displayUnit})` : ''}`;
           const common: Record<string, unknown> = {
@@ -443,7 +445,7 @@ function ChartView({
     [base, revisionId, fallback],
   );
   return option ? (
-    <EChart option={option} />
+    <EChart ariaLabel={ariaLabel} option={option} />
   ) : (
     <div className="flex h-48 items-center justify-center rounded-lg border border-dashed border-slate-700 text-sm text-amber-300">
       {error || 'Missing chart data'}
@@ -458,7 +460,15 @@ function displayRecordValue(value: unknown) {
   return String(value);
 }
 
-function RecordCardView({ base, card }: { base: string; card: DashboardCard }) {
+function RecordCardView({
+  base,
+  card,
+  refreshKey,
+}: {
+  base: string;
+  card: DashboardCard;
+  refreshKey: number;
+}) {
   const config = card.config as RecordKpiConfig | RecordChartConfig | RecordListConfig;
   const [result, setResult] = useState<RecordQueryResult>();
   const [error, setError] = useState('');
@@ -497,7 +507,7 @@ function RecordCardView({ base, card }: { base: string; card: DashboardCard }) {
     return () => {
       active = false;
     };
-  }, [base, card.card_type, config]);
+  }, [base, card.card_type, config, refreshKey]);
 
   if (loading) return <div className="mt-4 h-16 animate-pulse rounded-lg bg-slate-800/70" />;
   if (error)
@@ -554,7 +564,19 @@ function RecordCardView({ base, card }: { base: string; card: DashboardCard }) {
             series: [{ type: 'bar', data: data.map((item) => item.value) }],
           };
     return data.length ? (
-      <EChart option={option} />
+      <>
+        <EChart
+          ariaLabel={`${chart.title}. ${chart.chartType} chart grouped by ${chart.groupByLabel}. ${data.map((item) => `${item.name}: ${item.value}`).join(', ')}.`}
+          option={option}
+        />
+        <ul className="sr-only">
+          {data.map((item) => (
+            <li key={item.name}>
+              {item.name}: {item.value}
+            </li>
+          ))}
+        </ul>
+      </>
     ) : (
       <p className="mt-4 text-sm text-slate-500">No grouped records match this card.</p>
     );
@@ -653,6 +675,8 @@ export function VisualizationsPage({ user }: { user: User }) {
   const [recordGroupFieldId, setRecordGroupFieldId] = useState('');
   const [recordListFieldIds, setRecordListFieldIds] = useState<string[]>([]);
   const [contextMenu, setContextMenu] = useState<ContextMenuModel>();
+  const [recordRefreshKey, setRecordRefreshKey] = useState(0);
+  const [lastRecordRefreshAt, setLastRecordRefreshAt] = useState(() => new Date());
   const refresh = useCallback(async () => {
     try {
       const [d, c, b, m] = await Promise.all([
@@ -741,11 +765,34 @@ export function VisualizationsPage({ user }: { user: User }) {
     [datasets],
   );
   const dashboard = dashboards.find((item) => item.id === selectedDashboard) ?? dashboards[0];
+  const liveCardCount =
+    dashboard?.cards.filter((card) =>
+      ['record_kpi', 'record_chart', 'record_list'].includes(card.card_type),
+    ).length ?? 0;
   const selectedRecordTable = recordTables.find((item) => item.id === recordSourceId);
   const selectedRecordView = recordViews.find((item) => item.id === recordViewId);
   const recordGroupFields = recordFields.filter((field) =>
     ['single_select', 'multi_select', 'boolean', 'date', 'datetime'].includes(field.fieldType),
   );
+  useEffect(() => {
+    if (!liveCardCount) return;
+    const refreshLiveCards = () => {
+      if (document.visibilityState !== 'visible') return;
+      setRecordRefreshKey((current) => current + 1);
+      setLastRecordRefreshAt(new Date());
+    };
+    const interval = window.setInterval(refreshLiveCards, 60_000);
+    document.addEventListener('visibilitychange', refreshLiveCards);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', refreshLiveCards);
+    };
+  }, [dashboard?.id, liveCardCount]);
+
+  function refreshLiveCards() {
+    setRecordRefreshKey((current) => current + 1);
+    setLastRecordRefreshAt(new Date());
+  }
   async function mutate(operation: () => Promise<unknown>) {
     try {
       await operation();
@@ -1280,6 +1327,24 @@ export function VisualizationsPage({ user }: { user: User }) {
               </option>
             ))}
           </select>
+          {liveCardCount > 0 && (
+            <div className="flex items-center gap-2 text-xs text-slate-500">
+              <span aria-live="polite">
+                {liveCardCount} live · updated{' '}
+                {lastRecordRefreshAt.toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </span>
+              <button
+                className="rounded-md px-2 py-1 text-sky-400 hover:bg-sky-500/10"
+                onClick={refreshLiveCards}
+                type="button"
+              >
+                Refresh live data
+              </button>
+            </div>
+          )}
           {dashboard && allowed(user, 'dashboard.manage') && (
             <button
               className="text-sm text-sky-400"
@@ -1447,7 +1512,7 @@ export function VisualizationsPage({ user }: { user: User }) {
                 {card.card_type === 'chart' && card.chart_revision_id ? (
                   <ChartView base={base} revisionId={card.chart_revision_id} />
                 ) : ['record_kpi', 'record_chart', 'record_list'].includes(card.card_type) ? (
-                  <RecordCardView base={base} card={card} />
+                  <RecordCardView base={base} card={card} refreshKey={recordRefreshKey} />
                 ) : card.card_type === 'kpi' ? (
                   <p className="mt-4 text-4xl font-semibold text-sky-300">
                     {metricValue(card) ?? '—'}
