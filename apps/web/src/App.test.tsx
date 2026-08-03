@@ -92,6 +92,7 @@ describe('App', () => {
     );
 
     const projectNav = await screen.findByRole('navigation', { name: 'Project navigation' });
+    expect(screen.getByLabelText('Service sidebar')).toHaveClass('service-sidebar');
     expect(projectNav).toHaveTextContent('Overview');
     expect(projectNav).toHaveTextContent('Engineering records');
     expect(projectNav).toHaveTextContent('Files & datasets');
@@ -113,9 +114,13 @@ describe('App', () => {
     expect(document.documentElement).toHaveAttribute('data-theme', 'light');
     expect(window.localStorage.getItem('engrove-theme')).toBe('light');
     fireEvent.click(screen.getByRole('button', { name: 'Open user menu' }));
-    expect(screen.getByRole('combobox', { name: 'Language' })).toHaveClass('text-[11px]');
-    expect(screen.getByRole('button', { name: 'Switch to dark theme' })).toHaveClass('text-[11px]');
-    expect(screen.getByRole('button', { name: 'Sign out' })).toHaveClass('text-[11px]');
+    expect(screen.getByRole('combobox', { name: 'Language' })).toHaveClass(
+      'sidebar-utility-action',
+    );
+    expect(screen.getByRole('button', { name: 'Switch to dark theme' })).toHaveClass(
+      'sidebar-utility-action',
+    );
+    expect(screen.getByRole('button', { name: 'Sign out' })).toHaveClass('sidebar-utility-action');
     fireEvent.click(screen.getByRole('button', { name: 'Switch to dark theme' }));
     expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
     expect(window.localStorage.getItem('engrove-theme')).toBe('dark');

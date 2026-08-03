@@ -195,6 +195,28 @@ a {
   letter-spacing: -0.005em;
 }
 
+.service-sidebar {
+  font-size: 0.6875rem;
+  line-height: 1rem;
+  letter-spacing: -0.005em;
+}
+
+.service-sidebar .text-xs {
+  font-size: 0.6875rem;
+  line-height: 1rem;
+}
+
+.service-sidebar .text-sm {
+  font-size: 0.75rem;
+  line-height: 1rem;
+}
+
+.service-sidebar .sidebar-utility-action {
+  font-size: 0.625rem;
+  line-height: 0.875rem;
+  letter-spacing: 0;
+}
+
 :root[data-theme='light'] .compact-ui [class*='shadow-slate-950'] {
   --tw-shadow-color: rgb(15 23 42 / 0.08);
 }

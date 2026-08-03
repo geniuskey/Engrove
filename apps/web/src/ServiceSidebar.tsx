@@ -154,7 +154,7 @@ export function ServiceShell({
         </a>
         <aside
           aria-label="Service sidebar"
-          className={`z-40 flex shrink-0 flex-col border-b border-slate-800 bg-slate-950/95 transition-[width] duration-200 md:sticky md:top-0 md:h-screen md:border-b-0 md:border-r ${expanded ? 'md:w-60' : 'md:w-14'}`}
+          className={`service-sidebar z-40 flex shrink-0 flex-col border-b border-slate-800 bg-slate-950/95 transition-[width] duration-200 md:sticky md:top-0 md:h-screen md:border-b-0 md:border-r ${expanded ? 'md:w-60' : 'md:w-14'}`}
         >
           <div
             className={`flex h-12 shrink-0 items-center justify-between border-b border-slate-800 ${expanded ? 'px-2' : 'px-0.5'}`}
@@ -190,7 +190,7 @@ export function ServiceShell({
                 {t('common.workspace')}
                 <select
                   aria-label={t('sidebar.selectWorkspace')}
-                  className="mt-1 min-h-9 w-full rounded-md border border-slate-700 bg-slate-900 px-2 text-xs font-medium text-slate-200 outline-none focus:border-sky-400"
+                  className="mt-1 min-h-8 w-full rounded-md border border-slate-700 bg-slate-900 px-2 text-xs font-medium text-slate-200 outline-none focus:border-sky-400"
                   value={workspaceId ?? ''}
                   onChange={(event) =>
                     navigate(
@@ -225,7 +225,7 @@ export function ServiceShell({
                 <NavLink
                   aria-label={t('common.data')}
                   className={() =>
-                    `flex h-9 items-center gap-2.5 rounded-md px-2 text-xs font-medium ${inWorkspaceData ? 'bg-sky-400/15 text-sky-300' : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-200'}`
+                    `flex h-8 items-center gap-2 rounded-md px-2 text-xs font-medium ${inWorkspaceData ? 'bg-sky-400/15 text-sky-300' : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-200'}`
                   }
                   to={`${workspaceBase}/data`}
                 >
@@ -237,7 +237,7 @@ export function ServiceShell({
                 <NavLink
                   aria-label={t('common.projects')}
                   className={() =>
-                    `flex h-9 items-center gap-2.5 rounded-md px-2 text-xs font-medium ${inProjects ? 'bg-sky-400/15 text-sky-300' : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-200'}`
+                    `flex h-8 items-center gap-2 rounded-md px-2 text-xs font-medium ${inProjects ? 'bg-sky-400/15 text-sky-300' : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-200'}`
                   }
                   to={`${workspaceBase}/projects`}
                 >
@@ -251,7 +251,7 @@ export function ServiceShell({
               <>
                 <button
                   aria-label={t('common.data')}
-                  className="flex h-9 w-full cursor-not-allowed items-center gap-2.5 rounded-md px-2 text-xs font-medium text-slate-600"
+                  className="flex h-8 w-full cursor-not-allowed items-center gap-2 rounded-md px-2 text-xs font-medium text-slate-600"
                   disabled
                   title={t('sidebar.selectWorkspaceFirst')}
                   type="button"
@@ -263,7 +263,7 @@ export function ServiceShell({
                 </button>
                 <button
                   aria-label={t('common.projects')}
-                  className="flex h-9 w-full cursor-not-allowed items-center gap-2.5 rounded-md px-2 text-xs font-medium text-slate-600"
+                  className="flex h-8 w-full cursor-not-allowed items-center gap-2 rounded-md px-2 text-xs font-medium text-slate-600"
                   disabled
                   title={t('sidebar.selectWorkspaceFirst')}
                   type="button"
@@ -377,7 +377,7 @@ export function ServiceShell({
                 <details>
                   <summary
                     aria-label={t('sidebar.openUserMenu')}
-                    className="flex min-h-10 cursor-pointer list-none items-center gap-2 rounded-md px-2 marker:content-none hover:bg-slate-800"
+                    className="flex min-h-9 cursor-pointer list-none items-center gap-2 rounded-md px-2 marker:content-none hover:bg-slate-800"
                     role="button"
                   >
                     <span className="grid size-7 shrink-0 place-items-center rounded-full border border-slate-700 bg-slate-800 text-xs font-semibold text-sky-300">
@@ -397,7 +397,7 @@ export function ServiceShell({
                       {t('language.label')}
                       <select
                         aria-label={t('language.label')}
-                        className="mt-1 min-h-8 w-full rounded border border-slate-700 bg-slate-950 px-2 text-[11px] normal-case tracking-normal text-slate-300"
+                        className="sidebar-utility-action mt-1 min-h-7 w-full rounded border border-slate-700 bg-slate-950 px-2 normal-case tracking-normal text-slate-300"
                         value={locale}
                         onChange={(event) => setLocale(event.target.value as 'en' | 'ko')}
                       >
@@ -409,7 +409,7 @@ export function ServiceShell({
                       aria-label={t('sidebar.switchTheme', {
                         theme: t(theme === 'dark' ? 'theme.light' : 'theme.dark'),
                       })}
-                      className="rounded px-2 py-1.5 text-left text-[11px] text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                      className="sidebar-utility-action min-h-7 rounded px-2 py-1 text-left text-slate-400 hover:bg-slate-800 hover:text-slate-200"
                       onClick={onToggleTheme}
                       type="button"
                     >
@@ -417,7 +417,7 @@ export function ServiceShell({
                     </button>
                     <button
                       aria-label={t('sidebar.signOut')}
-                      className="rounded px-2 py-1.5 text-left text-[11px] text-rose-300 hover:bg-rose-500/10"
+                      className="sidebar-utility-action min-h-7 rounded px-2 py-1 text-left text-rose-300 hover:bg-rose-500/10"
                       onClick={() => void signOut()}
                       type="button"
                     >
