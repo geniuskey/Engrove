@@ -21,7 +21,7 @@ import {
   useState,
 } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
-import { allowed, api, ErrorText, inputClass, type User } from './App.js';
+import { allowed, api, ErrorText, HelpTip, inputClass, type User } from './App.js';
 import {
   ContextMenu,
   type ContextMenuItem,
@@ -42,6 +42,10 @@ echarts.use([
   TooltipComponent,
   SVGRenderer,
 ]);
+
+const creatorFormClass =
+  'space-y-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-5 shadow-lg shadow-slate-950/10';
+const creatorHeadingClass = 'text-xl font-semibold';
 
 interface Dataset {
   id: string;
@@ -1179,21 +1183,20 @@ export function VisualizationsPage({ user }: { user: User }) {
       <Link className="text-sm text-slate-400 hover:text-sky-300" to={base}>
         ← Project
       </Link>
-      <h1 className="mt-4 text-4xl font-semibold tracking-tight sm:text-5xl">
-        Charts &amp; dashboards
-      </h1>
-      <p className="mt-3 text-slate-400">
-        Every chart source and dashboard card is pinned to an immutable revision. Right-click a card
-        for source and layout actions.
-      </p>
+      <div className="mt-4 flex items-center gap-3">
+        <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
+          Charts &amp; dashboards
+        </h1>
+        <HelpTip label="Charts and dashboards help">
+          Chart sources and dashboard cards are pinned to immutable revisions. Right-click a card
+          for source and layout actions.
+        </HelpTip>
+      </div>
       <ErrorText>{message}</ErrorText>
       {allowed(user, 'dashboard.manage') && (
         <div className="mt-8 grid gap-5 xl:grid-cols-3">
-          <form
-            className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-5 shadow-lg shadow-slate-950/10"
-            onSubmit={(event) => void createChart(event)}
-          >
-            <h2 className="text-xl font-semibold">Overlay XY datasets</h2>
+          <form className={creatorFormClass} onSubmit={(event) => void createChart(event)}>
+            <h2 className={creatorHeadingClass}>Overlay XY datasets</h2>
             <input className={inputClass} name="name" placeholder="Chart name" required />
             <select className={inputClass} name="chartType">
               <option value="line">Line</option>
@@ -1210,10 +1213,10 @@ export function VisualizationsPage({ user }: { user: User }) {
             <Button type="submit">Save chart</Button>
           </form>
           <form
-            className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-5 shadow-lg shadow-slate-950/10"
+            className={creatorFormClass}
             onSubmit={(event) => void createStatisticalChart(event)}
           >
-            <h2 className="text-xl font-semibold">Statistical chart</h2>
+            <h2 className={creatorHeadingClass}>Statistical chart</h2>
             <input className={inputClass} name="name" placeholder="Chart name" required />
             <select className={inputClass} name="chartType">
               <option value="histogram">Histogram</option>
@@ -1227,16 +1230,10 @@ export function VisualizationsPage({ user }: { user: User }) {
                 </option>
               ))}
             </select>
-            <p className="text-xs text-slate-500">
-              The first numeric stable column is selected; its exact dataset revision is pinned.
-            </p>
             <Button type="submit">Save statistical chart</Button>
           </form>
-          <form
-            className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-5 shadow-lg shadow-slate-950/10"
-            onSubmit={(event) => void createDashboard(event)}
-          >
-            <h2 className="text-xl font-semibold">New dashboard</h2>
+          <form className={creatorFormClass} onSubmit={(event) => void createDashboard(event)}>
+            <h2 className={creatorHeadingClass}>New dashboard</h2>
             <input className={inputClass} name="name" placeholder="Dashboard name" required />
             <select className={inputClass} name="chartRevisionId">
               <option value="">Empty dashboard</option>
@@ -1315,7 +1312,13 @@ export function VisualizationsPage({ user }: { user: User }) {
       </section>
       <section className="mt-12">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-2xl font-semibold">Dashboards</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-2xl font-semibold">Dashboards</h2>
+            <HelpTip label="Dashboard composition help">
+              Combine KPI, chart, and record-list cards from different tables. Each published layout
+              becomes a traceable revision.
+            </HelpTip>
+          </div>
           <select
             className={inputClass}
             value={dashboard?.id ?? ''}
@@ -1360,12 +1363,12 @@ export function VisualizationsPage({ user }: { user: User }) {
             onSubmit={(event) => void addRecordCard(event)}
           >
             <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
+              <div className="flex items-center gap-2">
                 <h3 className="font-semibold">Compose from record tables</h3>
-                <p className="mt-1 text-xs text-slate-500">
+                <HelpTip label="Record table card help">
                   Mix cards from different tables. Saved-view filters and sorts are pinned into the
                   next dashboard revision.
-                </p>
+                </HelpTip>
               </div>
               <Button disabled={!recordTables.length} type="submit">
                 Add card

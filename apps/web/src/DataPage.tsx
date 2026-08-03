@@ -16,7 +16,16 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
-import { allowed, api, ApiError, ErrorText, inputClass, NoticeText, type User } from './App.js';
+import {
+  allowed,
+  api,
+  ApiError,
+  ErrorText,
+  HelpTip,
+  inputClass,
+  NoticeText,
+  type User,
+} from './App.js';
 import {
   ContextMenu,
   type ContextMenuItem,
@@ -529,6 +538,9 @@ const wideFieldLabelClass = `${fieldLabelClass} sm:col-span-2`;
 const checkboxLabelClass = 'flex cursor-pointer items-center gap-2';
 const fieldHintClass = 'mt-1 block text-[10px] font-normal text-slate-600';
 const compactMenuItemClass = 'rounded px-2 py-1.5 text-left hover:bg-slate-800';
+const emptyPanelClass = 'mt-8 rounded-2xl border border-slate-800 bg-slate-900/60 p-6';
+const checkboxClass = 'accent-sky-500';
+const skeletonLineClass = 'h-10 animate-pulse rounded bg-slate-900';
 
 function schemaFieldKey(name: string): string {
   return name
@@ -2119,7 +2131,7 @@ function MeasurementsPanel({
     }
   }
   return (
-    <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
+    <section className={emptyPanelClass}>
       <h2 className="text-xl font-semibold">Measurement history</h2>
       <div className="mt-4 grid gap-3">
         {results.map((result) => {
@@ -2235,7 +2247,7 @@ function LinkedTasksPanel({ base, recordId }: { base: string; recordId: string }
     [base, recordId],
   );
   return (
-    <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
+    <section className={emptyPanelClass}>
       <h2 className="text-xl font-semibold">Linked tasks</h2>
       <div className="mt-4 space-y-2">
         {tasks.map((task) => (
@@ -4034,10 +4046,28 @@ export function DataPage({
 
   return (
     <>
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
         <h1 className="sr-only">
           {workspaceMode ? t('data.workspaceData') : t('common.engineeringRecords')}
         </h1>
+        {workspaceMode && Boolean(workspaceData?.legacyProjects?.length) && (
+          <HelpTip align="right" label="Legacy engineering tables">
+            Existing project-owned engineering tables were preserved during the workspace-data
+            upgrade. Open{' '}
+            {workspaceData!.legacyProjects!.map((project, index) => (
+              <span key={project.id}>
+                {index > 0 ? ', ' : ''}
+                <Link
+                  className="font-medium text-sky-300 hover:text-sky-200"
+                  to={`/workspaces/${workspaceId}/projects/${project.id}/data`}
+                >
+                  {project.name}
+                </Link>
+              </span>
+            ))}{' '}
+            to continue using traceable records and project-scoped resources.
+          </HelpTip>
+        )}
         {!workspaceMode && allowed(user, 'schema.manage') && (
           <Button variant="quiet" onClick={() => void installTemplate()}>
             {t('data.installTemplate')}
@@ -4045,24 +4075,6 @@ export function DataPage({
         )}
       </div>
       <NoticeText tone={messageTone}>{message}</NoticeText>
-      {workspaceMode && Boolean(workspaceData?.legacyProjects?.length) && (
-        <NoticeText tone="info">
-          Existing project-owned engineering tables were preserved during the workspace-data
-          upgrade. Open{' '}
-          {workspaceData!.legacyProjects!.map((project, index) => (
-            <span key={project.id}>
-              {index > 0 ? ', ' : ''}
-              <Link
-                className="font-medium text-sky-300 hover:text-sky-200"
-                to={`/workspaces/${workspaceId}/projects/${project.id}/data`}
-              >
-                {project.name}
-              </Link>
-            </span>
-          ))}{' '}
-          to continue using traceable records and their project-scoped resources.
-        </NoticeText>
-      )}
 
       {sidebarPortal &&
         createPortal(
@@ -4369,6 +4381,10 @@ export function DataPage({
                 <p className="font-mono text-[10px] uppercase tracking-widest text-sky-400">
                   {selected.key}
                 </p>
+                <HelpTip label="Table controls help">
+                  Drag to resize or reorder columns. Select cell ranges to copy or paste, and
+                  right-click for more actions.
+                </HelpTip>
               </div>
               <div className="flex flex-wrap gap-2">
                 {allowed(user, 'schema.manage') && (
@@ -4456,6 +4472,10 @@ export function DataPage({
                       <h3 className="text-sm font-semibold text-slate-100" id="schema-editor-title">
                         Schema editor
                       </h3>
+                      <HelpTip label="Schema editor help">
+                        Drag fields to set their shared order. Status dots show whether searchable
+                        projections are ready.
+                      </HelpTip>
                       <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-400">
                         {fields.length} {fields.length === 1 ? 'field' : 'fields'}
                       </span>
@@ -4466,9 +4486,6 @@ export function DataPage({
                         </span>
                       )}
                     </div>
-                    <p className="mt-1 text-xs text-slate-500">
-                      Drag fields to set the shared order for {selected.pluralName}.
-                    </p>
                   </div>
                   <button
                     aria-label="Close schema editor"
@@ -4892,7 +4909,7 @@ export function DataPage({
                             <div className="sm:col-span-2 rounded-lg border border-sky-400/20 bg-sky-400/10 px-3 py-2.5">
                               <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-300">
                                 <input
-                                  className="accent-sky-500"
+                                  className={checkboxClass}
                                   defaultChecked
                                   name="firstRowHeader"
                                   type="checkbox"
@@ -4910,7 +4927,7 @@ export function DataPage({
                         <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-3 rounded-lg border border-slate-800 bg-slate-900/45 px-3 py-2.5 text-xs text-slate-300">
                           <label className={checkboxLabelClass}>
                             <input
-                              className="accent-sky-500"
+                              className={checkboxClass}
                               disabled={records.total > 0}
                               name="required"
                               title={
@@ -4924,13 +4941,13 @@ export function DataPage({
                           </label>
                           {fieldSupportsUnique(schemaFieldType) && (
                             <label className={checkboxLabelClass}>
-                              <input className="accent-sky-500" name="unique" type="checkbox" />
+                              <input className={checkboxClass} name="unique" type="checkbox" />
                               Unique values
                             </label>
                           )}
                           {schemaFieldType === 'relation' && (
                             <label className={checkboxLabelClass}>
-                              <input className="accent-sky-500" name="multiple" type="checkbox" />
+                              <input className={checkboxClass} name="multiple" type="checkbox" />
                               Allow multiple records
                             </label>
                           )}
@@ -5179,7 +5196,7 @@ export function DataPage({
                           {selectedSchemaField.fieldType === 'tabular_data' && (
                             <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-300 sm:col-span-2">
                               <input
-                                className="accent-sky-500"
+                                className={checkboxClass}
                                 defaultChecked={selectedSchemaField.config.firstRowHeader !== false}
                                 name="firstRowHeader"
                                 type="checkbox"
@@ -5204,7 +5221,7 @@ export function DataPage({
                         <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-3 rounded-lg border border-slate-800 bg-slate-900/45 px-3 py-2.5 text-xs text-slate-300">
                           <label className={checkboxLabelClass}>
                             <input
-                              className="accent-sky-500"
+                              className={checkboxClass}
                               defaultChecked={selectedSchemaField.required}
                               name="required"
                               type="checkbox"
@@ -5214,7 +5231,7 @@ export function DataPage({
                           {fieldSupportsUnique(selectedSchemaField.fieldType) && (
                             <label className={checkboxLabelClass}>
                               <input
-                                className="accent-sky-500"
+                                className={checkboxClass}
                                 defaultChecked={selectedSchemaField.unique}
                                 name="unique"
                                 type="checkbox"
@@ -5225,7 +5242,7 @@ export function DataPage({
                           {selectedSchemaField.fieldType === 'relation' && (
                             <label className={checkboxLabelClass}>
                               <input
-                                className="accent-sky-500"
+                                className={checkboxClass}
                                 defaultChecked={selectedSchemaField.config.multiple}
                                 name="multiple"
                                 type="checkbox"
@@ -5705,9 +5722,9 @@ export function DataPage({
               </p>
               {recordsLoading && (
                 <div className="space-y-3 p-5" aria-label="Loading records">
-                  <div className="h-10 animate-pulse rounded bg-slate-900" />
-                  <div className="h-10 animate-pulse rounded bg-slate-900" />
-                  <div className="h-10 animate-pulse rounded bg-slate-900" />
+                  <div className={skeletonLineClass} />
+                  <div className={skeletonLineClass} />
+                  <div className={skeletonLineClass} />
                 </div>
               )}
               {!recordsLoading && activeViewType === 'grid' && (
@@ -6703,7 +6720,7 @@ export function RecordDetailPage({ user }: { user: User }) {
         </div>
       </div>
       <ErrorText>{error}</ErrorText>
-      <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
+      <section className={emptyPanelClass}>
         <h2 className="mb-5 text-xl font-semibold">Properties and relations</h2>
         {allowed(user, 'record.update') ? (
           <RecordForm

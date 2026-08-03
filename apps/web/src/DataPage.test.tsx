@@ -824,12 +824,21 @@ describe('DataPage', () => {
                 archivedAt: null,
               },
             ],
+            legacyProjects: [{ id: 'legacy-project', name: 'force' }],
           }}
         />
       </MemoryRouter>,
     );
 
     expect(await screen.findByRole('heading', { name: 'Workspace data' })).toBeInTheDocument();
+    const legacyHelp = screen.getByLabelText('Legacy engineering tables');
+    expect(legacyHelp.closest('details')).not.toHaveAttribute('open');
+    fireEvent.click(legacyHelp);
+    expect(legacyHelp.closest('details')).toHaveAttribute('open');
+    expect(screen.getByRole('link', { name: 'force' })).toHaveAttribute(
+      'href',
+      '/workspaces/019fbcf9-e020-71da-935a-6a6a728b3700/projects/legacy-project/data',
+    );
     expect(screen.getByRole('columnheader', { name: 'Project' })).toBeInTheDocument();
     await screen.findByRole('button', { name: 'Quick view Motor redesign' });
     fireEvent.change(screen.getByRole('combobox', { name: 'Project filter' }), {

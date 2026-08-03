@@ -270,6 +270,9 @@ test('filters and edits project context while preserving legacy engineering data
       return getComputedStyle(element).backgroundColor;
     }),
   ).not.toBe('rgba(0, 0, 0, 0)');
+  const legacyHelp = page.getByLabel('Legacy engineering tables');
+  await expect(legacyHelp).toBeVisible();
+  await legacyHelp.click();
   await expect(page.getByRole('link', { name: 'Legacy evidence' })).toHaveAttribute(
     'href',
     `/workspaces/${workspaceId}/projects/${legacyProjectId}/data`,

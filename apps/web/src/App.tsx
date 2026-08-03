@@ -104,6 +104,14 @@ const memberGroupColors: Array<{ value: MemberGroupColor; label: string; hex: st
   { value: 'violet', label: 'Violet', hex: '#a78bfa' },
 ];
 const memberRoles: Role[] = ['owner', 'admin', 'engineer', 'contributor', 'viewer'];
+const projectLinkClass =
+  'rounded-xl border border-slate-700/70 bg-slate-950/35 p-4 text-sm font-medium text-slate-200 hover:border-sky-500/50 hover:bg-sky-500/10 hover:text-sky-200';
+const formLabelClass = 'text-sm text-slate-300';
+const blockFormLabelClass = `block ${formLabelClass}`;
+const projectLinkHintClass = 'mt-1 block text-xs font-normal text-slate-500';
+const sectionEyebrowClass = 'font-mono text-xs uppercase tracking-widest text-sky-400';
+const pageTitleClass = 'mt-2 text-4xl font-semibold tracking-tight sm:text-5xl';
+const projectLinkArrowClass = 'float-right text-sky-400';
 
 function memberGroupColor(color: MemberGroupColor): string {
   return memberGroupColors.find((candidate) => candidate.value === color)?.hex ?? '#38bdf8';
@@ -315,7 +323,7 @@ function Field({
   type?: string;
 }) {
   return (
-    <label className="block text-sm text-slate-300">
+    <label className={blockFormLabelClass}>
       {label}
       <input autoComplete={autoComplete} className={inputClass} required name={name} type={type} />
     </label>
@@ -348,7 +356,7 @@ function SetupPage() {
   return (
     <AuthCard title={t('auth.setup')}>
       <form className="space-y-4" onSubmit={(event) => void submit(event)}>
-        <label className="block text-sm text-slate-300">
+        <label className={blockFormLabelClass}>
           Setup token
           <input
             className={inputClass}
@@ -449,7 +457,7 @@ function TokenPasswordPage({ invitation }: { invitation: boolean }) {
   return (
     <AuthCard title={invitation ? t('auth.acceptInvitation') : t('auth.resetPassword')}>
       <form className="space-y-4" onSubmit={(event) => void submit(event)}>
-        <label className="block text-sm text-slate-300">
+        <label className={blockFormLabelClass}>
           Token
           <input
             className={inputClass}
@@ -490,6 +498,31 @@ export function NoticeText({
   ) : null;
 }
 
+export function HelpTip({
+  align = 'left',
+  children,
+  label,
+}: PropsWithChildren<{ align?: 'left' | 'right'; label: string }>) {
+  return (
+    <details className="relative inline-block shrink-0">
+      <summary
+        aria-label={label}
+        className="grid size-6 list-none cursor-pointer place-items-center rounded-full border border-slate-700 text-xs font-semibold text-slate-500 marker:content-none hover:border-sky-500/60 hover:bg-slate-800 hover:text-sky-300"
+        title={label}
+      >
+        ?
+      </summary>
+      <div
+        className={`absolute top-7 z-50 w-80 rounded-xl border border-slate-700 bg-slate-950 p-3 text-xs leading-relaxed text-slate-300 shadow-2xl ${align === 'right' ? 'right-0' : 'left-0'}`}
+        role="note"
+        style={{ maxWidth: 'calc(100vw - 2rem)' }}
+      >
+        {children}
+      </div>
+    </details>
+  );
+}
+
 export function ErrorText({ children }: PropsWithChildren) {
   return <NoticeText tone="error">{children}</NoticeText>;
 }
@@ -523,10 +556,12 @@ function WorkspacesPage({ user }: { user: User }) {
         <p className="font-mono text-xs uppercase tracking-[0.18em] text-sky-400">
           {t('sidebar.organization')}
         </p>
-        <h1 className="mt-2 text-4xl font-semibold tracking-tight sm:text-5xl">
-          {t('common.workspaces')}
-        </h1>
-        <p className="mt-3 text-slate-400">{t('workspaces.description')}</p>
+        <div className="mt-2 flex items-center gap-3">
+          <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
+            {t('common.workspaces')}
+          </h1>
+          <HelpTip label="About workspaces">{t('workspaces.description')}</HelpTip>
+        </div>
       </div>
       <ErrorText>{error}</ErrorText>
       <div className="mt-7 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-2xl border border-slate-800/80 bg-slate-900/35 px-4 py-3 text-xs text-slate-400">
@@ -568,14 +603,16 @@ function WorkspacesPage({ user }: { user: User }) {
           className="mt-10 max-w-2xl rounded-2xl border border-slate-800 bg-slate-900/40 p-5 shadow-lg shadow-slate-950/10 sm:p-6"
           onSubmit={(event) => void submit(event)}
         >
-          <h2 className="text-lg font-semibold">{t('workspaces.create')}</h2>
-          <p className="mt-1 text-sm text-slate-500">{t('workspaces.stableSlug')}</p>
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-semibold">{t('workspaces.create')}</h2>
+            <HelpTip label="Workspace address help">{t('workspaces.stableSlug')}</HelpTip>
+          </div>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <label className="text-sm text-slate-300">
+            <label className={formLabelClass}>
               {t('workspaces.name')}
               <input className={inputClass} name="name" placeholder="Materials R&D" required />
             </label>
-            <label className="text-sm text-slate-300">
+            <label className={formLabelClass}>
               {t('workspaces.urlSlug')}
               <input className={inputClass} name="slug" placeholder="materials-rd" required />
             </label>
@@ -623,8 +660,12 @@ function WorkspacePage({ user }: { user: User }) {
   }
   return (
     <>
-      <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">{t('projects.heading')}</h1>
-      <p className="mt-3 text-slate-400">{t('projects.description')}</p>
+      <div className="flex items-center gap-3">
+        <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
+          {t('projects.heading')}
+        </h1>
+        <HelpTip label="About projects">{t('projects.description')}</HelpTip>
+      </div>
       <ErrorText>{error}</ErrorText>
       <div className="mt-8 divide-y divide-slate-800 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/50 shadow-xl shadow-slate-950/10">
         {items.map((project) => (
@@ -657,7 +698,7 @@ function WorkspacePage({ user }: { user: User }) {
         >
           <h2 className="text-lg font-semibold">{t('projects.create')}</h2>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <label className="text-sm text-slate-300">
+            <label className={formLabelClass}>
               {t('projects.name')}
               <input
                 className={inputClass}
@@ -666,7 +707,7 @@ function WorkspacePage({ user }: { user: User }) {
                 required
               />
             </label>
-            <label className="text-sm text-slate-300">
+            <label className={formLabelClass}>
               {t('projects.key')}
               <input className={inputClass} name="key" placeholder="FORCE" required />
             </label>
@@ -871,54 +912,38 @@ function ProjectPage({ user }: { user: User }) {
             className="mt-8 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
           >
             {allowed(user, 'record.read') && (
-              <Link
-                className="rounded-xl border border-slate-700/70 bg-slate-950/35 p-4 text-sm font-medium text-slate-200 hover:border-sky-500/50 hover:bg-sky-500/10 hover:text-sky-200"
-                to={`/workspaces/${wid}/projects/${pid}/data`}
-              >
-                Engineering records <span className="float-right text-sky-400">→</span>
-                <span className="mt-1 block text-xs font-normal text-slate-500">
-                  Edit typed records
-                </span>
+              <Link className={projectLinkClass} to={`/workspaces/${wid}/projects/${pid}/data`}>
+                Engineering records <span className={projectLinkArrowClass}>→</span>
+                <span className={projectLinkHintClass}>Edit typed records</span>
               </Link>
             )}
             {allowed(user, 'file.read') && (
               <Link
-                className="rounded-xl border border-slate-700/70 bg-slate-950/35 p-4 text-sm font-medium text-slate-200 hover:border-sky-500/50 hover:bg-sky-500/10 hover:text-sky-200"
+                className={projectLinkClass}
                 to={`/workspaces/${wid}/projects/${pid}/files-datasets`}
               >
-                Files &amp; datasets <span className="float-right text-sky-400">→</span>
-                <span className="mt-1 block text-xs font-normal text-slate-500">
-                  Trace raw evidence
-                </span>
+                Files &amp; datasets <span className={projectLinkArrowClass}>→</span>
+                <span className={projectLinkHintClass}>Trace raw evidence</span>
               </Link>
             )}
             {allowed(user, 'dataset.read') && (
               <Link
-                className="rounded-xl border border-slate-700/70 bg-slate-950/35 p-4 text-sm font-medium text-slate-200 hover:border-sky-500/50 hover:bg-sky-500/10 hover:text-sky-200"
+                className={projectLinkClass}
                 to={`/workspaces/${wid}/projects/${pid}/visualizations`}
               >
-                Visualizations <span className="float-right text-sky-400">→</span>
-                <span className="mt-1 block text-xs font-normal text-slate-500">
-                  Compare exact revisions
-                </span>
+                Visualizations <span className={projectLinkArrowClass}>→</span>
+                <span className={projectLinkHintClass}>Compare exact revisions</span>
               </Link>
             )}
             {allowed(user, 'task.read') && (
-              <Link
-                className="rounded-xl border border-slate-700/70 bg-slate-950/35 p-4 text-sm font-medium text-slate-200 hover:border-sky-500/50 hover:bg-sky-500/10 hover:text-sky-200"
-                to={`/workspaces/${wid}/projects/${pid}/tasks`}
-              >
-                Tasks <span className="float-right text-sky-400">→</span>
-                <span className="mt-1 block text-xs font-normal text-slate-500">
-                  Close the follow-up loop
-                </span>
+              <Link className={projectLinkClass} to={`/workspaces/${wid}/projects/${pid}/tasks`}>
+                Tasks <span className={projectLinkArrowClass}>→</span>
+                <span className={projectLinkHintClass}>Close the follow-up loop</span>
               </Link>
             )}
           </nav>
           <section className="mt-8 rounded-2xl border border-sky-800/50 bg-sky-950/30 p-5 sm:p-6">
-            <p className="font-mono text-xs uppercase tracking-widest text-sky-400">
-              Test &amp; Characterization · v6
-            </p>
+            <p className={sectionEyebrowClass}>Test &amp; Characterization · v6</p>
             <h2 className="mt-2 text-xl font-semibold">Traceable onboarding demo</h2>
             <p className="mt-2 text-sm text-slate-400">
               Creates clearly labelled synthetic records, an immutable raw CSV and dataset, a pinned
@@ -955,17 +980,12 @@ function ProjectPage({ user }: { user: User }) {
               className="mt-8 grid max-w-2xl gap-4 border-t border-slate-800 pt-8"
               onSubmit={(event) => void update(event)}
             >
-              <div>
-                <h2 className="text-xl font-semibold">Project settings</h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  Update the project label and lifecycle status.
-                </p>
-              </div>
-              <label className="text-sm text-slate-300">
+              <h2 className="text-xl font-semibold">Project settings</h2>
+              <label className={formLabelClass}>
                 Project name
                 <input className={inputClass} defaultValue={project.name} name="name" required />
               </label>
-              <label className="text-sm text-slate-300">
+              <label className={formLabelClass}>
                 Description
                 <textarea
                   className={inputClass}
@@ -974,7 +994,7 @@ function ProjectPage({ user }: { user: User }) {
                   rows={3}
                 />
               </label>
-              <label className="text-sm text-slate-300">
+              <label className={formLabelClass}>
                 Status
                 <select className={inputClass} defaultValue={project.status} name="status">
                   <option value="active">Active</option>
@@ -1037,8 +1057,8 @@ function GetStartedPage() {
   }
   return (
     <>
-      <p className="font-mono text-xs uppercase tracking-widest text-sky-400">Community pilot</p>
-      <h1 className="mt-2 text-4xl font-semibold tracking-tight sm:text-5xl">Get started</h1>
+      <p className={sectionEyebrowClass}>Community pilot</p>
+      <h1 className={pageTitleClass}>Get started</h1>
       <p className="mt-3 max-w-2xl text-slate-400">
         This golden path takes a result from immutable raw evidence to a chart and follow-up work.
       </p>
@@ -1131,10 +1151,8 @@ function PilotPage({ user }: { user: User }) {
   }
   return (
     <>
-      <p className="font-mono text-xs uppercase tracking-widest text-sky-400">Pilot</p>
-      <h1 className="mt-2 text-4xl font-semibold tracking-tight sm:text-5xl">
-        Feedback &amp; adoption
-      </h1>
+      <p className={sectionEyebrowClass}>Pilot</p>
+      <h1 className={pageTitleClass}>Feedback &amp; adoption</h1>
       {summary && (
         <section className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {(
@@ -1156,7 +1174,7 @@ function PilotPage({ user }: { user: User }) {
         className="mt-8 max-w-2xl space-y-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-6"
         onSubmit={(event) => void submit(event)}
       >
-        <label className="block text-sm text-slate-300">
+        <label className={blockFormLabelClass}>
           Category
           <select className={inputClass} name="category" defaultValue="workflow">
             <option value="workflow">Workflow</option>
@@ -1166,7 +1184,7 @@ function PilotPage({ user }: { user: User }) {
             <option value="other">Other</option>
           </select>
         </label>
-        <label className="block text-sm text-slate-300">
+        <label className={blockFormLabelClass}>
           Rating
           <select className={inputClass} name="rating" defaultValue="4">
             {[1, 2, 3, 4, 5].map((rating) => (
@@ -1176,7 +1194,7 @@ function PilotPage({ user }: { user: User }) {
             ))}
           </select>
         </label>
-        <label className="block text-sm text-slate-300">
+        <label className={blockFormLabelClass}>
           What worked, and what blocked you?
           <textarea className={inputClass} minLength={10} name="message" required rows={6} />
         </label>
@@ -1414,10 +1432,12 @@ export function MembersPage() {
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="text-xs font-medium uppercase tracking-widest text-sky-400">Organization</p>
-          <h1 className="mt-1 text-3xl font-semibold">Members & groups</h1>
-          <p className="mt-2 text-sm text-slate-500">
-            Select people for bulk access changes, or drag them directly into a group.
-          </p>
+          <div className="mt-1 flex items-center gap-2">
+            <h1 className="text-3xl font-semibold">Members & groups</h1>
+            <HelpTip label="Member management help">
+              Select people for bulk access changes, or drag them directly into a group.
+            </HelpTip>
+          </div>
         </div>
         <div className="flex gap-2 text-xs text-slate-400">
           <span className="rounded-full border border-slate-800 px-3 py-1.5">
@@ -1433,9 +1453,9 @@ export function MembersPage() {
         <section className="rounded-xl border border-slate-800 bg-slate-900/45">
           <header className="border-b border-slate-800 p-4">
             <div className="flex items-center justify-between gap-3">
-              <div>
+              <div className="flex items-center gap-2">
                 <h2 className="text-sm font-semibold text-slate-100">Member directory</h2>
-                <p className="mt-1 text-xs text-slate-500">Roles control product access.</p>
+                <HelpTip label="Member role help">Roles control product access.</HelpTip>
               </div>
               <details className="relative">
                 <summary className="cursor-pointer list-none rounded-md border border-slate-700 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800">
@@ -1583,14 +1603,14 @@ export function MembersPage() {
           </div>
         </section>
 
-        <section className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/45">
+        <section className="rounded-xl border border-slate-800 bg-slate-900/45">
           <header className="border-b border-slate-800 p-4">
             <div className="flex items-center justify-between gap-3">
-              <div>
+              <div className="flex items-center gap-2">
                 <h2 className="text-sm font-semibold text-slate-100">Groups</h2>
-                <p className="mt-1 text-xs text-slate-500">
+                <HelpTip label="Group assignment help">
                   Drop one member—or your current selection—onto a group.
-                </p>
+                </HelpTip>
               </div>
               <Button
                 aria-expanded={showCreateGroup}
