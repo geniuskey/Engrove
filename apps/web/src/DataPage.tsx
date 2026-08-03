@@ -4050,24 +4050,6 @@ export function DataPage({
         <h1 className="sr-only">
           {workspaceMode ? t('data.workspaceData') : t('common.engineeringRecords')}
         </h1>
-        {workspaceMode && Boolean(workspaceData?.legacyProjects?.length) && (
-          <HelpTip align="right" label="Legacy engineering tables">
-            Existing project-owned engineering tables were preserved during the workspace-data
-            upgrade. Open{' '}
-            {workspaceData!.legacyProjects!.map((project, index) => (
-              <span key={project.id}>
-                {index > 0 ? ', ' : ''}
-                <Link
-                  className="font-medium text-sky-300 hover:text-sky-200"
-                  to={`/workspaces/${workspaceId}/projects/${project.id}/data`}
-                >
-                  {project.name}
-                </Link>
-              </span>
-            ))}{' '}
-            to continue using traceable records and project-scoped resources.
-          </HelpTip>
-        )}
         {!workspaceMode && allowed(user, 'schema.manage') && (
           <Button variant="quiet" onClick={() => void installTemplate()}>
             {t('data.installTemplate')}
@@ -4386,7 +4368,25 @@ export function DataPage({
                   right-click for more actions.
                 </HelpTip>
               </div>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {workspaceMode && Boolean(workspaceData?.legacyProjects?.length) && (
+                  <HelpTip align="right" label="Legacy engineering tables">
+                    Existing project-owned engineering tables were preserved during the
+                    workspace-data upgrade. Open{' '}
+                    {workspaceData!.legacyProjects!.map((project, index) => (
+                      <span key={project.id}>
+                        {index > 0 ? ', ' : ''}
+                        <Link
+                          className="font-medium text-sky-300 hover:text-sky-200"
+                          to={`/workspaces/${workspaceId}/projects/${project.id}/data`}
+                        >
+                          {project.name}
+                        </Link>
+                      </span>
+                    ))}{' '}
+                    to continue using traceable records and project-scoped resources.
+                  </HelpTip>
+                )}
                 {allowed(user, 'schema.manage') && (
                   <Button
                     aria-expanded={showSchema}
