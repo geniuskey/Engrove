@@ -60,6 +60,7 @@ export interface FieldDefinition {
     relationFieldId?: string;
     targetFieldId?: string;
     aggregation?: 'count' | 'sum' | 'average' | 'min' | 'max';
+    mediaKind?: 'image';
   };
   defaultValue?: unknown;
   projectionStatus: 'ready' | 'rebuilding' | 'failed';

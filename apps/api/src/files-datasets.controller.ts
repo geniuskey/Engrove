@@ -34,6 +34,13 @@ import { RUNTIME } from './runtime.provider.js';
 const id = z.string().uuid();
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/i);
 const MAX_FILE_BYTES = 100 * 1024 * 1024;
+const SUPPORTED_IMAGE_TYPES = new Set([
+  'image/avif',
+  'image/gif',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+]);
 async function repository(
   runtime: Runtime,
   request: Request,
@@ -52,6 +59,7 @@ async function repository(
     | 'job.retry'
     | 'storage.cleanup',
   csrf = false,
+  allowSystem = false,
 ) {
   const actor = await requireActor(runtime, request, action, csrf);
   return ScopedFileDatasetRepository.open(
@@ -59,6 +67,7 @@ async function repository(
     actor,
     await resolveWorkspaceIdentifier(runtime.pool, workspaceId),
     await resolveProjectIdentifier(runtime.pool, projectId),
+    { allowSystem },
   );
 }
 const cleanName = (name: string) =>
@@ -190,6 +199,7 @@ export class FilesDatasetsController {
       projectId,
       'file.upload',
       true,
+      SUPPORTED_IMAGE_TYPES.has(body.contentType),
     );
     const uploadId = uuidv7();
     const fileId = uuidv7();
@@ -236,6 +246,7 @@ export class FilesDatasetsController {
       workspaceId,
       projectId,
       'file.upload',
+      true,
       true,
     );
     const session = await repo.beginFinalization(id.parse(uploadId));
@@ -336,6 +347,44 @@ export class FilesDatasetsController {
         { expiresIn: 300 },
       ),
       expiresIn: 300,
+    };
+  }
+  @Get('files/:fileId/preview') async imagePreview(
+    @Req() request: Request,
+    @Param('workspaceId') workspaceId: string,
+    @Param('projectId') projectId: string,
+    @Param('fileId') fileId: string,
+  ) {
+    const file = await (
+      await repository(this.runtime, request, workspaceId, projectId, 'file.read', false, true)
+    ).getAvailableFile(id.parse(fileId));
+    if (!SUPPORTED_IMAGE_TYPES.has(file.content_type)) {
+      throw new RepositoryError(
+        'FILE_PREVIEW_UNSUPPORTED',
+        415,
+        'Only supported image files can be previewed.',
+      );
+    }
+    const runtime = this.runtime;
+    return {
+      url: await getSignedUrl(
+        runtime.s3Public,
+        new GetObjectCommand({
+          Bucket: runtime.config.S3_BUCKET,
+          Key: file.final_object_key,
+          VersionId: file.storage_version_id ?? undefined,
+          ResponseContentDisposition: `inline; filename*=UTF-8''${encodeURIComponent(file.original_name)}`,
+          ResponseContentType: file.content_type,
+        }),
+        { expiresIn: 300 },
+      ),
+      expiresIn: 300,
+      file: {
+        id: file.id,
+        originalName: file.original_name,
+        contentType: file.content_type,
+        sizeBytes: Number(file.size_bytes),
+      },
     };
   }
   @Patch('files/:fileId/archive') async archiveFile(

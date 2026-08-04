@@ -11,6 +11,7 @@ COPY packages/ui/package.json packages/ui/package.json
 COPY packages/units/package.json packages/units/package.json
 RUN pnpm install --frozen-lockfile
 COPY apps/web apps/web
+COPY scripts/generate-logo-variants.mjs scripts/generate-logo-variants.mjs
 COPY packages/shared packages/shared
 COPY packages/permissions packages/permissions
 COPY packages/ui packages/ui

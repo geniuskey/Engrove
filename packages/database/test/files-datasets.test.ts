@@ -159,7 +159,7 @@ describe('storage cleanup protection', () => {
 });
 
 describe('project resource scopes', () => {
-  it('requires an ordinary non-system project', async () => {
+  it('requires an ordinary non-system project by default', async () => {
     const query = vi.fn().mockResolvedValue({ rowCount: 0, rows: [] });
 
     await expect(
@@ -174,6 +174,27 @@ describe('project resource scopes', () => {
       'project-1',
       'workspace-1',
       'organization-1',
+      false,
+    ]);
+  });
+
+  it('can explicitly scope image resources to a workspace data project', async () => {
+    const query = vi.fn().mockResolvedValue({ rowCount: 1, rows: [{ id: 'project-1' }] });
+
+    await expect(
+      ScopedFileDatasetRepository.open(
+        { query } as unknown as Pool,
+        actor,
+        'workspace-1',
+        'project-1',
+        { allowSystem: true },
+      ),
+    ).resolves.toBeInstanceOf(ScopedFileDatasetRepository);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('$4::boolean'), [
+      'project-1',
+      'workspace-1',
+      'organization-1',
+      true,
     ]);
   });
 });

@@ -69,6 +69,7 @@ import {
   structuredDataText,
   viewConfigsEqual,
 } from './DataPageGrid.js';
+import { ImageGridCell, isImageField } from './DataPageImages.js';
 import {
   CalendarRecordsView,
   displayFieldValue,
@@ -108,6 +109,21 @@ const DEFAULT_SYSTEM_FIELD_WIDTHS: Record<SystemFieldWidthKey, number> = {
 const MIN_COLUMN_WIDTH = 100;
 const MAX_COLUMN_WIDTH = 480;
 const COLUMN_KEYBOARD_STEP = 8;
+
+type SchemaFieldType = FieldType | 'image';
+const imageFieldMeta = {
+  label: 'Image',
+  description: 'Upload and preview an image in each cell',
+  icon: '▧',
+  group: 'Linked' as const,
+};
+const schemaFieldTypeMeta = { ...fieldTypeMeta, image: imageFieldMeta };
+
+function fieldMeta(field: FieldDefinition) {
+  return field.fieldType === 'file' && isImageField(field.config)
+    ? imageFieldMeta
+    : fieldTypeMeta[field.fieldType];
+}
 
 interface TableLayoutPreference {
   fieldOrderIds: string[];
@@ -395,7 +411,7 @@ export function DataPage({
   workspaceData?: WorkspaceDataContext;
 }) {
   useDismissiblePopoverMenus();
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const params = useParams();
   const workspaceId = workspaceData?.workspaceId ?? params.workspaceId ?? '';
   const projectId = workspaceData?.backingProjectId ?? params.projectId ?? '';
@@ -453,7 +469,7 @@ export function DataPage({
   const [showTableSettings, setShowTableSettings] = useState(false);
   const [schemaSearch, setSchemaSearch] = useState('');
   const [schemaSelection, setSchemaSelection] = useState<'new' | string>('new');
-  const [schemaFieldType, setSchemaFieldType] = useState<FieldType>('text');
+  const [schemaFieldType, setSchemaFieldType] = useState<SchemaFieldType>('text');
   const [schemaFieldName, setSchemaFieldName] = useState('');
   const [schemaFieldKeyValue, setSchemaFieldKeyValue] = useState('');
   const [schemaKeyEdited, setSchemaKeyEdited] = useState(false);
@@ -508,9 +524,22 @@ export function DataPage({
   const calendarField = fields.find(
     (field) => field.id === selectedView?.config.viewOptions?.dateFieldId,
   );
-  const availableFieldTypes = workspaceMode
-    ? fieldTypes.filter((type) => !['measurement', 'file', 'dataset'].includes(type))
-    : fieldTypes;
+  const availableFieldTypes: SchemaFieldType[] = workspaceMode
+    ? [...fieldTypes.filter((type) => !['measurement', 'file', 'dataset'].includes(type)), 'image']
+    : [...fieldTypes, 'image'];
+  const emptyCapabilities =
+    locale === 'ko'
+      ? ['형식화된 필드', '저장된 뷰', 'CSV 가져오기·내보내기', '감사 이력']
+      : ['Typed fields', 'Saved views', 'CSV import & export', 'Audit history'];
+  const gridGuideLabel = locale === 'ko' ? '그리드 사용 안내' : 'Grid guide';
+  const gridGuide =
+    locale === 'ko'
+      ? '셀을 더블 클릭하거나 Enter를 눌러 편집하세요. 우클릭으로 추가 작업을 열고, 셀 범위를 드래그해 복사하거나 붙여넣을 수 있습니다.'
+      : 'Double-click a cell or press Enter to edit. Right-click for more actions, or drag across cells to copy and paste a range.';
+  const sharedChangesLabel =
+    locale === 'ko'
+      ? '변경 사항은 이 테이블의 모든 뷰에 공유됩니다.'
+      : 'Changes are shared across every view of this table.';
   const selectDataLocation = useCallback(
     (objectTypeIdentifier: string, viewId = 'all', replace = false) => {
       const canonicalIdentifier = canonicalTableIdentifier(objectTypeIdentifier);
@@ -592,7 +621,7 @@ export function DataPage({
       (field) =>
         field.name.toLowerCase().includes(query) ||
         field.key.toLowerCase().includes(query) ||
-        fieldTypeMeta[field.fieldType].label.toLowerCase().includes(query),
+        fieldMeta(field).label.toLowerCase().includes(query),
     );
   }, [schemaFields, schemaSearch]);
   const selectedSchemaField = fields.find((field) => field.id === schemaSelection);
@@ -1181,8 +1210,10 @@ export function DataPage({
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
-    const type = String(data.get('fieldType')) as FieldType;
-    const config = schemaFieldConfig(type, data);
+    const selectedType = String(data.get('fieldType')) as SchemaFieldType;
+    const type: FieldType = selectedType === 'image' ? 'file' : selectedType;
+    const config =
+      selectedType === 'image' ? { mediaKind: 'image' } : schemaFieldConfig(type, data);
     setSchemaBusy(true);
     try {
       const created = await api<FieldDefinition>(`${base}/object-types/${selectedId}/fields`, {
@@ -2560,35 +2591,45 @@ export function DataPage({
           sidebarPortal,
         )}
 
-      <section className="min-w-0 bg-slate-950/20 p-2.5">
+      <section className="data-workbench min-w-0 p-3 sm:p-4">
         {!selected ? (
-          <div className="relative isolate overflow-hidden rounded-2xl border border-dashed border-slate-700 p-10 text-center">
+          <div className="engineering-empty-state relative isolate overflow-hidden rounded-2xl border border-dashed border-slate-700 p-10 text-center sm:p-14">
             <div aria-hidden="true" className="product-grid absolute inset-0 -z-10 opacity-60" />
-            <span className="mx-auto grid size-12 place-items-center rounded-2xl border border-sky-400/20 bg-sky-400/10 text-xl text-sky-300">
-              ▦
+            <span className="mx-auto grid size-14 place-items-center rounded-2xl border border-sky-400/20 bg-sky-400/10 text-sky-300 shadow-lg shadow-sky-950/10">
+              <svg
+                aria-hidden="true"
+                className="size-6"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.7"
+                viewBox="0 0 24 24"
+              >
+                <rect height="16" rx="2.5" width="16" x="4" y="4" />
+                <path d="M4 9h16M9 4v16" />
+              </svg>
             </span>
             <h2 className="mt-5 text-xl font-semibold text-slate-200">{t('data.emptyTitle')}</h2>
             <p className="mx-auto mt-2 max-w-xl text-sm leading-relaxed text-slate-500">
               {t('data.emptyBody')}
             </p>
             <div className="mx-auto mt-5 flex max-w-2xl flex-wrap justify-center gap-2 text-xs text-slate-400">
-              {['Typed fields', 'Saved views', 'CSV import & export', 'Audit history'].map(
-                (capability) => (
-                  <span
-                    className="rounded-full border border-slate-800 bg-slate-900/60 px-3 py-1.5"
-                    key={capability}
-                  >
-                    {capability}
-                  </span>
-                ),
-              )}
+              {emptyCapabilities.map((capability) => (
+                <span
+                  className="rounded-full border border-slate-800 bg-slate-900/60 px-3 py-1.5"
+                  key={capability}
+                >
+                  {capability}
+                </span>
+              ))}
             </div>
           </div>
         ) : (
           <>
-            <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="data-titlebar flex flex-wrap items-center justify-between gap-3">
               <div className="flex min-w-0 items-baseline gap-2">
-                <h2 className="truncate text-xl font-semibold">{selected.pluralName}</h2>
+                <h2 className="truncate text-2xl font-semibold tracking-[-0.025em]">
+                  {selected.pluralName}
+                </h2>
                 <p className="font-mono text-[10px] uppercase tracking-widest text-sky-400">
                   {selected.key}
                 </p>
@@ -2619,6 +2660,7 @@ export function DataPage({
                 {allowed(user, 'schema.manage') && (
                   <Button
                     aria-expanded={showTableSettings}
+                    className="data-secondary-action"
                     variant="quiet"
                     onClick={() => setShowTableSettings((value) => !value)}
                   >
@@ -2628,6 +2670,7 @@ export function DataPage({
                 {allowed(user, 'schema.manage') && (
                   <Button
                     aria-expanded={showSchema}
+                    className="data-secondary-action"
                     variant="quiet"
                     onClick={() => {
                       const next = !showSchema;
@@ -2639,12 +2682,17 @@ export function DataPage({
                   </Button>
                 )}
                 {allowed(user, 'export.execute') && (
-                  <Button variant="quiet" onClick={() => void exportCsv()}>
+                  <Button
+                    className="data-secondary-action"
+                    variant="quiet"
+                    onClick={() => void exportCsv()}
+                  >
                     {t('data.exportCsv')}
                   </Button>
                 )}
                 {allowed(user, 'record.create') && (
                   <Button
+                    className="data-primary-action"
                     onClick={() => {
                       setShowInlineRecord(false);
                       setShowNewRecord((value) => !value);
@@ -2657,7 +2705,7 @@ export function DataPage({
                   <details className="group relative" data-popover-menu>
                     <summary
                       aria-label="More table actions"
-                      className="grid size-8 cursor-pointer list-none place-items-center rounded-lg border border-slate-800 text-base text-slate-500 marker:content-none hover:border-slate-700 hover:bg-slate-900 hover:text-slate-200"
+                      className="grid size-9 cursor-pointer list-none place-items-center rounded-lg border border-slate-800 bg-slate-900/75 text-base text-slate-500 shadow-sm marker:content-none hover:border-slate-700 hover:bg-slate-800 hover:text-slate-200"
                       title="More table actions"
                     >
                       ⋯
@@ -2841,7 +2889,7 @@ export function DataPage({
                       style={{ maxHeight: '16rem' }}
                     >
                       {filteredSchemaFields.map((field) => {
-                        const meta = fieldTypeMeta[field.fieldType];
+                        const meta = fieldMeta(field);
                         const active = schemaSelection === field.id;
                         return (
                           <div
@@ -2991,7 +3039,7 @@ export function DataPage({
                             aria-hidden="true"
                             className="grid size-10 shrink-0 place-items-center rounded-xl border border-sky-400/20 bg-sky-400/10 font-mono text-sm text-sky-300"
                           >
-                            {fieldTypeMeta[schemaFieldType].icon}
+                            {schemaFieldTypeMeta[schemaFieldType].icon}
                           </span>
                         </div>
 
@@ -3046,7 +3094,7 @@ export function DataPage({
                               name="fieldType"
                               value={schemaFieldType}
                               onChange={(event) =>
-                                setSchemaFieldType(event.target.value as FieldType)
+                                setSchemaFieldType(event.target.value as SchemaFieldType)
                               }
                             >
                               {(
@@ -3060,15 +3108,15 @@ export function DataPage({
                                 ] as const
                               ).map((group) => {
                                 const groupTypes = availableFieldTypes.filter(
-                                  (type) => fieldTypeMeta[type].group === group,
+                                  (type) => schemaFieldTypeMeta[type].group === group,
                                 );
                                 if (!groupTypes.length) return null;
                                 return (
                                   <optgroup key={group} label={group}>
                                     {groupTypes.map((type) => (
                                       <option key={type} value={type}>
-                                        {fieldTypeMeta[type].label} —{' '}
-                                        {fieldTypeMeta[type].description}
+                                        {schemaFieldTypeMeta[type].label} —{' '}
+                                        {schemaFieldTypeMeta[type].description}
                                       </option>
                                     ))}
                                   </optgroup>
@@ -3126,7 +3174,7 @@ export function DataPage({
                             </label>
                           )}
 
-                          {calculatedFieldTypeSet.has(schemaFieldType) && (
+                          {calculatedFieldTypeSet.has(schemaFieldType as FieldType) && (
                             <CalculatedFieldSettings
                               base={base}
                               fields={fields}
@@ -3244,10 +3292,19 @@ export function DataPage({
                               </p>
                             </div>
                           )}
+                          {schemaFieldType === 'image' && (
+                            <div className="sm:col-span-2 rounded-lg border border-sky-400/20 bg-sky-400/10 px-3 py-2.5">
+                              <p className="text-xs font-medium text-sky-200">셀 이미지 첨부</p>
+                              <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
+                                각 레코드 셀에서 PNG, JPEG, WebP, GIF 또는 AVIF 이미지를 최대
+                                25MB까지 첨부하고 미리볼 수 있습니다.
+                              </p>
+                            </div>
+                          )}
                         </div>
 
                         <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-3 rounded-lg border border-slate-800 bg-slate-900/45 px-3 py-2.5 text-xs text-slate-300">
-                          {!calculatedFieldTypeSet.has(schemaFieldType) && (
+                          {!calculatedFieldTypeSet.has(schemaFieldType as FieldType) && (
                             <label className={checkboxLabelClass}>
                               <input
                                 className={checkboxClass}
@@ -3263,7 +3320,7 @@ export function DataPage({
                               Required value
                             </label>
                           )}
-                          {fieldSupportsUnique(schemaFieldType) && (
+                          {schemaFieldType !== 'image' && fieldSupportsUnique(schemaFieldType) && (
                             <label className={checkboxLabelClass}>
                               <input className={checkboxClass} name="unique" type="checkbox" />
                               Unique values
@@ -3308,7 +3365,7 @@ export function DataPage({
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div>
                             <p className="text-[10px] font-semibold uppercase tracking-widest text-sky-400">
-                              {fieldTypeMeta[selectedSchemaField.fieldType].label} field
+                              {fieldMeta(selectedSchemaField).label} field
                             </p>
                             <h4 className="mt-1 text-base font-semibold text-slate-100">
                               Edit {selectedSchemaField.name}
@@ -3340,7 +3397,7 @@ export function DataPage({
                               Type
                             </p>
                             <p className="mt-1 text-xs text-slate-300">
-                              {fieldTypeMeta[selectedSchemaField.fieldType].label}
+                              {fieldMeta(selectedSchemaField).label}
                             </p>
                           </div>
                           <div>
@@ -3618,11 +3675,11 @@ export function DataPage({
               </section>
             )}
 
-            <div className="mt-2 overflow-hidden rounded-lg border border-slate-800 bg-slate-900/45 shadow-sm">
+            <div className="data-toolbar mt-3 overflow-hidden rounded-xl border border-slate-800 bg-slate-900/75">
               <div className="flex min-h-9 flex-wrap items-center gap-0.5 p-1">
                 <div className="mr-1 flex items-center gap-2 border-r border-slate-800 pr-3">
                   <span className="max-w-40 truncate px-2 text-sm font-medium text-slate-200">
-                    {selectedView?.name ?? 'All records'}
+                    {selectedView?.name ?? t('data.allRecords')}
                   </span>
                   {viewDirty && (
                     <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase text-amber-300">
@@ -3733,8 +3790,10 @@ export function DataPage({
                       setPage(1);
                     }}
                   >
-                    <option value="all">All projects</option>
-                    <option value="none">No project</option>
+                    <option value="all">
+                      {locale === 'ko' ? '모든 프로젝트' : 'All projects'}
+                    </option>
+                    <option value="none">{t('data.noProject')}</option>
                     {workspaceData?.projects.map((project) => (
                       <option key={project.id} value={project.id}>
                         {project.name}
@@ -4039,20 +4098,22 @@ export function DataPage({
               )}
             </div>
 
-            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
-              <p>
-                {viewTypeMeta[activeViewType].label} view
-                {activeViewType === 'grid' &&
-                  allowed(user, 'record.update') &&
-                  ' · double-click a cell or focus it and press Enter. Save with Enter or by leaving the cell; cancel with Escape.'}
-                {' · Right-click a record or column for more actions. Keyboard: Shift+F10.'}
-                {activeViewType === 'grid' &&
-                  ' · Drag across cells to select; copy and paste with Ctrl/Cmd+C and Ctrl/Cmd+V.'}
-              </p>
-              <p aria-live="polite">
+            <div className="mt-2.5 flex flex-wrap items-start justify-between gap-2 text-xs text-slate-500">
+              <details className="group relative">
+                <summary className="cursor-pointer list-none rounded-md px-1.5 py-1 font-medium text-slate-500 marker:content-none hover:bg-slate-800/70 hover:text-sky-300">
+                  <span aria-hidden="true" className="mr-1.5 text-sky-400">
+                    ?
+                  </span>
+                  {gridGuideLabel}
+                </summary>
+                <p className="absolute left-0 top-8 z-30 w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-slate-700 bg-slate-950 p-3 text-xs leading-relaxed text-slate-300 shadow-xl">
+                  {gridGuide}
+                </p>
+              </details>
+              <p aria-live="polite" className="px-1.5 py-1">
                 {selectedGridCellCount > 0
                   ? `${selectedGridCellCount} cells selected${clipboardBusy ? ' · Pasting…' : ''}`
-                  : 'Changes are shared across every view of this table.'}
+                  : sharedChangesLabel}
               </p>
             </div>
 
@@ -4318,7 +4379,7 @@ export function DataPage({
                                 </span>
                               )}
                               <span className="ml-2 truncate font-normal normal-case text-slate-600">
-                                {field.fieldType}
+                                {fieldMeta(field).label}
                               </span>
                             </button>
                             <details className="relative shrink-0 normal-case" data-popover-menu>
@@ -4660,6 +4721,16 @@ export function DataPage({
                                     ? `${record.measurements[field.id]?.value} ${record.measurements[field.id]?.unit} · ${record.measurements[field.id]?.status ?? 'pending'}`
                                     : (record.measurements?.[field.id]?.status ?? '—')}
                                 </span>
+                              ) : field.fieldType === 'file' && isImageField(field.config) ? (
+                                <ImageGridCell
+                                  base={base}
+                                  comfortable={rowDensity === 'comfortable'}
+                                  editable={allowed(user, 'record.update')}
+                                  label={field.name}
+                                  recordName={record.displayName}
+                                  value={recordGridValue(record, field)}
+                                  onSave={(value) => saveGridCell(record, field, value)}
+                                />
                               ) : allowed(user, 'record.update') &&
                                 !calculatedFieldTypeSet.has(field.fieldType) ? (
                                 <GridCell
@@ -4738,7 +4809,7 @@ export function DataPage({
                             }
                             type="button"
                           >
-                            + Add record
+                            {locale === 'ko' ? '+ 레코드 추가' : '+ Add record'}
                           </button>
                         </td>
                       </tr>
@@ -4857,8 +4928,9 @@ export function DataPage({
             </div>
             <div className="mt-2 flex items-center justify-between text-xs text-slate-400">
               <span>
-                {records.total} records · page {records.page} of{' '}
-                {Math.max(1, Math.ceil(records.total / records.pageSize))}
+                {locale === 'ko'
+                  ? `${t('data.records', { count: records.total })} · 페이지 ${records.page} / ${Math.max(1, Math.ceil(records.total / records.pageSize))}`
+                  : `${records.total} records · page ${records.page} of ${Math.max(1, Math.ceil(records.total / records.pageSize))}`}
               </span>
               <div className="flex gap-2">
                 <Button
@@ -4866,14 +4938,14 @@ export function DataPage({
                   disabled={page <= 1}
                   onClick={() => setPage((value) => value - 1)}
                 >
-                  Previous
+                  {locale === 'ko' ? '이전' : 'Previous'}
                 </Button>
                 <Button
                   variant="quiet"
                   disabled={page * records.pageSize >= records.total}
                   onClick={() => setPage((value) => value + 1)}
                 >
-                  Next
+                  {locale === 'ko' ? '다음' : 'Next'}
                 </Button>
               </div>
             </div>

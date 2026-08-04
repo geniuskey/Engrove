@@ -8,6 +8,7 @@ import {
   useState,
 } from 'react';
 import { ErrorText, inputClass } from './App.js';
+import { isImageField } from './DataPageImages.js';
 import type {
   DynamicRecord,
   FieldDefinition,
@@ -527,6 +528,13 @@ function InlineDraftInput({
   onChange: (draft: GridEditorDraft) => void;
   saving: boolean;
 }) {
+  if (field.fieldType === 'file' && isImageField(field.config)) {
+    return (
+      <span className="block px-2.5 py-2 text-xs text-slate-500" title="Save the row first">
+        저장 후 이미지 첨부
+      </span>
+    );
+  }
   if (field.fieldType === 'measurement') {
     return (
       <span
@@ -1102,6 +1110,19 @@ export function RecordForm({
               placeholder="Record UUID; another UUID"
               required={field.required}
             />
+          ) : field.fieldType === 'file' && isImageField(field.config) ? (
+            <>
+              <input
+                name={`reference:${field.id}`}
+                type="hidden"
+                value={record?.fileReferences[field.id]?.[0] ?? ''}
+              />
+              <span className="mt-1.5 block min-h-9 rounded-lg border border-slate-800 bg-slate-900/55 px-3 py-2 text-xs text-slate-400">
+                {record?.fileReferences[field.id]?.length
+                  ? '이미지는 그리드 셀에서 미리보기·교체·제거할 수 있습니다.'
+                  : '레코드를 저장한 뒤 그리드 셀에서 이미지를 첨부하세요.'}
+              </span>
+            </>
           ) : field.fieldType === 'file' || field.fieldType === 'dataset' ? (
             <input
               className={inputClass}

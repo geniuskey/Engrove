@@ -62,10 +62,18 @@ export class ScopedFileDatasetRepository {
     private readonly workspaceId: string,
     private readonly projectId: string,
   ) {}
-  static async open(pool: Pool, actor: ActorSession, workspaceId: string, projectId: string) {
+  static async open(
+    pool: Pool,
+    actor: ActorSession,
+    workspaceId: string,
+    projectId: string,
+    options: { allowSystem?: boolean } = {},
+  ) {
     const found = await pool.query(
-      'select 1 from projects p join workspaces w on w.id=p.workspace_id where p.id=$1 and p.workspace_id=$2 and w.organization_id=$3 and p.system=false',
-      [projectId, workspaceId, actor.organizationId],
+      `select 1 from projects p join workspaces w on w.id=p.workspace_id
+       where p.id=$1 and p.workspace_id=$2 and w.organization_id=$3
+         and ($4::boolean or p.system=false)`,
+      [projectId, workspaceId, actor.organizationId, options.allowSystem === true],
     );
     if (!found.rowCount)
       throw new RepositoryError('PROJECT_NOT_FOUND', 404, 'Project was not found.');

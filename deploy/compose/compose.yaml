@@ -161,6 +161,9 @@ services:
       args:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:3000}
     ports: ['${ENGROVE_WEB_PORT:-4173}:4173']
+    environment:
+      WEB_API_PUBLIC_URL: ${VITE_API_BASE_URL:-http://localhost:3000}
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:9000}
     depends_on:
       api: { condition: service_healthy }
 

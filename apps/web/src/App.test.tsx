@@ -100,10 +100,14 @@ describe('App', () => {
 
     const projectNav = await screen.findByRole('navigation', { name: 'Project navigation' });
     expect(screen.getByLabelText('Service sidebar')).toHaveClass('service-sidebar');
-    expect(screen.getByRole('link', { name: 'Engrove home' }).querySelector('img')).toHaveAttribute(
-      'src',
-      '/engrove-mark.png',
-    );
+    const brandImages = screen.getByRole('link', { name: 'Engrove home' }).querySelectorAll('img');
+    expect([...brandImages].map((image) => image.getAttribute('src'))).toEqual([
+      '/engrove-mark-light.png',
+      '/engrove-mark-dark.png',
+    ]);
+    expect(
+      screen.getByRole('link', { name: 'Engrove home' }).querySelector('.engrove-brand-mark'),
+    ).toHaveClass('engrove-brand-mark--auto');
     expect(projectNav).toHaveTextContent('Overview');
     expect(projectNav).toHaveTextContent('Engineering records');
     expect(projectNav).toHaveTextContent('Files & datasets');

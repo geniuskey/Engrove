@@ -22,6 +22,7 @@ import {
   useSearchParams,
 } from 'react-router';
 import type { WorkspaceDataContext } from './DataPageTypes.js';
+import { BrandMark } from './BrandMark.js';
 import { I18nProvider, useI18n } from './i18n.js';
 import { ServiceShell } from './ServiceSidebar.js';
 
@@ -255,7 +256,7 @@ function AuthCard({ title, children }: PropsWithChildren<{ title: string }>) {
           />
           <div>
             <Link to="/" className="relative inline-flex items-center gap-3 text-slate-100">
-              <img alt="" className="size-10" height="40" src="/engrove-mark.png" width="40" />
+              <BrandMark className="size-10" />
               <span>
                 <span className="block font-semibold tracking-tight">Engrove</span>
                 <span className="block font-mono text-[10px] uppercase tracking-[0.2em] text-sky-400">
@@ -288,7 +289,7 @@ function AuthCard({ title, children }: PropsWithChildren<{ title: string }>) {
         <section className="flex min-h-[600px] items-center p-6 sm:p-10 lg:p-12">
           <div className="mx-auto w-full max-w-md">
             <Link to="/" className="inline-flex items-center gap-3 text-slate-100 lg:hidden">
-              <img alt="" className="size-10" height="40" src="/engrove-mark.png" width="40" />
+              <BrandMark className="size-10" />
               <span className="font-semibold">Engrove</span>
             </Link>
             <p className="mt-10 font-mono text-[10px] uppercase tracking-[0.2em] text-sky-400 lg:mt-0">
@@ -308,7 +309,7 @@ function AuthCard({ title, children }: PropsWithChildren<{ title: string }>) {
 }
 
 export const inputClass =
-  'mt-1 min-h-8 w-full rounded-lg border border-slate-700/80 bg-slate-950/80 px-2.5 py-1.5 text-sm text-slate-100 shadow-sm outline-none transition placeholder:text-slate-600 hover:border-slate-600 focus:border-sky-400 focus:ring-2 focus:ring-sky-400/15 disabled:cursor-not-allowed disabled:opacity-50';
+  'mt-1 min-h-10 w-full rounded-lg border border-slate-700/80 bg-slate-900/85 px-3 py-2 text-sm text-slate-100 shadow-sm outline-none transition placeholder:text-slate-600 hover:border-slate-600 focus:border-sky-400 focus:ring-3 focus:ring-sky-400/15 disabled:cursor-not-allowed disabled:opacity-50';
 
 function Field({
   autoComplete,
@@ -527,11 +528,13 @@ export function ErrorText({ children }: PropsWithChildren) {
 }
 
 function WorkspacesPage({ user }: { user: User }) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const { items, error, refresh } = useAsyncList<Workspace>(() => api('/workspaces'), []);
   const [formError, setFormError] = useState('');
   const [editingWorkspaceId, setEditingWorkspaceId] = useState('');
   const [editError, setEditError] = useState('');
+  const [showCreateWorkspace, setShowCreateWorkspace] = useState(false);
+  const openWorkspaceLabel = locale === 'ko' ? '워크스페이스 열기' : 'Open workspace';
   const editingWorkspace = items.find((workspace) => workspace.id === editingWorkspaceId);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -547,6 +550,8 @@ function WorkspacesPage({ user }: { user: User }) {
         }),
       });
       form.reset();
+      setFormError('');
+      setShowCreateWorkspace(false);
       await refresh();
     } catch (cause) {
       setFormError(cause instanceof Error ? cause.message : 'Workspace creation failed.');
@@ -574,62 +579,119 @@ function WorkspacesPage({ user }: { user: User }) {
   }
   return (
     <>
-      <div className="max-w-2xl">
-        <p className="font-mono text-xs uppercase tracking-[0.18em] text-sky-400">
-          {t('sidebar.organization')}
-        </p>
-        <div className="mt-2 flex items-center gap-3">
-          <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
-            {t('common.workspaces')}
-          </h1>
-          <HelpTip label="About workspaces">{t('workspaces.description')}</HelpTip>
+      <section className="workspace-hero relative isolate overflow-hidden rounded-3xl border border-slate-800/80 p-6 sm:p-8">
+        <div aria-hidden="true" className="product-grid absolute inset-0 -z-10 opacity-50" />
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+          <div className="max-w-2xl">
+            <p className="font-mono text-xs font-semibold uppercase tracking-[0.2em] text-sky-400">
+              {t('sidebar.organization')}
+            </p>
+            <div className="mt-2 flex items-center gap-3">
+              <h1 className="text-4xl font-semibold tracking-[-0.035em] sm:text-5xl">
+                {t('common.workspaces')}
+              </h1>
+              <HelpTip label="About workspaces">{t('workspaces.description')}</HelpTip>
+            </div>
+            <p className="mt-3 max-w-xl text-sm leading-relaxed text-slate-400">
+              {t('workspaces.description')}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="rounded-xl border border-slate-800/80 bg-slate-900/75 px-4 py-2.5 shadow-sm">
+              <span className="block text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                {t('common.workspaces')}
+              </span>
+              <strong className="mt-0.5 block text-lg text-slate-100">{items.length}</strong>
+            </div>
+            {allowed(user, 'workspace.manage') && (
+              <Button onClick={() => setShowCreateWorkspace(true)} type="button">
+                <span aria-hidden="true" className="mr-1 text-base leading-none">
+                  +
+                </span>
+                {t('workspaces.create')}
+              </Button>
+            )}
+          </div>
         </div>
-      </div>
+        <div className="mt-7 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+          <span className="rounded-full border border-slate-800/80 bg-slate-900/65 px-3 py-1.5">
+            ◆ {t('workspaces.traceable')}
+          </span>
+          <span className="rounded-full border border-slate-800/80 bg-slate-900/65 px-3 py-1.5">
+            ◇ {t('workspaces.engineeringReady')}
+          </span>
+          <span className="rounded-full border border-slate-800/80 bg-slate-900/65 px-3 py-1.5">
+            ⌂ {t('workspaces.selfHosted')}
+          </span>
+        </div>
+      </section>
       <ErrorText>{error}</ErrorText>
-      <div className="mt-7 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-2xl border border-slate-800/80 bg-slate-900/35 px-4 py-3 text-xs text-slate-400">
-        <strong className="text-slate-200">{t('workspaces.count', { count: items.length })}</strong>
-        <span>◆ {t('workspaces.traceable')}</span>
-        <span>◇ {t('workspaces.engineeringReady')}</span>
-        <span>⌂ {t('workspaces.selfHosted')}</span>
+      <div className="mt-6 flex items-center justify-between gap-4">
+        <h2 className="text-lg font-semibold text-slate-200">
+          {t('workspaces.count', { count: items.length })}
+        </h2>
       </div>
-      <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {items.map((workspace) => (
           <article
-            className="group relative rounded-2xl border border-slate-800/90 bg-slate-900/60 shadow-lg shadow-slate-950/15 hover:-translate-y-0.5 hover:border-sky-500/60 hover:bg-slate-900/90"
+            className="workspace-card group relative rounded-2xl border border-slate-800/90 bg-slate-900/85 shadow-lg shadow-slate-950/10 hover:border-sky-500/55"
             key={workspace.id}
           >
-            <Link className="block p-6" to={`/workspaces/${workspace.publicId ?? workspace.id}`}>
+            <Link
+              className="block p-5 sm:p-6"
+              to={`/workspaces/${workspace.publicId ?? workspace.id}`}
+            >
               <div className="flex items-start justify-between gap-4">
-                <span className="grid size-10 place-items-center rounded-xl border border-slate-700 bg-slate-800 font-mono text-sm text-sky-300">
+                <span className="grid size-11 place-items-center rounded-xl border border-sky-500/20 bg-gradient-to-br from-sky-400/20 to-slate-800 font-mono text-sm font-semibold text-sky-300 shadow-inner">
                   {workspace.name.slice(0, 1).toUpperCase()}
                 </span>
-                <span className="text-slate-600 transition group-hover:translate-x-1 group-hover:text-sky-300">
+                <span className="grid size-8 place-items-center rounded-full border border-slate-800 bg-slate-950/45 text-slate-500 transition group-hover:translate-x-1 group-hover:border-sky-500/30 group-hover:text-sky-300">
                   →
                 </span>
               </div>
-              <h2 className="mt-5 text-xl font-semibold tracking-tight">{workspace.name}</h2>
-              <p className="mt-1 font-mono text-xs text-slate-500">
+              <h3 className="mt-5 text-xl font-semibold tracking-[-0.02em]">{workspace.name}</h3>
+              <p className="mt-1 font-mono text-[11px] text-slate-500">
                 {workspace.slug} · {workspace.publicId ?? workspace.id}
               </p>
-              <p className="mt-3 line-clamp-2 text-sm text-slate-400">
+              <p className="mt-4 line-clamp-2 min-h-10 text-sm leading-relaxed text-slate-400">
                 {workspace.description || t('workspaces.open')}
               </p>
+              <div className="mt-5 flex items-center gap-2 border-t border-slate-800/80 pt-4 text-[11px] font-medium text-slate-500">
+                <span className="status-dot size-1.5 rounded-full bg-emerald-400" />
+                {openWorkspaceLabel}
+              </div>
             </Link>
             {allowed(user, 'workspace.manage') && (
               <button
                 aria-label={`${t('workspaces.edit')} ${workspace.name}`}
-                className="absolute right-11 top-5 rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-slate-800 hover:text-sky-300 sm:opacity-0 sm:group-hover:opacity-100 sm:focus:opacity-100"
+                className="absolute right-14 top-5 grid size-8 place-items-center rounded-full text-base text-slate-500 hover:bg-slate-800 hover:text-sky-300 sm:opacity-0 sm:group-hover:opacity-100 sm:focus:opacity-100"
                 onClick={() => {
                   setEditingWorkspaceId(workspace.id);
                   setEditError('');
                 }}
                 type="button"
               >
-                {t('workspaces.edit')}
+                ⋯
               </button>
             )}
           </article>
         ))}
+        {allowed(user, 'workspace.manage') && !showCreateWorkspace && (
+          <button
+            aria-label={t('workspaces.create')}
+            className="group min-h-56 rounded-2xl border border-dashed border-slate-700 bg-slate-900/30 p-6 text-left transition hover:border-sky-500/50 hover:bg-sky-500/5"
+            onClick={() => setShowCreateWorkspace(true)}
+            type="button"
+          >
+            <span className="grid size-11 place-items-center rounded-xl border border-slate-700 bg-slate-900 text-xl text-sky-300 transition group-hover:scale-105 group-hover:border-sky-500/40">
+              +
+            </span>
+            <strong className="mt-5 block text-lg text-slate-200">{t('workspaces.create')}</strong>
+            <span className="mt-2 block max-w-xs text-sm leading-relaxed text-slate-500">
+              {t('workspaces.stableSlug')}
+            </span>
+          </button>
+        )}
         {items.length === 0 && !error && (
           <p className="rounded-2xl border border-dashed border-slate-700 p-8 text-slate-400">
             {t('workspaces.empty')}
@@ -696,14 +758,24 @@ function WorkspacesPage({ user }: { user: User }) {
           <ErrorText>{editError}</ErrorText>
         </form>
       )}
-      {allowed(user, 'workspace.manage') && (
+      {allowed(user, 'workspace.manage') && showCreateWorkspace && (
         <form
-          className="mt-10 max-w-2xl rounded-2xl border border-slate-800 bg-slate-900/40 p-5 shadow-lg shadow-slate-950/10 sm:p-6"
+          className="mt-8 max-w-3xl rounded-2xl border border-sky-700/35 bg-slate-900/85 p-5 shadow-xl shadow-slate-950/10 sm:p-7"
           onSubmit={(event) => void submit(event)}
         >
-          <div className="flex items-center gap-2">
-            <h2 className="text-lg font-semibold">{t('workspaces.create')}</h2>
-            <HelpTip label="Workspace address help">{t('workspaces.stableSlug')}</HelpTip>
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-2">
+              <h2 className="text-xl font-semibold">{t('workspaces.create')}</h2>
+              <HelpTip label="Workspace address help">{t('workspaces.stableSlug')}</HelpTip>
+            </div>
+            <button
+              aria-label="Close workspace creator"
+              className="grid size-8 place-items-center rounded-full text-lg text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+              onClick={() => setShowCreateWorkspace(false)}
+              type="button"
+            >
+              ×
+            </button>
           </div>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <label className={formLabelClass}>
@@ -2015,13 +2087,7 @@ function AppContent() {
     return (
       <main className="product-grid grid min-h-screen place-items-center bg-slate-950 p-10 text-slate-300">
         <div className="text-center">
-          <img
-            alt=""
-            className="mx-auto size-12 animate-pulse"
-            height="48"
-            src="/engrove-mark.png"
-            width="48"
-          />
+          <BrandMark className="mx-auto size-12 animate-pulse" />
           <p className="mt-4 text-sm text-slate-400">{t('app.loading')}</p>
         </div>
       </main>

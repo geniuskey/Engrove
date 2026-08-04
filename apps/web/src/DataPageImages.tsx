@@ -1,0 +1,235 @@
+import { type ChangeEvent, useEffect, useId, useRef, useState } from 'react';
+import { api } from './App.js';
+
+const IMAGE_TYPES = new Set(['image/avif', 'image/gif', 'image/jpeg', 'image/png', 'image/webp']);
+const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+
+interface StoredImage {
+  id: string;
+  originalName: string;
+  contentType: string;
+  sizeBytes: number;
+}
+
+interface ImagePreview {
+  url: string;
+  expiresIn: number;
+  file: StoredImage;
+}
+
+async function sha256(bytes: ArrayBuffer): Promise<string> {
+  return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)))
+    .map((value) => value.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+export function isImageField(config: { mediaKind?: 'image' }): boolean {
+  return config.mediaKind === 'image';
+}
+
+export async function uploadCellImage(
+  base: string,
+  file: File,
+  seriesName: string,
+): Promise<StoredImage> {
+  if (!IMAGE_TYPES.has(file.type)) {
+    throw new Error('PNG, JPEG, WebP, GIF, AVIF 이미지만 첨부할 수 있습니다.');
+  }
+  if (file.size > MAX_IMAGE_BYTES) {
+    throw new Error('이미지는 25MB 이하여야 합니다.');
+  }
+  const contents = await file.arrayBuffer();
+  const issued = await api<{
+    uploadId: string;
+    uploadUrl: string;
+    headers: Record<string, string>;
+  }>(`${base}/file-upload-sessions`, {
+    method: 'POST',
+    body: JSON.stringify({
+      seriesName,
+      originalName: file.name,
+      contentType: file.type,
+      sizeBytes: file.size,
+      checksum: await sha256(contents),
+    }),
+  });
+  const stored = await fetch(issued.uploadUrl, {
+    method: 'PUT',
+    headers: issued.headers,
+    body: contents,
+  });
+  if (!stored.ok) throw new Error('이미지 저장소가 업로드를 거부했습니다.');
+  const completed = await api<{
+    id: string;
+    original_name: string;
+    content_type: string;
+    size_bytes: number;
+  }>(`${base}/file-upload-sessions/${issued.uploadId}/complete`, { method: 'POST' });
+  return {
+    id: completed.id,
+    originalName: completed.original_name,
+    contentType: completed.content_type,
+    sizeBytes: completed.size_bytes,
+  };
+}
+
+export function ImageGridCell({
+  base,
+  comfortable = false,
+  editable,
+  label,
+  recordName,
+  value,
+  onSave,
+}: {
+  base: string;
+  comfortable?: boolean;
+  editable: boolean;
+  label: string;
+  recordName: string;
+  value: unknown;
+  onSave?: (value: string[]) => Promise<void>;
+}) {
+  const inputId = useId();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const fileId = Array.isArray(value) && typeof value[0] === 'string' ? value[0] : '';
+  const [preview, setPreview] = useState<ImagePreview>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    setPreview(undefined);
+    setError('');
+    if (!fileId) return () => undefined;
+    void api<ImagePreview>(`${base}/files/${fileId}/preview`)
+      .then((result) => {
+        if (active) setPreview(result);
+      })
+      .catch((cause: unknown) => {
+        if (active)
+          setError(
+            cause instanceof Error ? cause.message : '이미지 미리보기를 불러오지 못했습니다.',
+          );
+      });
+    return () => {
+      active = false;
+    };
+  }, [base, fileId]);
+
+  async function chooseImage(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || !onSave) return;
+    setBusy(true);
+    setError('');
+    try {
+      const uploaded = await uploadCellImage(base, file, `${label}: ${recordName}`);
+      await onSave([uploaded.id]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '이미지를 첨부하지 못했습니다.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeImage() {
+    if (!onSave) return;
+    setBusy(true);
+    setError('');
+    try {
+      await onSave([]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '이미지를 제거하지 못했습니다.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      className={`group/image flex min-w-0 items-center gap-2 px-2 ${comfortable ? 'min-h-14 py-1.5' : 'min-h-10 py-1'}`}
+    >
+      {fileId ? (
+        preview ? (
+          <a
+            aria-label={`${recordName}의 ${label} 이미지 크게 보기`}
+            className="shrink-0 overflow-hidden rounded-md border border-slate-700 bg-slate-900 outline-none focus:ring-2 focus:ring-sky-400"
+            href={preview.url}
+            rel="noreferrer"
+            target="_blank"
+            title={preview.file.originalName}
+          >
+            <img
+              alt={`${recordName} — ${label}`}
+              className={`${comfortable ? 'size-11' : 'size-8'} object-cover`}
+              loading="lazy"
+              src={preview.url}
+            />
+          </a>
+        ) : (
+          <span
+            aria-label="이미지 불러오는 중"
+            className={`${comfortable ? 'size-11' : 'size-8'} shrink-0 animate-pulse rounded-md bg-slate-800`}
+          />
+        )
+      ) : (
+        <span
+          aria-hidden="true"
+          className={`${comfortable ? 'size-11' : 'size-8'} grid shrink-0 place-items-center rounded-md border border-dashed border-slate-700 bg-slate-900 text-base text-slate-500`}
+        >
+          ◫
+        </span>
+      )}
+      <div className="min-w-0 flex-1">
+        <p className={`truncate text-[11px] ${error ? 'text-rose-300' : 'text-slate-400'}`}>
+          {error ||
+            (busy
+              ? '업로드 중…'
+              : (preview?.file.originalName ?? (fileId ? '이미지 불러오는 중…' : '이미지 없음')))}
+        </p>
+        {editable && (
+          <div className="mt-0.5 flex items-center gap-2">
+            <button
+              aria-label={`${recordName}의 ${label} 이미지 ${fileId ? '교체' : '첨부'}`}
+              className="text-[10px] font-medium text-sky-400 hover:text-sky-300 disabled:opacity-50"
+              disabled={busy}
+              onClick={() => inputRef.current?.click()}
+              type="button"
+            >
+              {fileId ? '교체' : '첨부'}
+            </button>
+            {fileId && (
+              <button
+                aria-label={`${recordName}의 ${label} 이미지 제거`}
+                className="text-[10px] text-slate-500 hover:text-rose-300 disabled:opacity-50"
+                disabled={busy}
+                onClick={() => void removeImage()}
+                type="button"
+              >
+                제거
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      {editable && (
+        <input
+          ref={inputRef}
+          accept="image/avif,image/gif,image/jpeg,image/png,image/webp"
+          aria-label={`${recordName}의 ${label} 이미지 파일 선택`}
+          className="sr-only"
+          disabled={busy}
+          id={inputId}
+          type="file"
+          onChange={(event) => void chooseImage(event)}
+        />
+      )}
+      {error && (
+        <span aria-live="polite" className="sr-only">
+          {error}
+        </span>
+      )}
+    </div>
+  );
+}

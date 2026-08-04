@@ -12,6 +12,7 @@
     "dev": "turbo dev",
     "build": "turbo build",
     "bundle:check": "node scripts/check-bundle-budget.mjs",
+    "assets:logos": "node scripts/generate-logo-variants.mjs",
     "lint": "turbo lint && pnpm python:lint",
     "typecheck": "turbo typecheck && pnpm python:typecheck",
     "test": "turbo test && pnpm python:test",

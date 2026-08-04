@@ -83,6 +83,58 @@ describe('FilesDatasetsController finalization', () => {
 });
 
 describe('FilesDatasetsController storage identity and cleanup', () => {
+  it('issues an inline preview URL only for supported image content types', async () => {
+    const imageFile = {
+      id: '019fbcf9-e020-71da-935a-6a6a728b3790',
+      final_object_key: 'committed/project-1/files/image/source',
+      storage_version_id: 'version-1',
+      original_name: 'inspection.png',
+      content_type: 'image/png',
+      size_bytes: '42',
+    };
+    const repo = {
+      getAvailableFile: vi.fn(async () => imageFile),
+    };
+    database.open.mockResolvedValue(repo);
+    const runtime = {
+      pool: {},
+      config: { S3_BUCKET: 'engrove' },
+      s3Public: {},
+    } as never;
+
+    await expect(
+      new FilesDatasetsController(runtime).imagePreview(
+        {} as never,
+        'workspace-public-id',
+        'project-public-id',
+        '019fbcf9-e020-71da-935a-6a6a728b3790',
+      ),
+    ).resolves.toMatchObject({
+      url: 'https://uploads.example.test/signed',
+      file: {
+        originalName: 'inspection.png',
+        contentType: 'image/png',
+        sizeBytes: 42,
+      },
+    });
+    const signedUrlCalls = aws.getSignedUrl.mock.calls as unknown as Array<
+      [unknown, { input: Record<string, unknown> }]
+    >;
+    const command = signedUrlCalls.at(-1)![1];
+    expect(command.input.ResponseContentDisposition).toContain('inline;');
+    expect(command.input.ResponseContentType).toBe('image/png');
+
+    repo.getAvailableFile.mockResolvedValueOnce({ ...imageFile, content_type: 'image/svg+xml' });
+    await expect(
+      new FilesDatasetsController(runtime).imagePreview(
+        {} as never,
+        'workspace-public-id',
+        'project-public-id',
+        '019fbcf9-e020-71da-935a-6a6a728b3790',
+      ),
+    ).rejects.toMatchObject({ code: 'FILE_PREVIEW_UNSUPPORTED', status: 415 });
+  });
+
   it('uses the canonical project UUID for newly issued storage keys', async () => {
     const canonicalProjectId = '019fbcf9-e020-71da-935a-6a6a728b3704';
     const repo = {
@@ -118,6 +170,47 @@ describe('FilesDatasetsController storage identity and cleanup', () => {
         stagingObjectKey: expect.stringMatching(`^staging/${canonicalProjectId}/`),
         finalObjectKey: expect.stringMatching(`^committed/${canonicalProjectId}/files/`),
       }),
+    );
+    expect(database.open).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.anything(),
+      'workspace-1',
+      'project-1',
+      { allowSystem: false },
+    );
+  });
+
+  it('allows supported image uploads to target a workspace data project', async () => {
+    const repo = {
+      canonicalProjectId: '019fbcf9-e020-71da-935a-6a6a728b3704',
+      issueUpload: vi.fn(async (input) => ({ uploadId: input.uploadId, fileId: input.fileId })),
+    };
+    database.open.mockResolvedValue(repo);
+    const runtime = {
+      pool: {},
+      config: { S3_BUCKET: 'engrove' },
+      s3Public: {},
+    } as never;
+
+    await new FilesDatasetsController(runtime).issue(
+      {} as never,
+      'workspace-public-id',
+      'project-public-id',
+      {
+        seriesName: 'Cell image',
+        originalName: 'inspection.webp',
+        contentType: 'image/webp',
+        sizeBytes: 12,
+        checksum: 'a'.repeat(64),
+      },
+    );
+
+    expect(database.open).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.anything(),
+      'workspace-1',
+      'project-1',
+      { allowSystem: true },
     );
   });
 

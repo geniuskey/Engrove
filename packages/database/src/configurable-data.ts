@@ -41,6 +41,13 @@ export const configurableFieldTypes = [
 
 export type ConfigurableFieldType = (typeof configurableFieldTypes)[number];
 const calculatedFieldTypes: ConfigurableFieldType[] = ['formula', 'lookup', 'rollup'];
+const supportedImageTypes = new Set([
+  'image/avif',
+  'image/gif',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+]);
 export type ProjectionStatus = 'ready' | 'rebuilding' | 'failed';
 export type JsonValue =
   null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -662,6 +669,13 @@ function rollupNumber(value: JsonValue | undefined): number | undefined {
 }
 
 function validateConfig(type: ConfigurableFieldType, config: Record<string, JsonValue>): void {
+  if (type === 'file' && config.mediaKind !== undefined && config.mediaKind !== 'image') {
+    throw new RepositoryError(
+      'FIELD_CONFIG_INVALID',
+      400,
+      'File mediaKind must be image when provided.',
+    );
+  }
   if (type === 'single_select' || type === 'multi_select') {
     const options = config.options;
     if (!Array.isArray(options) || options.length === 0) {
@@ -1671,11 +1685,15 @@ export class ScopedProjectRepository {
     defaultValue?: JsonValue;
     requestId: string;
   }): Promise<FieldDefinitionRow> {
-    if (this.scope.system && ['measurement', 'file', 'dataset'].includes(input.fieldType)) {
+    if (
+      this.scope.system &&
+      (['measurement', 'dataset'].includes(input.fieldType) ||
+        (input.fieldType === 'file' && input.config?.mediaKind !== 'image'))
+    ) {
       throw new RepositoryError(
         'WORKSPACE_FIELD_TYPE_UNSUPPORTED',
         400,
-        'Workspace tables cannot contain project-scoped measurement, file, or dataset fields.',
+        'Workspace tables only support image-configured file fields.',
       );
     }
     if (
@@ -2423,9 +2441,9 @@ export class ScopedProjectRepository {
             `Field '${field.key}' accepts one exact reference.`,
           );
         if (references.length) {
-          const resource = await client.query(
+          const resource = await client.query<{ content_type?: string }>(
             field.fieldType === 'file'
-              ? "select 1 from file_objects where project_id=$1 and id=$2 and status='available'"
+              ? "select content_type from file_objects where project_id=$1 and id=$2 and status='available'"
               : "select 1 from datasets where project_id=$1 and id=$2 and status='ready'",
             [this.scope.projectId, references[0]],
           );
@@ -2435,6 +2453,17 @@ export class ScopedProjectRepository {
               409,
               `Field '${field.key}' references an unavailable resource.`,
             );
+          if (
+            field.fieldType === 'file' &&
+            field.config.mediaKind === 'image' &&
+            !supportedImageTypes.has(resource.rows[0]?.content_type ?? '')
+          ) {
+            throw new RepositoryError(
+              'FIELD_VALIDATION_FAILED',
+              400,
+              `Field '${field.key}' only accepts supported image files.`,
+            );
+          }
         }
         if (field.fieldType === 'file') fileReferences[field.id] = references;
         else datasetReferences[field.id] = references;

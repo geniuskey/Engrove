@@ -399,6 +399,11 @@ describe('DataPage', () => {
       target: { value: 'single_select' },
     });
     expect(screen.getByRole('textbox', { name: 'Select options' })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Field type' }), {
+      target: { value: 'image' },
+    });
+    expect(screen.getByText('셀 이미지 첨부')).toBeInTheDocument();
+    expect(screen.getByText(/PNG, JPEG, WebP, GIF 또는 AVIF/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Edit field Serial' }));
     expect(screen.getByRole('heading', { name: 'Edit Serial' })).toBeInTheDocument();
     fireEvent.change(screen.getByRole('textbox', { name: 'Field description' }), {

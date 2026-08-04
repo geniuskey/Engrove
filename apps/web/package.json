@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
+    "prebuild": "node ../../scripts/generate-logo-variants.mjs",
     "build": "tsc -b && vite build",
     "lint": "eslint src vite.config.ts",
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.e2e.json --noEmit --pretty false",

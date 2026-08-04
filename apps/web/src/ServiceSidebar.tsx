@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router';
 import type { User } from './App.js';
+import { BrandMark } from './BrandMark.js';
 import { useI18n } from './i18n.js';
 import { useModalDialog } from './useModalDialog.js';
 
@@ -28,6 +29,44 @@ interface ProjectSummary {
 
 type Theme = 'light' | 'dark';
 type RequestApi = <T>(path: string, init?: RequestInit) => Promise<T>;
+
+function ServiceIcon({ name }: { name: 'data' | 'help' | 'projects' | 'settings' }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className="size-4 shrink-0"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth="1.8"
+    >
+      {name === 'data' && (
+        <>
+          <rect height="16" rx="2.5" width="16" x="4" y="4" />
+          <path d="M4 9h16M9 4v16" />
+        </>
+      )}
+      {name === 'projects' && (
+        <>
+          <path d="M3.5 7.5h6l2-2h9v13a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" />
+          <path d="M3.5 10h17" />
+        </>
+      )}
+      {name === 'help' && (
+        <>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M9.8 9a2.4 2.4 0 1 1 3.3 2.2c-.8.4-1.1.9-1.1 1.8M12 16.8h.01" />
+        </>
+      )}
+      {name === 'settings' && (
+        <>
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" />
+        </>
+      )}
+    </svg>
+  );
+}
 
 export const ServiceSidebarPortalContext = createContext<HTMLElement | null>(null);
 
@@ -295,26 +334,19 @@ export function ServiceShell({
         <aside
           aria-label={t('sidebar.label')}
           aria-modal={isMobile && mobileOpen ? 'true' : undefined}
-          className={`service-sidebar fixed inset-y-0 left-0 z-40 flex w-72 shrink-0 flex-col border-r border-slate-800 bg-slate-950/95 transition-[transform,width] duration-200 md:sticky md:top-0 md:h-screen md:translate-x-0 ${mobileOpen ? 'translate-x-0' : '-translate-x-full'} ${expanded ? 'md:w-60' : 'md:w-14'}`}
+          className={`service-sidebar fixed inset-y-0 left-0 z-40 flex w-72 shrink-0 flex-col border-r border-slate-800 bg-slate-950/95 transition-[transform,width] duration-200 md:sticky md:top-0 md:h-screen md:translate-x-0 ${mobileOpen ? 'translate-x-0' : '-translate-x-full'} ${expanded ? 'md:w-64' : 'md:w-16'}`}
           ref={mobileSidebarRef}
           role={isMobile && mobileOpen ? 'dialog' : undefined}
           tabIndex={isMobile && mobileOpen ? -1 : undefined}
           id="service-navigation-drawer"
         >
           <div
-            className={`flex h-12 shrink-0 items-center justify-between border-b border-slate-800 ${sidebarExpanded ? 'px-2' : 'px-0.5'}`}
+            className={`flex h-14 shrink-0 items-center justify-between border-b border-slate-800 ${sidebarExpanded ? 'px-3' : 'px-1.5'}`}
           >
-            <Link
-              aria-label={t('sidebar.home')}
-              className="flex min-w-0 items-center gap-2.5"
-              to="/"
-            >
-              <img
-                alt=""
+            <Link aria-label={t('sidebar.home')} className="flex min-w-0 items-center gap-3" to="/">
+              <BrandMark
                 className={`shrink-0 ${sidebarExpanded ? 'size-8' : 'size-7'}`}
-                height={sidebarExpanded ? 32 : 28}
-                src="/engrove-mark.png"
-                width={sidebarExpanded ? 32 : 28}
+                variant="auto"
               />
               {sidebarExpanded && (
                 <span className="truncate text-sm font-semibold tracking-tight">Engrove</span>
@@ -372,25 +404,21 @@ export function ServiceShell({
                 <NavLink
                   aria-label={t('common.data')}
                   className={() =>
-                    `flex h-8 items-center gap-2 rounded-md px-2 text-xs font-medium ${inWorkspaceData ? 'bg-sky-400/15 text-sky-300' : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-200'}`
+                    `flex h-9 items-center gap-2.5 rounded-lg px-2.5 text-xs font-medium ${inWorkspaceData ? 'bg-sky-400/15 text-sky-300 shadow-sm' : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-200'}`
                   }
                   to={`${workspaceBase}/data`}
                 >
-                  <span aria-hidden="true" className="grid w-5 place-items-center text-sm">
-                    ▦
-                  </span>
+                  <ServiceIcon name="data" />
                   {sidebarExpanded && <span>{t('common.data')}</span>}
                 </NavLink>
                 <NavLink
                   aria-label={t('common.projects')}
                   className={() =>
-                    `flex h-8 items-center gap-2 rounded-md px-2 text-xs font-medium ${inProjects ? 'bg-sky-400/15 text-sky-300' : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-200'}`
+                    `flex h-9 items-center gap-2.5 rounded-lg px-2.5 text-xs font-medium ${inProjects ? 'bg-sky-400/15 text-sky-300 shadow-sm' : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-200'}`
                   }
                   to={`${workspaceBase}/projects`}
                 >
-                  <span aria-hidden="true" className="grid w-5 place-items-center text-sm">
-                    ◫
-                  </span>
+                  <ServiceIcon name="projects" />
                   {sidebarExpanded && <span>{t('common.projects')}</span>}
                 </NavLink>
               </>
@@ -398,26 +426,22 @@ export function ServiceShell({
               <>
                 <button
                   aria-label={t('common.data')}
-                  className="flex h-8 w-full cursor-not-allowed items-center gap-2 rounded-md px-2 text-xs font-medium text-slate-600"
+                  className="flex h-9 w-full cursor-not-allowed items-center gap-2.5 rounded-lg px-2.5 text-xs font-medium text-slate-600"
                   disabled
                   title={t('sidebar.selectWorkspaceFirst')}
                   type="button"
                 >
-                  <span aria-hidden="true" className="grid w-5 place-items-center text-sm">
-                    ▦
-                  </span>
+                  <ServiceIcon name="data" />
                   {sidebarExpanded && <span>{t('common.data')}</span>}
                 </button>
                 <button
                   aria-label={t('common.projects')}
-                  className="flex h-8 w-full cursor-not-allowed items-center gap-2 rounded-md px-2 text-xs font-medium text-slate-600"
+                  className="flex h-9 w-full cursor-not-allowed items-center gap-2.5 rounded-lg px-2.5 text-xs font-medium text-slate-600"
                   disabled
                   title={t('sidebar.selectWorkspaceFirst')}
                   type="button"
                 >
-                  <span aria-hidden="true" className="grid w-5 place-items-center text-sm">
-                    ◫
-                  </span>
+                  <ServiceIcon name="projects" />
                   {sidebarExpanded && <span>{t('common.projects')}</span>}
                 </button>
               </>
@@ -478,8 +502,8 @@ export function ServiceShell({
             {sidebarExpanded ? (
               <>
                 <details>
-                  <summary className="flex h-8 cursor-pointer list-none items-center gap-2 rounded-md px-2 text-xs text-slate-400 marker:content-none hover:bg-slate-800 hover:text-slate-200">
-                    <span aria-hidden="true">?</span> {t('sidebar.help')}
+                  <summary className="flex h-9 cursor-pointer list-none items-center gap-2.5 rounded-lg px-2.5 text-xs text-slate-400 marker:content-none hover:bg-slate-800 hover:text-slate-200">
+                    <ServiceIcon name="help" /> {t('sidebar.help')}
                   </summary>
                   <div className="ml-5 grid gap-0.5 border-l border-slate-800 pl-2">
                     <Link
@@ -498,8 +522,8 @@ export function ServiceShell({
                 </details>
                 {(can(user, 'member.manage') || can(user, 'audit.read')) && (
                   <details>
-                    <summary className="flex h-8 cursor-pointer list-none items-center gap-2 rounded-md px-2 text-xs text-slate-400 marker:content-none hover:bg-slate-800 hover:text-slate-200">
-                      <span aria-hidden="true">⚙</span> {t('sidebar.settings')}
+                    <summary className="flex h-9 cursor-pointer list-none items-center gap-2.5 rounded-lg px-2.5 text-xs text-slate-400 marker:content-none hover:bg-slate-800 hover:text-slate-200">
+                      <ServiceIcon name="settings" /> {t('sidebar.settings')}
                     </summary>
                     <div className="ml-5 grid gap-0.5 border-l border-slate-800 pl-2">
                       {can(user, 'member.manage') && (
@@ -589,7 +613,7 @@ export function ServiceShell({
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <header className="sticky top-0 z-30 flex h-11 shrink-0 items-center gap-3 border-b border-slate-800/80 bg-slate-950/90 px-3 backdrop-blur-xl">
+          <header className="app-header sticky top-0 z-30 flex h-14 shrink-0 items-center gap-3 border-b border-slate-800/80 bg-slate-950/90 px-4 backdrop-blur-xl">
             <button
               aria-controls="service-navigation-drawer"
               aria-expanded={mobileOpen}
@@ -601,14 +625,14 @@ export function ServiceShell({
             >
               <span aria-hidden="true">☰</span>
             </button>
-            <p className="min-w-0 truncate text-xs text-slate-500">
+            <p className="min-w-0 truncate text-sm text-slate-500">
               <span>{workspace?.name ?? t('sidebar.organization')}</span>
               <span className="mx-2 text-slate-700">/</span>
               <strong className="font-medium text-slate-300">{sectionLabel}</strong>
             </p>
             <button
               aria-label={t('command.open')}
-              className="ml-auto flex h-7 items-center gap-2 rounded-md border border-slate-800 bg-slate-900 px-2 text-[11px] text-slate-500 hover:border-slate-700 hover:text-sky-300"
+              className="ml-auto flex h-9 items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/90 px-3 text-xs text-slate-500 shadow-sm hover:border-slate-700 hover:text-sky-300"
               onClick={() => setCommandOpen(true)}
               ref={commandButtonRef}
               type="button"
@@ -618,7 +642,7 @@ export function ServiceShell({
             </button>
           </header>
           <main
-            className={`compact-page mx-auto w-full min-w-0 flex-1 ${dataWorkspace ? 'max-w-none px-2 py-2' : 'max-w-[1440px] px-4 py-4'}`}
+            className={`compact-page mx-auto w-full min-w-0 flex-1 ${dataWorkspace ? 'max-w-none px-3 py-3' : 'max-w-[1500px] px-5 py-7 lg:px-8'}`}
             id="main-content"
           >
             {children}

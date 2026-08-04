@@ -8,8 +8,26 @@ const types = {
   '.css': 'text/css',
   '.html': 'text/html',
   '.js': 'text/javascript',
+  '.png': 'image/png',
   '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
 };
+
+function sourceOrigin(value) {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return undefined;
+  }
+}
+
+const apiOrigin = sourceOrigin(process.env.WEB_API_PUBLIC_URL ?? 'http://localhost:3000');
+const storageOrigin = sourceOrigin(process.env.S3_PUBLIC_ENDPOINT ?? 'http://localhost:9000');
+const connectSources = [...new Set(["'self'", apiOrigin, storageOrigin].filter(Boolean))].join(' ');
+const imageSources = [...new Set(["'self'", 'data:', 'blob:', storageOrigin].filter(Boolean))].join(
+  ' ',
+);
+const contentSecurityPolicy = `default-src 'self'; connect-src ${connectSources}; img-src ${imageSources}`;
 
 async function handleRequest(request, response) {
   if (request.url === '/health') {
@@ -36,7 +54,7 @@ async function handleRequest(request, response) {
   }
   response.writeHead(200, {
     'content-type': types[extname(file)] ?? 'application/octet-stream',
-    'content-security-policy': "default-src 'self'; connect-src 'self' http://localhost:3000",
+    'content-security-policy': contentSecurityPolicy,
   });
   const stream = createReadStream(file);
   stream.on('error', () => {
