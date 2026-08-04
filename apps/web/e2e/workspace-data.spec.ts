@@ -10,10 +10,12 @@ const dateFieldId = '019fbcf9-e020-71da-935a-6a6a728b3706';
 const recordId = '019fbcf9-e020-71da-935a-6a6a728b3707';
 const kanbanViewId = '019fbcf9-e020-71da-935a-6a6a728b3708';
 const calendarViewId = '019fbcf9-e020-71da-935a-6a6a728b3709';
+const taskId = '019fbcf9-e020-71da-935a-6a6a728b3712';
 
 interface ApiCapture {
   recordQueries: Array<Record<string, unknown>>;
   recordPatches: Array<Record<string, unknown>>;
+  taskPatches: Array<Record<string, unknown>>;
 }
 
 function body(request: Request): Record<string, unknown> {
@@ -21,7 +23,7 @@ function body(request: Request): Record<string, unknown> {
 }
 
 async function mockWorkspaceApi(page: Page): Promise<ApiCapture> {
-  const capture: ApiCapture = { recordQueries: [], recordPatches: [] };
+  const capture: ApiCapture = { recordQueries: [], recordPatches: [], taskPatches: [] };
   await page.route('http://localhost:3000/**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -101,6 +103,27 @@ async function mockWorkspaceApi(page: Page): Promise<ApiCapture> {
     }
 
     const base = `/api/v1/workspaces/${workspaceId}/projects/${backingProjectId}`;
+    const task = {
+      id: taskId,
+      title: 'Review motor evidence',
+      description: 'Confirm the result before release.',
+      priority: 'high',
+      assignee_id: null,
+      assignee_name: null,
+      due_date: null,
+      archived_at: null,
+      links: [],
+    };
+    if (pathname === `${base}/tasks` && request.method() === 'GET') {
+      await json({ items: [{ ...task, status: 'todo', row_version: 1 }] });
+      return;
+    }
+    if (pathname === `${base}/tasks/${taskId}` && request.method() === 'PATCH') {
+      const patch = body(request);
+      capture.taskPatches.push(patch);
+      await json({ ...task, status: patch.status, row_version: 2 });
+      return;
+    }
     if (pathname === `${base}/object-types`) {
       await json({
         items: [
@@ -356,4 +379,22 @@ test('requests complete Kanban groups and the visible Calendar month', async ({ 
       }),
     )
     .toBe(true);
+});
+
+test('moves a task card to another status column with drag and drop', async ({ page }) => {
+  const capture = await mockWorkspaceApi(page);
+  await page.goto(`/workspaces/${workspaceId}/projects/${backingProjectId}/tasks`);
+
+  const card = page.getByRole('article', { name: 'Review motor evidence, To do' });
+  const destination = page.getByRole('region', { name: 'In progress, tasks: 0' });
+  await expect(card).toBeVisible();
+  await card.dragTo(destination, {
+    sourcePosition: { x: 16, y: 18 },
+    targetPosition: { x: 48, y: 80 },
+  });
+
+  await expect(
+    page.getByRole('article', { name: 'Review motor evidence, In progress' }),
+  ).toBeVisible();
+  await expect.poll(() => capture.taskPatches.at(-1)?.status).toBe('in_progress');
 });

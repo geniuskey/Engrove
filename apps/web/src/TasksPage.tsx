@@ -1,5 +1,6 @@
 import { Button } from '@engrove/ui';
 import {
+  type DragEvent as ReactDragEvent,
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
@@ -67,6 +68,10 @@ export function TasksPage({ user }: { user: User }) {
   const [busy, setBusy] = useState(false);
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuModel>();
+  const [draggingTaskId, setDraggingTaskId] = useState('');
+  const [dragOverStatus, setDragOverStatus] = useState<Status>();
+  const [pendingTaskIds, setPendingTaskIds] = useState<Set<string>>(() => new Set());
+  const [boardAnnouncement, setBoardAnnouncement] = useState('');
   const creatorDialogRef = useModalDialog<HTMLDivElement>(creatorOpen, () => setCreatorOpen(false));
   const columns: Array<{ status: Status; label: string }> = [
     { status: 'todo', label: t('tasks.todo') },
@@ -140,8 +145,17 @@ export function TasksPage({ user }: { user: User }) {
   }
 
   async function changeStatus(task: Task, status: Status) {
-    await mutate(() =>
-      api(`${base}/tasks/${task.id}`, {
+    if (task.status === status || pendingTaskIds.has(task.id)) return;
+    const previousStatus = task.status;
+    const destination = columns.find((column) => column.status === status)?.label ?? status;
+    setPendingTaskIds((current) => new Set(current).add(task.id));
+    setTasks((current) =>
+      current.map((candidate) => (candidate.id === task.id ? { ...candidate, status } : candidate)),
+    );
+    setMessage('');
+    setBoardAnnouncement(t('tasks.movingTo', { title: task.title, status: destination }));
+    try {
+      const updated = await api<Task>(`${base}/tasks/${task.id}`, {
         method: 'PATCH',
         body: JSON.stringify({
           title: task.title,
@@ -152,8 +166,84 @@ export function TasksPage({ user }: { user: User }) {
           dueDate: task.due_date ?? undefined,
           rowVersion: task.row_version,
         }),
-      }),
-    );
+      });
+      setTasks((current) =>
+        current.map((candidate) => (candidate.id === task.id ? updated : candidate)),
+      );
+      setMessageTone('success');
+      setMessage(t('tasks.movedTo', { title: task.title, status: destination }));
+      setBoardAnnouncement(t('tasks.movedTo', { title: task.title, status: destination }));
+    } catch (cause) {
+      setTasks((current) =>
+        current.map((candidate) =>
+          candidate.id === task.id ? { ...candidate, status: previousStatus } : candidate,
+        ),
+      );
+      await refresh();
+      setMessageTone('error');
+      const error = cause instanceof Error ? cause.message : t('tasks.operationError');
+      setMessage(error);
+      setBoardAnnouncement(error);
+    } finally {
+      setPendingTaskIds((current) => {
+        const next = new Set(current);
+        next.delete(task.id);
+        return next;
+      });
+    }
+  }
+
+  function clearDragState() {
+    setDraggingTaskId('');
+    setDragOverStatus(undefined);
+  }
+
+  function startTaskDrag(event: ReactDragEvent<HTMLElement>, task: Task) {
+    const target = event.target;
+    if (
+      !allowed(user, 'task.update') ||
+      pendingTaskIds.has(task.id) ||
+      (target instanceof Element && Boolean(target.closest('button, select, input, textarea, a')))
+    ) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', task.id);
+    setDraggingTaskId(task.id);
+    setBoardAnnouncement(t('tasks.dragging', { title: task.title }));
+  }
+
+  function dragOverColumn(event: ReactDragEvent<HTMLElement>, status: Status) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    if (dragOverStatus !== status) setDragOverStatus(status);
+  }
+
+  function dropTask(event: ReactDragEvent<HTMLElement>, status: Status) {
+    event.preventDefault();
+    const taskId = event.dataTransfer.getData('text/plain') || draggingTaskId;
+    const task = tasks.find((candidate) => candidate.id === taskId);
+    clearDragState();
+    if (task) void changeStatus(task, status);
+  }
+
+  function handleTaskKeyDown(event: ReactKeyboardEvent<HTMLElement>, task: Task) {
+    if (
+      event.altKey &&
+      allowed(user, 'task.update') &&
+      (event.key === 'ArrowLeft' || event.key === 'ArrowRight')
+    ) {
+      const currentIndex = columns.findIndex((column) => column.status === task.status);
+      const nextIndex = currentIndex + (event.key === 'ArrowRight' ? 1 : -1);
+      const next = columns[nextIndex];
+      if (next) {
+        event.preventDefault();
+        void changeStatus(task, next.status);
+      }
+      return;
+    }
+    openTaskMenuFromKeyboard(event, task);
   }
 
   async function copyTaskValue(label: string, value: string) {
@@ -253,6 +343,9 @@ export function TasksPage({ user }: { user: User }) {
             {t('tasks.heading')}
           </h1>
           <p className="mt-3 text-slate-400">{t('tasks.description')}</p>
+          {allowed(user, 'task.update') && (
+            <p className="mt-2 text-xs text-slate-500">{t('tasks.dragHint')}</p>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {allowed(user, 'task.create') && (
@@ -287,93 +380,139 @@ export function TasksPage({ user }: { user: User }) {
         </div>
       </div>
       <NoticeText tone={messageTone}>{message}</NoticeText>
+      <p aria-live="polite" className="sr-only">
+        {boardAnnouncement}
+      </p>
       {loading && (
         <p aria-live="polite" className="mt-4 text-sm text-slate-400" role="status">
           {t('common.loading')}
         </p>
       )}
       {view === 'board' ? (
-        <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          {columns.map((column) => (
-            <section
-              className={`rounded-xl border border-slate-800 border-t-2 bg-slate-900/55 p-3 shadow-lg shadow-slate-950/10 ${columnAccent[column.status]}`}
-              key={column.status}
-            >
-              <div className="flex items-center justify-between gap-3">
-                <h2 className="font-semibold">{column.label}</h2>
-                <span className="rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-400">
-                  {
-                    tasks.filter((task) => !task.archived_at && task.status === column.status)
-                      .length
-                  }
-                </span>
-              </div>
-              <div className="mt-3 space-y-2">
-                {tasks
-                  .filter((task) => !task.archived_at && task.status === column.status)
-                  .map((task) => (
-                    <article
-                      className="rounded-lg border border-slate-800 bg-slate-950/80 p-3 shadow-sm shadow-slate-950/20 transition hover:border-slate-700"
-                      key={task.id}
-                      onContextMenu={(event) => openTaskMenu(event, task)}
-                      onKeyDown={(event) => openTaskMenuFromKeyboard(event, task)}
-                      tabIndex={0}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <h3 className="line-clamp-2 text-sm font-medium leading-5">{task.title}</h3>
-                        <span
-                          className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${priorityStyle[task.priority]}`}
+        <div className="-mx-3 mt-6 overflow-x-auto px-3 pb-3" data-task-board>
+          <div className="grid min-w-[68rem] grid-cols-4 items-start gap-3">
+            {columns.map((column) => {
+              const columnTasks = tasks.filter(
+                (task) => !task.archived_at && task.status === column.status,
+              );
+              const activeDropTarget = Boolean(draggingTaskId && dragOverStatus === column.status);
+              return (
+                <section
+                  aria-label={t('tasks.columnLabel', {
+                    status: column.label,
+                    count: columnTasks.length,
+                  })}
+                  className={`min-h-[30rem] rounded-xl border border-t-2 p-3 shadow-lg shadow-slate-950/10 transition-colors ${columnAccent[column.status]} ${activeDropTarget ? 'border-sky-400 bg-sky-400/10 ring-2 ring-sky-400/25' : 'border-slate-800 bg-slate-900/55'}`}
+                  data-drop-active={activeDropTarget ? 'true' : undefined}
+                  data-task-status={column.status}
+                  key={column.status}
+                  onDragEnter={(event) => dragOverColumn(event, column.status)}
+                  onDragOver={(event) => dragOverColumn(event, column.status)}
+                  onDrop={(event) => dropTask(event, column.status)}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <h2 className="font-semibold">{column.label}</h2>
+                    <span className="rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-400">
+                      {columnTasks.length}
+                    </span>
+                  </div>
+                  <div className="mt-3 min-h-40 space-y-2">
+                    {activeDropTarget && (
+                      <p className="rounded-lg border border-dashed border-sky-400/60 bg-sky-400/10 px-3 py-3 text-center text-xs font-medium text-sky-200">
+                        {t('tasks.dropHere', { status: column.label })}
+                      </p>
+                    )}
+                    {columnTasks.map((task) => {
+                      const taskPending = pendingTaskIds.has(task.id);
+                      const taskDragging = draggingTaskId === task.id;
+                      return (
+                        <article
+                          aria-busy={taskPending || undefined}
+                          aria-label={t('tasks.cardLabel', {
+                            title: task.title,
+                            status: column.label,
+                          })}
+                          className={`group rounded-lg border bg-slate-950/80 p-3 shadow-sm shadow-slate-950/20 transition ${taskDragging ? 'scale-[0.98] border-sky-400/60 opacity-45' : 'border-slate-800 hover:border-slate-600 hover:shadow-md'} ${allowed(user, 'task.update') && !taskPending ? 'cursor-grab active:cursor-grabbing' : ''}`}
+                          draggable={allowed(user, 'task.update') && !taskPending}
+                          key={task.id}
+                          onContextMenu={(event) => openTaskMenu(event, task)}
+                          onDragEnd={clearDragState}
+                          onDragStart={(event) => startTaskDrag(event, task)}
+                          onKeyDown={(event) => handleTaskKeyDown(event, task)}
+                          tabIndex={0}
                         >
-                          {priorityLabel(task.priority)}
-                        </span>
-                      </div>
-                      {(task.due_date || task.links.length > 0) && (
-                        <p className="mt-1.5 truncate text-[11px] text-slate-500">
-                          {task.due_date &&
-                            t('tasks.due', {
-                              date: formatDate(`${task.due_date}T00:00:00`),
-                            })}
-                          {task.due_date && task.links.length > 0 && ' · '}
-                          {task.links.length > 0 &&
-                            t('tasks.linkCount', { count: task.links.length })}
-                        </p>
-                      )}
-                      <div className="mt-2 flex items-center gap-1.5">
-                        {allowed(user, 'task.update') && (
-                          <select
-                            aria-label={t('tasks.statusFor', { title: task.title })}
-                            className="h-8 min-w-0 flex-1 rounded-md border border-slate-800 bg-slate-900 px-2 text-xs text-slate-300 outline-none hover:border-slate-700 focus:border-sky-400"
-                            value={task.status}
-                            onChange={(event) =>
-                              void changeStatus(task, event.target.value as Status)
-                            }
-                          >
-                            {columns.map((candidate) => (
-                              <option key={candidate.status} value={candidate.status}>
-                                {candidate.label}
-                              </option>
-                            ))}
-                          </select>
-                        )}
-                        <button
-                          aria-label={`${locale === 'ko' ? '작업 메뉴' : 'Task actions'}: ${task.title}`}
-                          className="grid size-8 shrink-0 place-items-center rounded-md border border-slate-800 text-sm text-slate-500 hover:border-slate-700 hover:bg-slate-900 hover:text-sky-300"
-                          onClick={(event) => openTaskMenuFromButton(event, task)}
-                          type="button"
-                        >
-                          •••
-                        </button>
-                      </div>
-                    </article>
-                  ))}
-                {!tasks.some((task) => !task.archived_at && task.status === column.status) && (
-                  <p className="rounded-xl border border-dashed border-slate-800 px-3 py-6 text-center text-sm text-slate-600">
-                    {t('tasks.noTasks')}
-                  </p>
-                )}
-              </div>
-            </section>
-          ))}
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex min-w-0 items-start gap-1.5">
+                              {allowed(user, 'task.update') && (
+                                <span
+                                  aria-hidden="true"
+                                  className="mt-0.5 shrink-0 text-xs text-slate-600 group-hover:text-slate-400"
+                                >
+                                  ⠿
+                                </span>
+                              )}
+                              <h3 className="line-clamp-2 text-sm font-medium leading-5">
+                                {task.title}
+                              </h3>
+                            </div>
+                            <span
+                              className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${priorityStyle[task.priority]}`}
+                            >
+                              {priorityLabel(task.priority)}
+                            </span>
+                          </div>
+                          {(task.due_date || task.links.length > 0) && (
+                            <p className="mt-1.5 truncate text-[11px] text-slate-500">
+                              {task.due_date &&
+                                t('tasks.due', {
+                                  date: formatDate(`${task.due_date}T00:00:00`),
+                                })}
+                              {task.due_date && task.links.length > 0 && ' · '}
+                              {task.links.length > 0 &&
+                                t('tasks.linkCount', { count: task.links.length })}
+                            </p>
+                          )}
+                          <div className="mt-2 flex items-center gap-1.5">
+                            {allowed(user, 'task.update') && (
+                              <select
+                                aria-label={t('tasks.statusFor', { title: task.title })}
+                                className="h-8 min-w-0 flex-1 rounded-md border border-slate-800 bg-slate-900 px-2 text-xs text-slate-300 outline-none hover:border-slate-700 focus:border-sky-400"
+                                disabled={taskPending}
+                                value={task.status}
+                                onChange={(event) =>
+                                  void changeStatus(task, event.target.value as Status)
+                                }
+                              >
+                                {columns.map((candidate) => (
+                                  <option key={candidate.status} value={candidate.status}>
+                                    {candidate.label}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+                            <button
+                              aria-label={`${locale === 'ko' ? '작업 메뉴' : 'Task actions'}: ${task.title}`}
+                              className="grid size-8 shrink-0 place-items-center rounded-md border border-slate-800 text-sm text-slate-500 hover:border-slate-700 hover:bg-slate-900 hover:text-sky-300 disabled:opacity-50"
+                              disabled={taskPending}
+                              onClick={(event) => openTaskMenuFromButton(event, task)}
+                              type="button"
+                            >
+                              •••
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })}
+                    {!columnTasks.length && !activeDropTarget && (
+                      <p className="rounded-xl border border-dashed border-slate-800 px-3 py-6 text-center text-sm text-slate-600">
+                        {t('tasks.noTasks')}
+                      </p>
+                    )}
+                  </div>
+                </section>
+              );
+            })}
+          </div>
         </div>
       ) : (
         <section className="mt-6 rounded-xl border border-slate-800 p-4">

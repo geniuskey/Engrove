@@ -103,6 +103,14 @@ const en = {
   'projects.settingsSummary': 'Project settings & lifecycle',
   'projects.settingsHint': 'Edit details, status, or archive this project.',
   'projects.overviewLoadPartial': 'Some project metrics could not be loaded.',
+  'tasks.dragHint':
+    'Drag cards between columns to change status. Keyboard: Alt + Left/Right arrow.',
+  'tasks.movingTo': 'Moving {title} to {status}…',
+  'tasks.movedTo': '{title} moved to {status}.',
+  'tasks.dragging': 'Dragging {title}. Choose a destination column.',
+  'tasks.dropHere': 'Drop in {status}',
+  'tasks.columnLabel': '{status}, tasks: {count}',
+  'tasks.cardLabel': '{title}, {status}',
   'visualizations.canvasEyebrow': 'Visual canvas',
   'visualizations.canvasTitle': 'Build a view from an empty canvas',
   'visualizations.canvasBody':
@@ -706,6 +714,13 @@ const ko: Record<SupplementalTranslationKey, string> = {
   'projects.settingsSummary': '프로젝트 설정 및 수명 주기',
   'projects.settingsHint': '상세 정보와 상태를 수정하거나 프로젝트를 보관합니다.',
   'projects.overviewLoadPartial': '일부 프로젝트 지표를 불러오지 못했습니다.',
+  'tasks.dragHint': '카드를 컬럼 사이로 드래그해 상태를 변경하세요. 키보드: Alt + 좌우 방향키.',
+  'tasks.movingTo': '{title}을(를) {status}(으)로 이동하는 중…',
+  'tasks.movedTo': '{title}을(를) {status}(으)로 이동했습니다.',
+  'tasks.dragging': '{title} 드래그 중. 이동할 컬럼을 선택하세요.',
+  'tasks.dropHere': '{status}에 놓기',
+  'tasks.columnLabel': '{status}, 작업 {count}개',
+  'tasks.cardLabel': '{title}, {status}',
   'visualizations.canvasEyebrow': '비주얼 캔버스',
   'visualizations.canvasTitle': '빈 캔버스에서 필요한 화면을 구성하세요',
   'visualizations.canvasBody':

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from './i18n.js';
@@ -8,6 +8,7 @@ const workspaceId = '019fbcf9-e020-71da-935a-6a6a728b3790';
 const projectId = '019fbcf9-e020-71da-935a-6a6a728b3791';
 
 afterEach(() => {
+  cleanup();
   vi.restoreAllMocks();
   window.localStorage.clear();
 });
@@ -112,6 +113,83 @@ describe('TasksPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '작업 메뉴: 시편 확인' }));
     expect(screen.getByRole('menu', { name: '시편 확인' })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: '작업 제목 복사' })).toBeInTheDocument();
+  });
+
+  it('moves a task between status columns with drag and drop', async () => {
+    const task = {
+      id: '019fbcf9-e020-71da-935a-6a6a728b3798',
+      title: 'Move motor review',
+      description: 'Review the latest motor result.',
+      status: 'todo',
+      priority: 'medium',
+      assignee_id: null,
+      assignee_name: null,
+      due_date: null,
+      row_version: 1,
+      archived_at: null,
+      links: [],
+    } as const;
+    let resolvePatch!: (response: Response) => void;
+    const patchResponse = new Promise<Response>((resolve) => {
+      resolvePatch = resolve;
+    });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      if (init?.method === 'PATCH') return patchResponse;
+      return json({ items: [task] });
+    });
+
+    render(
+      <I18nProvider>
+        <MemoryRouter initialEntries={[`/workspaces/${workspaceId}/projects/${projectId}/tasks`]}>
+          <Routes>
+            <Route
+              element={
+                <TasksPage
+                  user={{
+                    id: '019fbcf9-e020-71da-935a-6a6a728b3792',
+                    email: 'owner@example.com',
+                    displayName: 'Owner',
+                    organizationId: '019fbcf9-e020-71da-935a-6a6a728b3793',
+                    role: 'owner',
+                  }}
+                />
+              }
+              path="/workspaces/:workspaceId/projects/:projectId/tasks"
+            />
+          </Routes>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    const card = await screen.findByLabelText('Move motor review, To do');
+    const destination = screen.getByRole('region', { name: 'In progress, tasks: 0' });
+    const transferValues = new Map<string, string>();
+    const dataTransfer = {
+      dropEffect: 'none',
+      effectAllowed: 'none',
+      getData: vi.fn((type: string) => transferValues.get(type) ?? ''),
+      setData: vi.fn((type: string, value: string) => transferValues.set(type, value)),
+    };
+
+    fireEvent.dragStart(card, { dataTransfer });
+    fireEvent.dragEnter(destination, { dataTransfer });
+    expect(destination).toHaveAttribute('data-drop-active', 'true');
+    expect(within(destination).getByText('Drop in In progress')).toBeInTheDocument();
+    fireEvent.drop(destination, { dataTransfer });
+
+    expect(within(destination).getByText('Move motor review')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining(`/tasks/${task.id}`),
+        expect.objectContaining({
+          method: 'PATCH',
+          body: expect.stringContaining('"status":"in_progress"'),
+        }),
+      ),
+    );
+    resolvePatch(json({ ...task, status: 'in_progress', row_version: 2 }));
+    expect(await screen.findAllByText('Move motor review moved to In progress.')).toHaveLength(2);
+    expect(screen.getByRole('region', { name: 'In progress, tasks: 1' })).toBeInTheDocument();
   });
 });
 

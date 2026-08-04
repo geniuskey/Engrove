@@ -5,10 +5,10 @@ const kibibyte = 1024;
 const budgets = {
   maxJavaScriptChunk: 450 * kibibyte,
   // Calculated fields, revision history, metadata editing, the command surface, the project
-  // dashboard, visual canvas, guided element picker, and bilingual page dictionary are
-  // product-level capabilities. Keep modest headroom above that baseline while retaining the
-  // stricter per-chunk limit.
-  totalJavaScript: 1_232 * kibibyte,
+  // dashboard, visual canvas, guided element picker, bilingual page dictionary, and accessible
+  // task-board drag-and-drop are product-level capabilities. Keep modest headroom above that
+  // baseline while retaining the stricter per-chunk limit.
+  totalJavaScript: 1_238 * kibibyte,
   maxCssAsset: 90 * kibibyte,
 };
 
