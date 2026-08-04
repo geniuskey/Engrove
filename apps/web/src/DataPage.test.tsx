@@ -719,7 +719,9 @@ describe('DataPage', () => {
         },
       }),
     );
-    expect(await screen.findByText('2 points · 1 series')).toBeInTheDocument();
+    expect(
+      await screen.findByRole('img', { name: 'Spectrum mini chart · 2 points · 1 series' }),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select Sample Two' }));
     fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
@@ -966,5 +968,93 @@ describe('DataPage', () => {
         rowVersion: 1,
       }),
     );
+  });
+
+  it('creates the first table from an accessible empty-state dialog', async () => {
+    let created = false;
+    let createBody: Record<string, unknown> | undefined;
+    const objectType = {
+      id: '019fbcf9-e020-71da-935a-6a6a728b3702',
+      publicId: 't1234567890abcd',
+      projectId: '019fbcf9-e020-71da-935a-6a6a728b3701',
+      name: 'Test sample',
+      pluralName: 'Test samples',
+      key: 'test-samples',
+      icon: 'table',
+      description: '',
+      system: false,
+    };
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/object-types')) {
+        if (init?.method === 'POST') {
+          createBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+          created = true;
+          return json(objectType);
+        }
+        return json({ items: created ? [objectType] : [] });
+      }
+      if (url.endsWith('/fields') || url.endsWith('/views')) return json({ items: [] });
+      if (url.endsWith('/records/query')) {
+        return json({ items: [], page: 1, pageSize: 25, total: 0 });
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+
+    render(
+      <MemoryRouter
+        initialEntries={[
+          '/workspaces/019fbcf9-e020-71da-935a-6a6a728b3700/projects/019fbcf9-e020-71da-935a-6a6a728b3701/data',
+        ]}
+      >
+        <Routes>
+          <Route
+            path="/workspaces/:workspaceId/projects/:projectId/data"
+            element={<DataPageHarness />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const emptyState = (
+      await screen.findByRole('heading', {
+        name: 'Build your first traceable table',
+      })
+    ).closest('div');
+    expect(emptyState).not.toBeNull();
+    const createButton = within(emptyState!).getByRole('button', {
+      name: '+ Create new table',
+    });
+    fireEvent.click(createButton);
+    const dialog = screen.getByRole('dialog', { name: '+ Create new table' });
+    expect(dialog).toBeInTheDocument();
+    expect(document.body).toHaveStyle({ overflow: 'hidden' });
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: '+ Create new table' })).not.toBeInTheDocument();
+    await waitFor(() => expect(createButton).toHaveFocus());
+
+    fireEvent.click(createButton);
+    const reopenedDialog = screen.getByRole('dialog', { name: '+ Create new table' });
+    fireEvent.change(within(reopenedDialog).getByRole('textbox', { name: 'Type name' }), {
+      target: { value: 'Test sample' },
+    });
+    fireEvent.change(within(reopenedDialog).getByRole('textbox', { name: 'Table label' }), {
+      target: { value: 'Test samples' },
+    });
+    fireEvent.change(within(reopenedDialog).getByRole('textbox', { name: 'Stable key' }), {
+      target: { value: 'test-samples' },
+    });
+    fireEvent.click(within(reopenedDialog).getByRole('button', { name: 'Add table' }));
+
+    await waitFor(() =>
+      expect(createBody).toEqual({
+        name: 'Test sample',
+        pluralName: 'Test samples',
+        key: 'test-samples',
+        icon: 'table',
+      }),
+    );
+    expect(await screen.findByRole('heading', { name: 'Test samples' })).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: '+ Create new table' })).not.toBeInTheDocument();
   });
 });

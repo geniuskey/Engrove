@@ -23,6 +23,8 @@
     "db:migrate": "pnpm --filter @engrove/database db:migrate",
     "setup:rotate": "pnpm --filter @engrove/api setup:rotate",
     "projection:rebuild": "pnpm --filter @engrove/api projection:rebuild",
+    "demo:cell-charts": "pnpm --filter @engrove/database exec tsx ../../scripts/seed-cell-chart-demo.mts",
+    "demo:tasks": "pnpm --filter @engrove/database exec tsx ../../scripts/seed-task-demo.mts",
     "units:generate": "pnpm --filter @engrove/units generate",
     "units:check": "pnpm --filter @engrove/units check",
     "python:lint": "uv run --project apps/worker-python --locked ruff check apps/worker-python",

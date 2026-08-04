@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from './i18n.js';
@@ -45,13 +45,17 @@ describe('TasksPage', () => {
       </MemoryRouter>,
     );
 
-    const title = screen.getByRole('textbox', { name: 'Task title' });
-    const description = screen.getByRole('textbox', { name: 'Description' });
+    expect(screen.queryByRole('textbox', { name: 'Task title' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Create task' }));
+    const dialog = screen.getByRole('dialog', { name: 'Create task' });
+    const title = within(dialog).getByRole('textbox', { name: 'Task title' });
+    const description = within(dialog).getByRole('textbox', { name: 'Description' });
     fireEvent.change(title, { target: { value: 'Inspect failed sample' } });
     fireEvent.change(description, { target: { value: 'Keep this context for retry' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Create task' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create task' }));
 
     expect(await screen.findByText('Task was not saved.')).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Create task' })).toBeInTheDocument();
     await waitFor(() => expect(title).toHaveValue('Inspect failed sample'));
     expect(description).toHaveValue('Keep this context for retry');
   });
@@ -105,6 +109,9 @@ describe('TasksPage', () => {
     const expectedDate = new Intl.DateTimeFormat('ko').format(new Date('2026-08-04T00:00:00'));
     expect(screen.getByText(new RegExp(expectedDate.replaceAll('.', '\\.')))).toBeInTheDocument();
     expect(screen.getByText('높음')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '작업 메뉴: 시편 확인' }));
+    expect(screen.getByRole('menu', { name: '시편 확인' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: '작업 제목 복사' })).toBeInTheDocument();
   });
 });
 

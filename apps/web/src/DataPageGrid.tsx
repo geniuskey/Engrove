@@ -8,6 +8,7 @@ import {
   useState,
 } from 'react';
 import { ErrorText, inputClass } from './App.js';
+import { CellValuePreview } from './DataPageCharts.js';
 import { isImageField } from './DataPageImages.js';
 import type {
   DynamicRecord,
@@ -20,6 +21,7 @@ import type {
   RecordViewConfig,
 } from './DataPageTypes.js';
 import { displayFieldValue, displayValue } from './DataPageViews.js';
+import { useI18n } from './i18n.js';
 
 const calculatedFieldTypeSet = new Set<FieldType>(['formula', 'lookup', 'rollup']);
 
@@ -291,6 +293,7 @@ export function selectionBounds(
 }
 
 export function GridCell({
+  base,
   comfortable = false,
   field,
   label,
@@ -298,6 +301,7 @@ export function GridCell({
   value,
   onSave,
 }: {
+  base?: string;
   comfortable?: boolean;
   field?: FieldDefinition;
   label: string;
@@ -305,6 +309,7 @@ export function GridCell({
   value: unknown;
   onSave: (value: unknown) => Promise<void>;
 }) {
+  const { t } = useI18n();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(() => gridEditorDraft(field, value));
   const [saving, setSaving] = useState(false);
@@ -363,7 +368,7 @@ export function GridCell({
   if (!editing) {
     return (
       <button
-        aria-label={`Edit ${label} for ${recordName}`}
+        aria-label={t('data.editCell', { label, record: recordName })}
         className={`group flex w-full items-center justify-between gap-2 px-2.5 text-left text-xs outline-none hover:bg-sky-500/10 focus:bg-sky-500/10 focus:ring-1 focus:ring-inset focus:ring-sky-400 ${comfortable ? 'min-h-11 py-2' : 'min-h-8 py-1'}`}
         onDoubleClick={beginEditing}
         onKeyDown={(event) => {
@@ -372,14 +377,16 @@ export function GridCell({
             beginEditing();
           }
         }}
-        title="Double-click or press Enter to edit"
+        title={t('data.doubleClickEdit')}
         type="button"
       >
-        <span className="block max-w-64 truncate text-slate-300">
-          {field ? displayFieldValue(field, value) : displayValue(value)}
-        </span>
+        {field ? (
+          <CellValuePreview base={base} field={field} label={label} value={value} />
+        ) : (
+          <span className="block max-w-64 truncate text-slate-300">{displayValue(value)}</span>
+        )}
         <span className="invisible text-xs text-sky-400 group-hover:visible group-focus:visible">
-          Edit
+          {t('data.edit')}
         </span>
       </button>
     );
@@ -402,22 +409,22 @@ export function GridCell({
         {field?.fieldType === 'boolean' ? (
           <select
             {...common}
-            aria-label={`${label} value`}
+            aria-label={t('data.valueLabel', { label })}
             value={draft.primary}
             onChange={(event) => setDraft({ ...draft, primary: event.target.value })}
           >
-            <option value="">Unset</option>
-            <option value="true">Yes</option>
-            <option value="false">No</option>
+            <option value="">{t('common.unset')}</option>
+            <option value="true">{t('common.yes')}</option>
+            <option value="false">{t('common.no')}</option>
           </select>
         ) : field?.fieldType === 'single_select' ? (
           <select
             {...common}
-            aria-label={`${label} value`}
+            aria-label={t('data.valueLabel', { label })}
             value={draft.primary}
             onChange={(event) => setDraft({ ...draft, primary: event.target.value })}
           >
-            <option value="">Unset</option>
+            <option value="">{t('common.unset')}</option>
             {(field.config.options ?? []).map((option) => (
               <option key={option.key} value={option.key}>
                 {option.label}
@@ -427,7 +434,7 @@ export function GridCell({
         ) : field && isStructuredFieldType(field.fieldType) ? (
           <textarea
             {...common}
-            aria-label={`${label} value`}
+            aria-label={t('data.valueLabel', { label })}
             className={`${common.className} resize-y font-mono text-xs`}
             placeholder={
               field.fieldType === 'spectral_data'
@@ -441,7 +448,7 @@ export function GridCell({
         ) : (
           <input
             {...common}
-            aria-label={`${label} value`}
+            aria-label={t('data.valueLabel', { label })}
             inputMode={
               field?.fieldType === 'integer' || field?.fieldType === 'decimal'
                 ? 'decimal'
@@ -461,8 +468,8 @@ export function GridCell({
         {field?.fieldType === 'range' && (
           <input
             {...common}
-            aria-label={`${label} upper value`}
-            placeholder="Upper"
+            aria-label={t('data.upperValueLabel', { label })}
+            placeholder={t('data.upper')}
             value={draft.secondary}
             onChange={(event) => setDraft({ ...draft, secondary: event.target.value })}
           />
@@ -470,7 +477,7 @@ export function GridCell({
         {(field?.fieldType === 'quantity' || field?.fieldType === 'range') && (
           <select
             {...common}
-            aria-label={`${label} unit`}
+            aria-label={t('data.unitLabel', { label })}
             className={`${common.className} min-w-20`}
             value={draft.unit}
             onChange={(event) => setDraft({ ...draft, unit: event.target.value })}
@@ -484,28 +491,28 @@ export function GridCell({
       <div className="mt-1 flex max-w-full flex-wrap items-center justify-end gap-1">
         {field && isStructuredFieldType(field.fieldType) && (
           <span className="mr-auto px-1 text-[10px] text-slate-500">
-            Paste from Excel · Ctrl/⌘+Enter to save
+            {t('data.pasteStructured')}
           </span>
         )}
         <button
-          aria-label={`Save ${label}`}
+          aria-label={t('data.saveField', { label })}
           className="rounded px-2 py-1 text-xs text-emerald-300 hover:bg-emerald-500/10"
           disabled={saving}
           onMouseDown={(event) => event.preventDefault()}
           onClick={() => void commit()}
           type="button"
         >
-          {saving ? 'Saving…' : 'Save'}
+          {saving ? t('data.saving') : t('common.save')}
         </button>
         <button
-          aria-label={`Cancel editing ${label}`}
+          aria-label={t('data.cancelField', { label })}
           className="rounded px-2 py-1 text-xs text-slate-400 hover:bg-slate-800"
           disabled={saving}
           onMouseDown={(event) => event.preventDefault()}
           onClick={cancelEditing}
           type="button"
         >
-          Cancel
+          {t('common.cancel')}
         </button>
       </div>
       {error && (
@@ -528,9 +535,10 @@ function InlineDraftInput({
   onChange: (draft: GridEditorDraft) => void;
   saving: boolean;
 }) {
+  const { t } = useI18n();
   if (field.fieldType === 'file' && isImageField(field.config)) {
     return (
-      <span className="block px-2.5 py-2 text-xs text-slate-500" title="Save the row first">
+      <span className="block px-2.5 py-2 text-xs text-slate-500" title={t('data.saveFirst')}>
         저장 후 이미지 첨부
       </span>
     );
@@ -539,9 +547,9 @@ function InlineDraftInput({
     return (
       <span
         className="block px-2.5 py-2 text-xs text-slate-600"
-        title="Measurements are appended after the record exists"
+        title={t('data.measurementsAfterSave')}
       >
-        Read-only
+        {t('data.readOnly')}
       </span>
     );
   }
@@ -549,9 +557,9 @@ function InlineDraftInput({
     return (
       <span
         className="block px-2.5 py-2 text-xs text-slate-600"
-        title="Open the full form to paste structured table data"
+        title={t('data.openStructuredEditor')}
       >
-        Use full form
+        {t('data.useFullForm')}
       </span>
     );
   }
@@ -567,9 +575,9 @@ function InlineDraftInput({
         value={draft.primary}
         onChange={(event) => onChange({ ...draft, primary: event.target.value })}
       >
-        <option value="">Unset</option>
-        <option value="true">Yes</option>
-        <option value="false">No</option>
+        <option value="">{t('common.unset')}</option>
+        <option value="true">{t('common.yes')}</option>
+        <option value="false">{t('common.no')}</option>
       </select>
     );
   }
@@ -582,7 +590,7 @@ function InlineDraftInput({
         value={draft.primary}
         onChange={(event) => onChange({ ...draft, primary: event.target.value })}
       >
-        <option value="">Select…</option>
+        <option value="">{t('common.select')}</option>
         {(field.config.options ?? []).map((option) => (
           <option key={option.key} value={option.key}>
             {option.label}
@@ -599,7 +607,7 @@ function InlineDraftInput({
           className={common}
           disabled={saving}
           inputMode="decimal"
-          placeholder={field.fieldType === 'range' ? 'Lower' : 'Value'}
+          placeholder={field.fieldType === 'range' ? t('data.lower') : t('data.valuePlaceholder')}
           value={draft.primary}
           onChange={(event) => onChange({ ...draft, primary: event.target.value })}
         />
@@ -609,7 +617,7 @@ function InlineDraftInput({
             className={`${common} border-l border-slate-800`}
             disabled={saving}
             inputMode="decimal"
-            placeholder="Upper"
+            placeholder={t('data.upper')}
             value={draft.secondary}
             onChange={(event) => onChange({ ...draft, secondary: event.target.value })}
           />
@@ -637,8 +645,8 @@ function InlineDraftInput({
         : field.fieldType === 'multi_select'
           ? 'Value, value'
           : field.required
-            ? 'Required'
-            : 'Enter value';
+            ? t('data.requiredPlaceholder')
+            : t('data.enterValue');
   return (
     <input
       aria-label={`New record ${field.name}`}
@@ -676,6 +684,7 @@ export function InlineRecordRow({
   ) => Promise<void>;
   onOpenFullForm: () => void;
 }) {
+  const { t } = useI18n();
   const [displayName, setDisplayName] = useState('');
   const [contextProjectId, setContextProjectId] = useState('');
   const [drafts, setDrafts] = useState<Record<string, GridEditorDraft>>(() =>
@@ -705,7 +714,7 @@ export function InlineRecordRow({
       setError('');
       window.requestAnimationFrame(() => nameInput.current?.focus());
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Record could not be created.');
+      setError(cause instanceof Error ? cause.message : t('data.recordCreateFailed'));
     } finally {
       setSaving(false);
     }
@@ -736,11 +745,11 @@ export function InlineRecordRow({
         <td className="sticky left-0 z-10 border-b border-r border-sky-500/30 bg-slate-950">
           <input
             ref={nameInput}
-            aria-label="New record name"
+            aria-label={t('data.newRecordName')}
             autoFocus
             className="min-h-8 w-full border-0 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-slate-100 outline-none placeholder:text-slate-500 focus:ring-1 focus:ring-inset focus:ring-sky-400"
             disabled={saving}
-            placeholder="Record name (required)"
+            placeholder={t('data.recordNameRequired')}
             value={displayName}
             onChange={(event) => setDisplayName(event.target.value)}
           />
@@ -748,13 +757,13 @@ export function InlineRecordRow({
         {projects && (
           <td className="border-b border-r border-sky-500/30">
             <select
-              aria-label="New record project"
+              aria-label={t('data.newRecordProject')}
               className="min-h-8 w-full border-0 bg-sky-500/10 px-2 py-1 text-xs text-slate-200 outline-none focus:ring-1 focus:ring-inset focus:ring-sky-400"
               disabled={saving}
               value={contextProjectId}
               onChange={(event) => setContextProjectId(event.target.value)}
             >
-              <option value="">No project</option>
+              <option value="">{t('data.noProject')}</option>
               {projects.map((project) => (
                 <option key={project.id} value={project.id}>
                   {project.name}
@@ -779,25 +788,27 @@ export function InlineRecordRow({
             />
           </td>
         ))}
-        <td className="border-b border-r border-sky-500/30 px-3 text-xs text-sky-400">New</td>
+        <td className="border-b border-r border-sky-500/30 px-3 text-xs text-sky-400">
+          {t('common.new')}
+        </td>
         <td className="border-b border-sky-500/30 px-1">
           <div className="flex items-center justify-center gap-0.5">
             <button
-              aria-label="Save inline record"
+              aria-label={t('data.saveInlineRecord')}
               className="rounded px-2 py-1 text-base text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50"
               disabled={saving}
               onClick={() => void save()}
-              title="Save row (Enter)"
+              title={t('data.saveRow')}
               type="button"
             >
               {saving ? '…' : '✓'}
             </button>
             <button
-              aria-label="Cancel inline record"
+              aria-label={t('data.cancelInlineRecord')}
               className="rounded px-2 py-1 text-base text-slate-500 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-50"
               disabled={saving}
               onClick={onCancel}
-              title="Cancel (Escape)"
+              title={t('data.cancelEscape')}
               type="button"
             >
               ×
@@ -820,7 +831,7 @@ export function InlineRecordRow({
                 onClick={onOpenFullForm}
                 type="button"
               >
-                Open full form
+                {t('data.openFullForm')}
               </button>
             </div>
           </td>
@@ -891,17 +902,16 @@ export function recordPayload(fields: FieldDefinition[], form: FormData) {
 }
 
 function FieldInput({ field, value }: { field: FieldDefinition; value?: unknown }) {
+  const { t } = useI18n();
   if (calculatedFieldTypeSet.has(field.fieldType))
     return (
       <p className="mt-1.5 min-h-9 rounded-lg border border-sky-400/15 bg-sky-400/5 px-3 py-2 text-xs text-sky-200">
         {displayFieldValue(field, value)}
-        <span className="ml-2 text-[10px] text-slate-500">Calculated automatically</span>
+        <span className="ml-2 text-[10px] text-slate-500">{t('data.calculatedAutomatically')}</span>
       </p>
     );
   if (field.fieldType === 'measurement')
-    return (
-      <p className="mt-2 text-xs text-slate-500">Observations are appended from record detail.</p>
-    );
+    return <p className="mt-2 text-xs text-slate-500">{t('data.observationsHint')}</p>;
   if (field.fieldType === 'quantity' || field.fieldType === 'range') {
     const quantity = (value ?? {}) as {
       value?: string;
@@ -921,7 +931,7 @@ function FieldInput({ field, value }: { field: FieldDefinition; value?: unknown 
           className={inputClass}
           defaultValue={field.fieldType === 'quantity' ? quantity.value : quantity.lower?.value}
           name={`value:${field.key}`}
-          placeholder={field.fieldType === 'range' ? 'Lower bound' : 'Decimal value'}
+          placeholder={field.fieldType === 'range' ? t('data.lowerBound') : t('data.decimalValue')}
           required={field.required}
         />
         {field.fieldType === 'range' && (
@@ -929,7 +939,7 @@ function FieldInput({ field, value }: { field: FieldDefinition; value?: unknown 
             className={inputClass}
             defaultValue={quantity.upper?.value}
             name={`upper:${field.key}`}
-            placeholder="Upper bound"
+            placeholder={t('data.upperBound')}
           />
         )}
         <select className={inputClass} defaultValue={unit} name={`unit:${field.key}`}>
@@ -944,7 +954,7 @@ function FieldInput({ field, value }: { field: FieldDefinition; value?: unknown 
     return (
       <div>
         <textarea
-          aria-label={`${field.name} table data`}
+          aria-label={t('data.tableData', { field: field.name })}
           className={`${inputClass} resize-y font-mono text-xs`}
           defaultValue={structuredDataText(field, value)}
           name={`value:${field.key}`}
@@ -957,9 +967,7 @@ function FieldInput({ field, value }: { field: FieldDefinition; value?: unknown 
           spellCheck={false}
           style={{ minHeight: '12rem', whiteSpace: 'pre' }}
         />
-        <p className="mt-1 text-[10px] text-slate-500">
-          Paste a range directly from Excel. Tabs separate columns and line breaks separate rows.
-        </p>
+        <p className="mt-1 text-[10px] text-slate-500">{t('data.excelPasteHint')}</p>
       </div>
     );
   }
@@ -971,7 +979,7 @@ function FieldInput({ field, value }: { field: FieldDefinition; value?: unknown 
         name={`value:${field.key}`}
         required={field.required}
       >
-        <option value="">Select…</option>
+        <option value="">{t('common.select')}</option>
         {(field.config.options ?? []).map((option) => (
           <option key={option.key} value={option.key}>
             {option.label}
@@ -988,9 +996,9 @@ function FieldInput({ field, value }: { field: FieldDefinition; value?: unknown 
         name={`value:${field.key}`}
         required={field.required}
       >
-        <option value="">Unset</option>
-        <option value="true">Yes</option>
-        <option value="false">No</option>
+        <option value="">{t('common.unset')}</option>
+        <option value="true">{t('common.yes')}</option>
+        <option value="false">{t('common.no')}</option>
       </select>
     );
   }
@@ -1045,6 +1053,7 @@ export function RecordForm({
   onSubmit: (form: FormData) => Promise<void>;
   submitLabel: string;
 }) {
+  const { t } = useI18n();
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -1055,7 +1064,7 @@ export function RecordForm({
       setError('');
       if (!record) event.currentTarget.reset();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Record could not be saved.');
+      setError(cause instanceof Error ? cause.message : t('data.recordSaveFailed'));
     } finally {
       setBusy(false);
     }
@@ -1063,7 +1072,7 @@ export function RecordForm({
   return (
     <form className="grid gap-4 md:grid-cols-2" onSubmit={(event) => void submit(event)}>
       <label className="block text-sm text-slate-300 md:col-span-2">
-        Display name
+        {t('data.displayName')}
         <input
           className={inputClass}
           defaultValue={record?.displayName ?? ''}
@@ -1073,13 +1082,13 @@ export function RecordForm({
       </label>
       {projects && (
         <label className="block text-sm text-slate-300 md:col-span-2">
-          Project
+          {t('data.project')}
           <select
             className={inputClass}
             defaultValue={record?.contextProjectId ?? ''}
             name="contextProjectId"
           >
-            <option value="">No project</option>
+            <option value="">{t('data.noProject')}</option>
             {projects.map((project) => (
               <option key={project.id} value={project.id}>
                 {project.name}
@@ -1087,9 +1096,7 @@ export function RecordForm({
               </option>
             ))}
           </select>
-          <span className="mt-1 block text-xs text-slate-500">
-            Optional context only; the row remains visible in this workspace table.
-          </span>
+          <span className="mt-1 block text-xs text-slate-500">{t('data.projectContextHint')}</span>
         </label>
       )}
       {fields.map((field) => (
@@ -1107,7 +1114,7 @@ export function RecordForm({
               className={inputClass}
               defaultValue={(record?.relations[field.id] ?? []).join(';')}
               name={`relation:${field.id}`}
-              placeholder="Record UUID; another UUID"
+              placeholder={t('data.recordUuids')}
               required={field.required}
             />
           ) : field.fieldType === 'file' && isImageField(field.config) ? (
@@ -1132,7 +1139,7 @@ export function RecordForm({
                   : record?.datasetReferences[field.id])?.[0] ?? ''
               }
               name={`reference:${field.id}`}
-              placeholder={`Exact ${field.fieldType} UUID`}
+              placeholder={t('data.exactReference', { type: field.fieldType })}
               required={field.required}
             />
           ) : (
@@ -1145,7 +1152,7 @@ export function RecordForm({
       ))}
       <div className="md:col-span-2">
         <Button type="submit" disabled={busy}>
-          {busy ? 'Saving…' : submitLabel}
+          {busy ? t('data.saving') : submitLabel}
         </Button>
         <ErrorText>{error}</ErrorText>
       </div>

@@ -18,6 +18,7 @@ import type {
   Specification,
   SpecificationEvaluation,
 } from './DataPageTypes.js';
+import { useI18n } from './i18n.js';
 
 const panelClass = 'mt-8 rounded-2xl border border-slate-800 bg-slate-900/60 p-6';
 
@@ -127,7 +128,8 @@ export function KanbanRecordsView({
   onContextMenu: (event: ReactMouseEvent<HTMLElement>, record: DynamicRecord) => void;
   onContextMenuKeyDown: (event: ReactKeyboardEvent<HTMLElement>, record: DynamicRecord) => void;
 }) {
-  const lanes = [{ key: '', label: 'No value' }, ...(field.config.options ?? [])];
+  const { t } = useI18n();
+  const lanes = [{ key: '', label: t('data.noValue') }, ...(field.config.options ?? [])];
   return (
     <div className="grid auto-cols-[minmax(15rem,1fr)] grid-flow-col gap-3 overflow-x-auto p-3">
       {lanes.map((lane) => {
@@ -181,7 +183,7 @@ export function KanbanRecordsView({
               ))}
               {!items.length && (
                 <p className="rounded border border-dashed border-slate-800 px-2 py-6 text-center text-xs text-slate-600">
-                  No records
+                  {t('data.noRecords')}
                 </p>
               )}
             </div>
@@ -209,6 +211,7 @@ export function CalendarRecordsView({
   onContextMenu: (event: ReactMouseEvent<HTMLElement>, record: DynamicRecord) => void;
   onContextMenuKeyDown: (event: ReactKeyboardEvent<HTMLElement>, record: DynamicRecord) => void;
 }) {
+  const { t, formatDate } = useI18n();
   const year = month.getFullYear();
   const monthIndex = month.getMonth();
   const leadingDays = new Date(year, monthIndex, 1).getDay();
@@ -228,7 +231,7 @@ export function CalendarRecordsView({
     <div className="p-3">
       <div className="mb-2 flex items-center justify-between">
         <button
-          aria-label="Previous month"
+          aria-label={t('data.previousMonth')}
           className="rounded-md px-2 py-1 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
           onClick={() => onMonthChange(new Date(year, monthIndex - 1, 1))}
           type="button"
@@ -236,10 +239,10 @@ export function CalendarRecordsView({
           ‹
         </button>
         <h3 className="text-sm font-semibold">
-          {month.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}
+          {formatDate(month, { month: 'long', year: 'numeric' })}
         </h3>
         <button
-          aria-label="Next month"
+          aria-label={t('data.nextMonth')}
           className="rounded-md px-2 py-1 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
           onClick={() => onMonthChange(new Date(year, monthIndex + 1, 1))}
           type="button"
@@ -248,7 +251,15 @@ export function CalendarRecordsView({
         </button>
       </div>
       <div className="grid grid-cols-7 border-l border-t border-slate-800">
-        {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => (
+        {[
+          t('data.weekdaySun'),
+          t('data.weekdayMon'),
+          t('data.weekdayTue'),
+          t('data.weekdayWed'),
+          t('data.weekdayThu'),
+          t('data.weekdayFri'),
+          t('data.weekdaySat'),
+        ].map((day) => (
           <div
             className="border-b border-r border-slate-800 bg-slate-900/70 px-2 py-1.5 text-center text-[10px] uppercase text-slate-500"
             key={day}
@@ -277,7 +288,7 @@ export function CalendarRecordsView({
               ))}
               {(byDate.get(cell.key)?.length ?? 0) > 3 && (
                 <span className="text-[10px] text-slate-500">
-                  +{(byDate.get(cell.key)?.length ?? 0) - 3} more
+                  {t('data.more', { count: (byDate.get(cell.key)?.length ?? 0) - 3 })}
                 </span>
               )}
             </div>
@@ -297,6 +308,7 @@ export function SpecificationsPanel({
   fields: FieldDefinition[];
   user: User;
 }) {
+  const { t } = useI18n();
   const measurementFields = fields.filter((field) => field.fieldType === 'measurement');
   const [specifications, setSpecifications] = useState<Specification[]>([]);
   const [error, setError] = useState('');
@@ -312,9 +324,9 @@ export function SpecificationsPanel({
       setSpecifications(result.items);
       setError('');
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Specifications could not be loaded.');
+      setError(cause instanceof Error ? cause.message : t('data.specificationsLoadFailed'));
     }
-  }, [base, measurementFields.length]);
+  }, [base, measurementFields.length, t]);
   useEffect(() => void load(), [load]);
   if (!measurementFields.length) return null;
   async function create(event: FormEvent<HTMLFormElement>) {
@@ -339,12 +351,12 @@ export function SpecificationsPanel({
       form.reset();
       await load();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Specification could not be created.');
+      setError(cause instanceof Error ? cause.message : t('data.specificationCreateFailed'));
     }
   }
   return (
     <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900/50 p-5">
-      <h3 className="text-lg font-semibold">Measurement specifications</h3>
+      <h3 className="text-lg font-semibold">{t('data.measurementSpecifications')}</h3>
       <div className="mt-4 grid gap-3">
         {specifications.map((spec) => {
           const revision = spec.revisions[0];
@@ -366,7 +378,12 @@ export function SpecificationsPanel({
       </div>
       {allowed(user, 'specification.manage') && (
         <form className="mt-5 grid gap-2 md:grid-cols-3" onSubmit={(event) => void create(event)}>
-          <input className={inputClass} name="name" placeholder="Specification name" required />
+          <input
+            className={inputClass}
+            name="name"
+            placeholder={t('data.specificationName')}
+            required
+          />
           <select className={inputClass} name="measurementFieldId">
             {measurementFields.map((field) => (
               <option key={field.id} value={field.id}>
@@ -374,11 +391,19 @@ export function SpecificationsPanel({
               </option>
             ))}
           </select>
-          <input className={inputClass} name="lowerLimit" placeholder="Hard lower" />
-          <input className={inputClass} name="warningLowerLimit" placeholder="Warning lower" />
-          <input className={inputClass} name="warningUpperLimit" placeholder="Warning upper" />
-          <input className={inputClass} name="upperLimit" placeholder="Hard upper" />
-          <Button type="submit">Create specification</Button>
+          <input className={inputClass} name="lowerLimit" placeholder={t('data.hardLower')} />
+          <input
+            className={inputClass}
+            name="warningLowerLimit"
+            placeholder={t('data.warningLower')}
+          />
+          <input
+            className={inputClass}
+            name="warningUpperLimit"
+            placeholder={t('data.warningUpper')}
+          />
+          <input className={inputClass} name="upperLimit" placeholder={t('data.hardUpper')} />
+          <Button type="submit">{t('data.createSpecification')}</Button>
         </form>
       )}
       <ErrorText>{error}</ErrorText>
@@ -397,6 +422,7 @@ export function MeasurementsPanel({
   fields: FieldDefinition[];
   user: User;
 }) {
+  const { t, formatDate } = useI18n();
   const measurementFields = fields.filter((field) => field.fieldType === 'measurement');
   const [results, setResults] = useState<MeasurementResult[]>([]);
   const [evaluations, setEvaluations] = useState<SpecificationEvaluation[]>([]);
@@ -420,9 +446,9 @@ export function MeasurementsPanel({
       setEvaluations(evaluationResult.items);
       setError('');
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Measurements could not be loaded.');
+      setError(cause instanceof Error ? cause.message : t('data.measurementsLoadFailed'));
     }
-  }, [base, recordId, measurementFields.length]);
+  }, [base, recordId, measurementFields.length, t]);
   useEffect(() => void load(), [load]);
   if (!measurementFields.length) return null;
   async function create(event: FormEvent<HTMLFormElement>) {
@@ -447,7 +473,7 @@ export function MeasurementsPanel({
       form.reset();
       await load();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Measurement could not be recorded.');
+      setError(cause instanceof Error ? cause.message : t('data.measurementCreateFailed'));
     }
   }
   async function createTask(evaluationId: string) {
@@ -455,12 +481,12 @@ export function MeasurementsPanel({
       await api(`${base}/specification-evaluations/${evaluationId}/task`, { method: 'POST' });
       setError('');
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Follow-up task could not be created.');
+      setError(cause instanceof Error ? cause.message : t('data.followUpCreateFailed'));
     }
   }
   return (
     <section className={panelClass}>
-      <h2 className="text-xl font-semibold">Measurement history</h2>
+      <h2 className="text-xl font-semibold">{t('data.measurementHistory')}</h2>
       <div className="mt-4 grid gap-3">
         {results.map((result) => {
           const field = measurementFields.find((candidate) => candidate.id === result.field_id);
@@ -477,31 +503,33 @@ export function MeasurementsPanel({
                   {field?.name}: {result.original_value} {result.original_unit}
                 </p>
                 <p className="text-xs text-slate-500">
-                  canonical {result.canonical_value} {result.canonical_unit} ·{' '}
-                  {new Date(result.measured_at).toLocaleString()}
-                  {result.supersedes_result_id ? ' · correction' : ''}
+                  {t('data.canonical')} {result.canonical_value} {result.canonical_unit} ·{' '}
+                  {formatDate(result.measured_at, { dateStyle: 'short', timeStyle: 'short' })}
+                  {result.supersedes_result_id ? ` · ${t('data.correction')}` : ''}
                 </p>
               </div>
               <div className="flex items-center gap-2">
                 <span
                   className={`rounded-full px-3 py-1 text-xs uppercase ${evaluation?.status === 'fail' ? 'bg-rose-500/20 text-rose-300' : evaluation?.status === 'warning' ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300'}`}
                 >
-                  {evaluation?.status ?? 'pending'}
-                  {result.current ? ' · current' : ''}
+                  {evaluation?.status ?? t('data.pending')}
+                  {result.current ? ` · ${t('data.current')}` : ''}
                 </span>
                 {evaluation?.status === 'fail' && allowed(user, 'task.create') && (
                   <button
                     className="text-xs text-sky-400"
                     onClick={() => void createTask(evaluation.id)}
                   >
-                    Create task
+                    {t('data.createTask')}
                   </button>
                 )}
               </div>
             </div>
           );
         })}
-        {results.length === 0 && <p className="text-sm text-slate-400">No observations yet.</p>}
+        {results.length === 0 && (
+          <p className="text-sm text-slate-400">{t('data.noObservations')}</p>
+        )}
       </div>
       {allowed(user, 'measurement.create') && (
         <form className="mt-5 grid gap-2 md:grid-cols-3" onSubmit={(event) => void create(event)}>
@@ -527,7 +555,12 @@ export function MeasurementsPanel({
               </option>
             ))}
           </select>
-          <input className={inputClass} name="value" placeholder="Decimal value" required />
+          <input
+            className={inputClass}
+            name="value"
+            placeholder={t('data.decimalValue')}
+            required
+          />
           <select className={inputClass} name="unit">
             {(measurementFields[0]?.config.allowedUnits ?? []).map((unit) => (
               <option key={unit}>{unit}</option>
@@ -537,21 +570,32 @@ export function MeasurementsPanel({
           <input
             className={inputClass}
             name="uncertaintyValue"
-            placeholder="Uncertainty (optional)"
+            placeholder={t('data.uncertaintyOptional')}
           />
-          <input className={inputClass} name="uncertaintyUnit" placeholder="Uncertainty unit" />
+          <input
+            className={inputClass}
+            name="uncertaintyUnit"
+            placeholder={t('data.uncertaintyUnit')}
+          />
           <select className={inputClass} name="supersedesResultId" defaultValue="">
-            <option value="">New observation</option>
+            <option value="">{t('data.newObservation')}</option>
             {results
               .filter((result) => result.current)
               .map((result) => (
                 <option key={result.id} value={result.id}>
-                  Correct {result.original_value} {result.original_unit}
+                  {t('data.correctValue', {
+                    value: result.original_value,
+                    unit: result.original_unit,
+                  })}
                 </option>
               ))}
           </select>
-          <input className={inputClass} name="correctionReason" placeholder="Correction reason" />
-          <Button type="submit">Record measurement</Button>
+          <input
+            className={inputClass}
+            name="correctionReason"
+            placeholder={t('data.correctionReason')}
+          />
+          <Button type="submit">{t('data.recordMeasurement')}</Button>
         </form>
       )}
       <ErrorText>{error}</ErrorText>
@@ -560,6 +604,7 @@ export function MeasurementsPanel({
 }
 
 export function LinkedTasksPanel({ base, recordId }: { base: string; recordId: string }) {
+  const { t } = useI18n();
   const [tasks, setTasks] = useState<LinkedTask[]>([]);
   const [error, setError] = useState('');
   useEffect(
@@ -570,13 +615,13 @@ export function LinkedTasksPanel({ base, recordId }: { base: string; recordId: s
           setError('');
         })
         .catch((cause: unknown) =>
-          setError(cause instanceof Error ? cause.message : 'Linked tasks could not be loaded.'),
+          setError(cause instanceof Error ? cause.message : t('data.linkedTasksLoadFailed')),
         ),
-    [base, recordId],
+    [base, recordId, t],
   );
   return (
     <section className={panelClass}>
-      <h2 className="text-xl font-semibold">Linked tasks</h2>
+      <h2 className="text-xl font-semibold">{t('data.linkedTasks')}</h2>
       <div className="mt-4 space-y-2">
         {tasks.map((task) => (
           <div
@@ -586,12 +631,12 @@ export function LinkedTasksPanel({ base, recordId }: { base: string; recordId: s
             <span>{task.title}</span>
             <span className="text-xs uppercase text-slate-400">
               {task.status} · {task.priority}
-              {task.archived_at ? ' · archived' : ''}
+              {task.archived_at ? ` · ${t('data.archived')}` : ''}
             </span>
           </div>
         ))}
         {!tasks.length && !error && (
-          <p className="text-sm text-slate-500">No follow-up task is linked to this record.</p>
+          <p className="text-sm text-slate-500">{t('data.noLinkedTasks')}</p>
         )}
       </div>
       <ErrorText>{error}</ErrorText>
@@ -619,6 +664,7 @@ export function RecordHistoryPanel({
   user: User;
   onRestored: (record: DynamicRecord) => void;
 }) {
+  const { t, formatDate } = useI18n();
   const [items, setItems] = useState<RecordHistoryItem[]>([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
@@ -630,12 +676,12 @@ export function RecordHistoryPanel({
       setItems(result.items);
       setError('');
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'History could not be loaded.');
+      setError(cause instanceof Error ? cause.message : t('data.historyLoadFailed'));
     }
-  }, [base, objectTypeId, record.id, record.rowVersion]);
+  }, [base, objectTypeId, record.id, record.rowVersion, t]);
   useEffect(() => void load(), [load]);
   async function undo(item: RecordHistoryItem) {
-    if (!window.confirm('Restore the record to the state before this change?')) return;
+    if (!window.confirm(t('data.restoreConfirm'))) return;
     setBusy(item.id);
     try {
       const restored = await api<DynamicRecord>(
@@ -644,7 +690,7 @@ export function RecordHistoryPanel({
       );
       onRestored(restored);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Change could not be undone.');
+      setError(cause instanceof Error ? cause.message : t('data.undoFailed'));
     } finally {
       setBusy('');
     }
@@ -652,10 +698,8 @@ export function RecordHistoryPanel({
   return (
     <section className={panelClass}>
       <div className="flex items-center gap-2">
-        <h2 className="text-xl font-semibold">Change history</h2>
-        <HelpTip label="Change history help">
-          Every edit is attributable. Undo creates a new audited version and never erases history.
-        </HelpTip>
+        <h2 className="text-xl font-semibold">{t('data.changeHistory')}</h2>
+        <HelpTip label={t('data.changeHistoryHelp')}>{t('data.changeHistoryBody')}</HelpTip>
       </div>
       <ol className="mt-4 divide-y divide-slate-800 rounded-xl border border-slate-800">
         {items.map((item) => (
@@ -663,8 +707,9 @@ export function RecordHistoryPanel({
             <div className="min-w-0">
               <p className="text-sm text-slate-200">{item.action.replaceAll('.', ' · ')}</p>
               <p className="mt-0.5 text-xs text-slate-500">
-                {item.actorName ?? 'System'} · {new Date(item.createdAt).toLocaleString()}
-                {item.rowVersion ? ` · version ${item.rowVersion}` : ''}
+                {item.actorName ?? t('data.system')} ·{' '}
+                {formatDate(item.createdAt, { dateStyle: 'short', timeStyle: 'short' })}
+                {item.rowVersion ? ` · ${t('data.version', { version: item.rowVersion })}` : ''}
               </p>
             </div>
             {item.undoable && allowed(user, 'record.update') && (
@@ -674,13 +719,13 @@ export function RecordHistoryPanel({
                 onClick={() => void undo(item)}
                 type="button"
               >
-                {busy === item.id ? 'Restoring…' : 'Undo to here'}
+                {busy === item.id ? t('data.restoring') : t('data.undoHere')}
               </button>
             )}
           </li>
         ))}
         {!items.length && !error && (
-          <li className="px-4 py-6 text-center text-sm text-slate-500">No changes recorded yet.</li>
+          <li className="px-4 py-6 text-center text-sm text-slate-500">{t('data.noChanges')}</li>
         )}
       </ol>
       <ErrorText>{error}</ErrorText>

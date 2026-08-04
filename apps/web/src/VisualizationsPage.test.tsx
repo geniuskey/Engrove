@@ -11,6 +11,66 @@ const objectTypeId = '019fbcf9-e020-71da-935a-6a6a728b3793';
 afterEach(() => vi.restoreAllMocks());
 
 describe('VisualizationsPage record dashboard cards', () => {
+  it('explains an empty project and disables chart actions until compatible sources exist', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/datasets')) return json({ items: [] });
+      if (url.includes('/charts?')) return json({ items: [] });
+      if (url.includes('/dashboards?')) return json({ items: [] });
+      if (url.endsWith('/object-types')) return json({ items: [] });
+      if (url.endsWith('/dashboard-metrics'))
+        return json({
+          total_samples: 0,
+          dataset_count: 0,
+          failed_evaluations: 0,
+          pass_rate: null,
+          overdue_tasks: 0,
+          recent_datasets: [],
+        });
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+
+    render(
+      <MemoryRouter
+        initialEntries={[`/workspaces/${workspaceId}/projects/${projectId}/visualizations`]}
+      >
+        <Routes>
+          <Route
+            element={
+              <VisualizationsPage
+                user={{
+                  id: '019fbcf9-e020-71da-935a-6a6a728b3795',
+                  email: 'owner@example.com',
+                  displayName: 'Owner',
+                  organizationId: '019fbcf9-e020-71da-935a-6a6a728b3796',
+                  role: 'owner',
+                }}
+              />
+            }
+            path="/workspaces/:workspaceId/projects/:projectId/visualizations"
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(
+      await screen.findByRole('heading', { name: 'Add a data source to start visualizing' }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByRole('link', { name: 'Add a dataset' })[0]).toHaveAttribute(
+      'href',
+      `/workspaces/${workspaceId}/projects/${projectId}/files-datasets`,
+    );
+    expect(screen.getByRole('link', { name: 'Create a record table' })).toHaveAttribute(
+      'href',
+      `/workspaces/${workspaceId}/projects/${projectId}/data`,
+    );
+    expect(screen.getByRole('heading', { name: 'Start with a blank canvas' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save chart' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Create canvas' })[0]!);
+    expect(screen.getByRole('textbox', { name: 'Dashboard name' })).toBeInTheDocument();
+    expect(screen.getByText('No charts have been saved in this project yet.')).toBeInTheDocument();
+  });
+
   it('renders a live record KPI and pins a new cross-table card into a revision', async () => {
     const revisionRequests: Array<Record<string, unknown>> = [];
     let recordQueryCount = 0;
@@ -97,10 +157,16 @@ describe('VisualizationsPage record dashboard cards', () => {
     fireEvent.keyDown(screen.getByRole('menuitem', { name: 'Copy card title' }), {
       key: 'Escape',
     });
-    fireEvent.change(screen.getByPlaceholderText('Card title'), {
+    fireEvent.click(screen.getAllByRole('button', { name: 'Add element' })[0]!);
+    expect(screen.getByRole('heading', { name: 'Insert an element' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Record count/ }));
+    expect(screen.getByRole('heading', { name: 'Choose a starting size' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Wide/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue →' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Element title' }), {
       target: { value: 'All issues' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Add card' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Insert into canvas' }));
 
     await waitFor(() => expect(revisionRequests).toHaveLength(1));
     const cards = revisionRequests[0]!.cards as Array<Record<string, unknown>>;
@@ -108,8 +174,8 @@ describe('VisualizationsPage record dashboard cards', () => {
     expect(cards[1]).toMatchObject({
       cardType: 'record_kpi',
       configVersion: 2,
-      width: 4,
-      height: 3,
+      width: 8,
+      height: 4,
       config: {
         title: 'All issues',
         metric: 'count',

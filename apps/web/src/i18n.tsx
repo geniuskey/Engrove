@@ -6,11 +6,12 @@ import {
   useMemo,
   useState,
 } from 'react';
-import type { TranslationKey } from './i18n-types.js';
+import { supplementalDictionaries } from './i18n-supplemental.js';
+import type { EmbeddedTranslationKey, TranslationKey } from './i18n-types.js';
 
 export type Locale = 'en' | 'ko';
 
-type Dictionary = Record<TranslationKey, string>;
+type Dictionary = Record<EmbeddedTranslationKey, string>;
 type Dictionaries = Record<Locale, Dictionary>;
 
 function embeddedDictionaries(): Dictionaries {
@@ -37,7 +38,9 @@ interface I18nValue {
 }
 
 function translate(locale: Locale, key: TranslationKey, values?: Record<string, string | number>) {
-  let result = dictionaries[locale][key] ?? dictionaries.en[key] ?? key;
+  const supplemental = supplementalDictionaries[locale] as Record<string, string>;
+  const embedded = dictionaries[locale] as Record<string, string>;
+  let result = supplemental[key] ?? embedded[key] ?? key;
   for (const [name, value] of Object.entries(values ?? {})) {
     result = result.replaceAll(`{${name}}`, String(value));
   }

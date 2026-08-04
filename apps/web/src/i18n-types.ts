@@ -1,4 +1,6 @@
-export type TranslationKey =
+import type { SupplementalTranslationKey } from './i18n-supplemental.js';
+
+export type EmbeddedTranslationKey =
   | 'language.label'
   | 'language.english'
   | 'language.korean'
@@ -363,3 +365,5 @@ export type TranslationKey =
   | 'data.emptyBody'
   | 'data.emptyRecordsTitle'
   | 'data.emptyRecordsBody';
+
+export type TranslationKey = EmbeddedTranslationKey | SupplementalTranslationKey;

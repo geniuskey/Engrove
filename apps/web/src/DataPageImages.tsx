@@ -1,5 +1,6 @@
 import { type ChangeEvent, useEffect, useId, useRef, useState } from 'react';
 import { api } from './App.js';
+import { useI18n } from './i18n.js';
 
 const IMAGE_TYPES = new Set(['image/avif', 'image/gif', 'image/jpeg', 'image/png', 'image/webp']);
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
@@ -31,12 +32,17 @@ export async function uploadCellImage(
   base: string,
   file: File,
   seriesName: string,
+  messages = {
+    typesOnly: 'Only PNG, JPEG, WebP, GIF, or AVIF images can be attached.',
+    sizeLimit: 'Images must be 25 MB or smaller.',
+    uploadRejected: 'The image store rejected the upload.',
+  },
 ): Promise<StoredImage> {
   if (!IMAGE_TYPES.has(file.type)) {
-    throw new Error('PNG, JPEG, WebP, GIF, AVIF 이미지만 첨부할 수 있습니다.');
+    throw new Error(messages.typesOnly);
   }
   if (file.size > MAX_IMAGE_BYTES) {
-    throw new Error('이미지는 25MB 이하여야 합니다.');
+    throw new Error(messages.sizeLimit);
   }
   const contents = await file.arrayBuffer();
   const issued = await api<{
@@ -58,7 +64,7 @@ export async function uploadCellImage(
     headers: issued.headers,
     body: contents,
   });
-  if (!stored.ok) throw new Error('이미지 저장소가 업로드를 거부했습니다.');
+  if (!stored.ok) throw new Error(messages.uploadRejected);
   const completed = await api<{
     id: string;
     original_name: string;
@@ -90,6 +96,7 @@ export function ImageGridCell({
   value: unknown;
   onSave?: (value: string[]) => Promise<void>;
 }) {
+  const { t } = useI18n();
   const inputId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   const fileId = Array.isArray(value) && typeof value[0] === 'string' ? value[0] : '';
@@ -107,15 +114,12 @@ export function ImageGridCell({
         if (active) setPreview(result);
       })
       .catch((cause: unknown) => {
-        if (active)
-          setError(
-            cause instanceof Error ? cause.message : '이미지 미리보기를 불러오지 못했습니다.',
-          );
+        if (active) setError(cause instanceof Error ? cause.message : t('data.imagePreviewFailed'));
       });
     return () => {
       active = false;
     };
-  }, [base, fileId]);
+  }, [base, fileId, t]);
 
   async function chooseImage(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -124,10 +128,14 @@ export function ImageGridCell({
     setBusy(true);
     setError('');
     try {
-      const uploaded = await uploadCellImage(base, file, `${label}: ${recordName}`);
+      const uploaded = await uploadCellImage(base, file, `${label}: ${recordName}`, {
+        typesOnly: t('data.imageTypesOnly'),
+        sizeLimit: t('data.imageSizeLimit'),
+        uploadRejected: t('data.imageUploadRejected'),
+      });
       await onSave([uploaded.id]);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '이미지를 첨부하지 못했습니다.');
+      setError(cause instanceof Error ? cause.message : t('data.imageAttachFailed'));
     } finally {
       setBusy(false);
     }
@@ -140,7 +148,7 @@ export function ImageGridCell({
     try {
       await onSave([]);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '이미지를 제거하지 못했습니다.');
+      setError(cause instanceof Error ? cause.message : t('data.imageRemoveFailed'));
     } finally {
       setBusy(false);
     }
@@ -153,7 +161,7 @@ export function ImageGridCell({
       {fileId ? (
         preview ? (
           <a
-            aria-label={`${recordName}의 ${label} 이미지 크게 보기`}
+            aria-label={t('data.openImage', { record: recordName, label })}
             className="shrink-0 overflow-hidden rounded-md border border-slate-700 bg-slate-900 outline-none focus:ring-2 focus:ring-sky-400"
             href={preview.url}
             rel="noreferrer"
@@ -169,7 +177,7 @@ export function ImageGridCell({
           </a>
         ) : (
           <span
-            aria-label="이미지 불러오는 중"
+            aria-label={t('data.imageLoading')}
             className={`${comfortable ? 'size-11' : 'size-8'} shrink-0 animate-pulse rounded-md bg-slate-800`}
           />
         )
@@ -185,29 +193,30 @@ export function ImageGridCell({
         <p className={`truncate text-[11px] ${error ? 'text-rose-300' : 'text-slate-400'}`}>
           {error ||
             (busy
-              ? '업로드 중…'
-              : (preview?.file.originalName ?? (fileId ? '이미지 불러오는 중…' : '이미지 없음')))}
+              ? t('data.uploading')
+              : (preview?.file.originalName ??
+                (fileId ? `${t('data.imageLoading')}…` : t('data.noImage'))))}
         </p>
         {editable && (
           <div className="mt-0.5 flex items-center gap-2">
             <button
-              aria-label={`${recordName}의 ${label} 이미지 ${fileId ? '교체' : '첨부'}`}
+              aria-label={`${recordName} ${label} ${fileId ? t('data.replaceImage') : t('data.attachImage')}`}
               className="text-[10px] font-medium text-sky-400 hover:text-sky-300 disabled:opacity-50"
               disabled={busy}
               onClick={() => inputRef.current?.click()}
               type="button"
             >
-              {fileId ? '교체' : '첨부'}
+              {fileId ? t('data.replaceImage') : t('data.attachImage')}
             </button>
             {fileId && (
               <button
-                aria-label={`${recordName}의 ${label} 이미지 제거`}
+                aria-label={`${recordName} ${label} ${t('data.removeImage')}`}
                 className="text-[10px] text-slate-500 hover:text-rose-300 disabled:opacity-50"
                 disabled={busy}
                 onClick={() => void removeImage()}
                 type="button"
               >
-                제거
+                {t('data.removeImage')}
               </button>
             )}
           </div>
@@ -217,7 +226,7 @@ export function ImageGridCell({
         <input
           ref={inputRef}
           accept="image/avif,image/gif,image/jpeg,image/png,image/webp"
-          aria-label={`${recordName}의 ${label} 이미지 파일 선택`}
+          aria-label={t('data.chooseImage', { record: recordName, label })}
           className="sr-only"
           disabled={busy}
           id={inputId}

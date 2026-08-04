@@ -45,9 +45,30 @@ echarts.use([
   SVGRenderer,
 ]);
 
-const creatorFormClass =
-  'space-y-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-5 shadow-lg shadow-slate-950/10';
-const creatorHeadingClass = 'text-xl font-semibold';
+const visualizationSourceCopy = {
+  en: {
+    emptyTitle: 'Add a data source to start visualizing',
+    emptyBody:
+      'This project has no datasets or record tables yet. Upload a CSV and derive an XY dataset for line and statistical charts, or create a record table for live dashboard cards.',
+    addDataset: 'Add a dataset',
+    createTable: 'Create a record table',
+    noXy: 'No ready XY dataset is available in this project.',
+    noNumeric: 'No ready dataset with a numeric column is available.',
+    noRecordTable: 'No record table is available for live dashboard cards.',
+    noSavedCharts: 'No charts have been saved in this project yet.',
+  },
+  ko: {
+    emptyTitle: '시각화를 시작할 데이터 소스를 추가하세요',
+    emptyBody:
+      '이 프로젝트에는 아직 데이터셋이나 레코드 테이블이 없습니다. CSV를 업로드하고 XY 데이터셋을 파생해 선·통계 차트를 만들거나, 레코드 테이블을 만들어 라이브 대시보드 카드를 구성하세요.',
+    addDataset: '데이터셋 추가',
+    createTable: '레코드 테이블 만들기',
+    noXy: '이 프로젝트에 준비된 XY 데이터셋이 없습니다.',
+    noNumeric: '수치 컬럼이 있는 준비된 데이터셋이 없습니다.',
+    noRecordTable: '라이브 대시보드 카드에 사용할 레코드 테이블이 없습니다.',
+    noSavedCharts: '이 프로젝트에 저장된 차트가 아직 없습니다.',
+  },
+};
 
 interface Dataset {
   id: string;
@@ -750,8 +771,90 @@ function nextCardPlacement(cards: DashboardCard[], width: number, height: number
   throw new Error('The dashboard layout is full.');
 }
 
+type VisualizationElementKind =
+  | 'metric'
+  | 'quality_status'
+  | 'recent_dataset'
+  | 'overdue_task'
+  | 'saved_chart'
+  | 'xy_chart'
+  | 'statistical_chart'
+  | 'record_kpi'
+  | 'record_chart'
+  | 'record_list';
+type VisualizationElementSize = 'compact' | 'wide' | 'full';
+
+const visualizationElementSizes: Record<
+  VisualizationElementSize,
+  { width: number; height: number }
+> = {
+  compact: { width: 4, height: 3 },
+  wide: { width: 8, height: 4 },
+  full: { width: 12, height: 5 },
+};
+
+function VisualizationElementIcon({ kind }: { kind: VisualizationElementKind }) {
+  const common = {
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    strokeWidth: 1.8,
+  };
+  return (
+    <svg aria-hidden="true" className="size-6" viewBox="0 0 24 24">
+      {kind === 'metric' || kind === 'record_kpi' ? (
+        <>
+          <path {...common} d="M4 19V9m6 10V5m6 14v-7m4 7H2" />
+          <path {...common} d="m5 6 4-3 5 4 5-4" />
+        </>
+      ) : kind === 'quality_status' ? (
+        <>
+          <path {...common} d="M12 3 5 6v5c0 4.5 2.8 8 7 10 4.2-2 7-5.5 7-10V6l-7-3Z" />
+          <path {...common} d="m9 12 2 2 4-5" />
+        </>
+      ) : kind === 'recent_dataset' ? (
+        <>
+          <ellipse {...common} cx="10" cy="5" rx="6" ry="2.5" />
+          <path {...common} d="M4 5v8c0 1.4 2.7 2.5 6 2.5M4 9c0 1.4 2.7 2.5 6 2.5" />
+          <circle {...common} cx="17" cy="16" r="4" />
+          <path {...common} d="M17 14v2l1.5 1" />
+        </>
+      ) : kind === 'overdue_task' ? (
+        <>
+          <circle {...common} cx="12" cy="12" r="9" />
+          <path {...common} d="M12 7v6l4 2" />
+          <path {...common} d="M9 2h6" />
+        </>
+      ) : kind === 'record_list' ? (
+        <>
+          <rect {...common} x="3" y="4" width="18" height="16" rx="2" />
+          <path {...common} d="M3 9h18M8 4v16M3 14h18" />
+        </>
+      ) : kind === 'record_chart' ? (
+        <>
+          <path {...common} d="M4 19V5m0 14h16" />
+          <path {...common} d="M7 16v-4m4 4V8m4 8v-6m4 6V6" />
+        </>
+      ) : kind === 'statistical_chart' ? (
+        <>
+          <path {...common} d="M4 19V5m0 14h16" />
+          <path {...common} d="M7 17v-5h3v5m1 0V8h3v9m1 0v-8h3v8" />
+        </>
+      ) : (
+        <>
+          <path {...common} d="M3 18 8 11l4 3 5-8 4 4" />
+          <path {...common} d="M3 4v16h18" />
+          {kind === 'xy_chart' && <circle cx="8" cy="11" fill="currentColor" r="1.5" />}
+        </>
+      )}
+    </svg>
+  );
+}
+
 export function VisualizationsPage({ user }: { user: User }) {
-  const { formatNumber, formatTime, t } = useI18n();
+  const { formatNumber, formatTime, locale, t } = useI18n();
+  const sourceCopy = visualizationSourceCopy[locale];
   const { workspaceId, projectId } = useParams();
   const navigate = useNavigate();
   const base = `/workspaces/${workspaceId}/projects/${projectId}`;
@@ -763,15 +866,18 @@ export function VisualizationsPage({ user }: { user: User }) {
     [selectedDashboard, setSelectedDashboard] = useState('');
   const [messageTone, setMessageTone] = useState<'info' | 'success' | 'error'>('info');
   const [loading, setLoading] = useState(true);
+  const [recordTablesLoading, setRecordTablesLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [showElementLibrary, setShowElementLibrary] = useState(false);
+  const [showNewDashboard, setShowNewDashboard] = useState(false);
+  const [elementPickerStep, setElementPickerStep] = useState<1 | 2 | 3>(1);
+  const [elementKind, setElementKind] = useState<VisualizationElementKind>();
+  const [elementSize, setElementSize] = useState<VisualizationElementSize>('wide');
   const [recordTables, setRecordTables] = useState<ObjectType[]>([]);
   const [recordFields, setRecordFields] = useState<RecordField[]>([]);
   const [recordViews, setRecordViews] = useState<RecordView[]>([]);
   const [recordSourceId, setRecordSourceId] = useState('');
   const [recordViewId, setRecordViewId] = useState('');
-  const [recordCardType, setRecordCardType] = useState<
-    'record_kpi' | 'record_chart' | 'record_list'
-  >('record_kpi');
   const [recordChartType, setRecordChartType] = useState<'bar' | 'donut'>('bar');
   const [recordGroupFieldId, setRecordGroupFieldId] = useState('');
   const [recordListFieldIds, setRecordListFieldIds] = useState<string[]>([]);
@@ -788,6 +894,14 @@ export function VisualizationsPage({ user }: { user: User }) {
     const timeout = window.setTimeout(() => setDashboardQuery(dashboardSearch), 250);
     return () => window.clearTimeout(timeout);
   }, [dashboardSearch]);
+  useEffect(() => {
+    if (!showElementLibrary) return;
+    const closePicker = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setShowElementLibrary(false);
+    };
+    window.addEventListener('keydown', closePicker);
+    return () => window.removeEventListener('keydown', closePicker);
+  }, [showElementLibrary]);
   const refresh = useCallback(async () => {
     try {
       const [d, c, b, m] = await Promise.all([
@@ -811,6 +925,9 @@ export function VisualizationsPage({ user }: { user: User }) {
   useEffect(() => void refresh(), [refresh]);
   useEffect(() => {
     let active = true;
+    setRecordTablesLoading(true);
+    setRecordTables([]);
+    setRecordSourceId('');
     void api<{ items: ObjectType[] }>(`${base}/object-types`)
       .then((response) => {
         if (!active) return;
@@ -818,8 +935,12 @@ export function VisualizationsPage({ user }: { user: User }) {
         setRecordSourceId((current) => current || response.items[0]?.id || '');
       })
       .catch((cause: unknown) => {
-        if (active) setMessageTone('error');
+        if (!active) return;
+        setMessageTone('error');
         setMessage(cause instanceof Error ? cause.message : t('visualizations.tablesError'));
+      })
+      .finally(() => {
+        if (active) setRecordTablesLoading(false);
       });
     return () => {
       active = false;
@@ -879,6 +1000,8 @@ export function VisualizationsPage({ user }: { user: User }) {
       ),
     [datasets],
   );
+  const sourceDiscoveryComplete = !loading && !recordTablesLoading;
+  const hasVisualizationSources = datasets.length > 0 || recordTables.length > 0;
   const dashboard = dashboards.find((item) => item.id === selectedDashboard) ?? dashboards[0];
   useEffect(() => setLayoutDraft({}), [dashboard?.id, dashboard?.revision_number]);
   const liveCardCount =
@@ -962,151 +1085,20 @@ export function VisualizationsPage({ user }: { user: User }) {
       await refresh();
       setMessageTone('success');
       setMessage(t('common.changesSaved'));
+      return true;
     } catch (cause) {
       setMessageTone('error');
       setMessage(cause instanceof Error ? cause.message : t('files.operationError'));
+      return false;
     } finally {
       setBusy(false);
     }
   }
-  async function createChart(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const selected = form.getAll('datasets').map(String);
-    if (!selected.length) {
-      setMessageTone('error');
-      setMessage(t('visualizations.selectXy'));
-      return;
-    }
-    const sources = selected.map((datasetId, index) => ({
-      sourceKey: `series-${index + 1}`,
-      datasetId,
-      sourceRole: 'series',
-      seriesOrder: index,
-    }));
-    const series = selected.map((datasetId, index) => {
-      const dataset = xy.find((item) => item.id === datasetId)!;
-      const columns = dataset.schema.columns ?? [];
-      return {
-        sourceKey: `series-${index + 1}`,
-        name: dataset.name,
-        xColumnId: (columns.find((column) => column.role === 'x') ?? columns[0])!.id,
-        yColumnId: (columns.find((column) => column.role === 'y') ?? columns[1])!.id,
-      };
-    });
-    const first = xy.find((item) => item.id === selected[0]);
-    const columns = first?.schema.columns ?? [];
-    const x = columns.find((column) => column.role === 'x') ?? columns[0],
-      y = columns.find((column) => column.role === 'y') ?? columns[1];
-    await mutate(() =>
-      api(`${base}/charts`, {
-        method: 'POST',
-        body: JSON.stringify({
-          name: form.get('name'),
-          description: 'Created in chart studio',
-          chartType: form.get('chartType'),
-          configVersion: 1,
-          changeNote: 'Initial chart',
-          sources,
-          config: {
-            title: form.get('name'),
-            legend: true,
-            axes: {
-              x: {
-                label: x?.name ?? 'X',
-                dimension: x?.dimension,
-                displayUnit: x?.unit,
-                scale: 'linear',
-              },
-              y: {
-                label: y?.name ?? 'Y',
-                dimension: y?.dimension,
-                displayUnit: y?.unit,
-                scale: 'linear',
-              },
-            },
-            series,
-            filter: null,
-            missingData: 'indicate',
-          },
-        }),
-      }),
-    );
-  }
-  async function createStatisticalChart(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const dataset = statisticalDatasets.find((item) => item.id === form.get('datasetId'));
-    const column = dataset?.schema.columns?.find((candidate) =>
-      /(int|float|double|decimal)/i.test(candidate.dataType),
-    );
-    if (!dataset || !column) {
-      setMessageTone('error');
-      setMessage(t('visualizations.selectNumericError'));
-      return;
-    }
-    const chartType = String(form.get('chartType')) as 'histogram' | 'box_plot';
-    const name = String(form.get('name'));
-    const valueAxis = {
-      label: column.name,
-      dimension: column.dimension,
-      displayUnit: column.unit,
-      scale: 'linear',
-    };
-    const config =
-      chartType === 'histogram'
-        ? {
-            title: name,
-            legend: false,
-            axes: {
-              x: valueAxis,
-              y: { label: 'Count', scale: 'linear' },
-            },
-            sourceKey: 'values',
-            columnId: column.id,
-            binStrategy: 'auto',
-            filter: null,
-            missingData: 'indicate',
-          }
-        : {
-            title: name,
-            legend: false,
-            axes: {
-              x: { label: 'Series', scale: 'linear' },
-              y: valueAxis,
-            },
-            sourceKey: 'values',
-            valueColumnId: column.id,
-            filter: null,
-            missingData: 'indicate',
-          };
-    await mutate(() =>
-      api(`${base}/charts`, {
-        method: 'POST',
-        body: JSON.stringify({
-          name,
-          description: 'Created in statistical chart studio',
-          chartType,
-          configVersion: 1,
-          config,
-          sources: [
-            {
-              sourceKey: 'values',
-              datasetId: dataset.id,
-              sourceRole: 'values',
-              seriesOrder: 0,
-            },
-          ],
-          changeNote: 'Initial statistical chart',
-        }),
-      }),
-    );
-  }
   async function createDashboard(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const revisionId = String(form.get('chartRevisionId'));
-    await mutate(() =>
+    const revisionId = String(form.get('chartRevisionId') ?? '');
+    const created = await mutate(() =>
       api(`${base}/dashboards`, {
         method: 'POST',
         body: JSON.stringify({
@@ -1131,6 +1123,278 @@ export function VisualizationsPage({ user }: { user: User }) {
         }),
       }),
     );
+    if (created) setShowNewDashboard(false);
+  }
+
+  function openElementPicker() {
+    setElementPickerStep(1);
+    setElementKind(undefined);
+    setElementSize('wide');
+    setShowElementLibrary(true);
+  }
+
+  function chooseElement(kind: VisualizationElementKind) {
+    const defaultSize: VisualizationElementSize = [
+      'metric',
+      'quality_status',
+      'overdue_task',
+      'record_kpi',
+    ].includes(kind)
+      ? 'compact'
+      : ['saved_chart', 'xy_chart', 'statistical_chart', 'record_list'].includes(kind)
+        ? 'full'
+        : 'wide';
+    setElementKind(kind);
+    setElementSize(defaultSize);
+    setElementPickerStep(2);
+  }
+
+  async function insertElement(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!dashboard || !elementKind) return;
+    const form = new FormData(event.currentTarget);
+    const title = String(form.get('title') ?? '').trim();
+    const dimensions = visualizationElementSizes[elementSize];
+    const placement = nextCardPlacement(dashboard.cards, dimensions.width, dimensions.height);
+    const position = Math.max(-1, ...dashboard.cards.map((card) => card.position)) + 1;
+    let validationError = '';
+
+    const inserted = await mutate(async () => {
+      let cardInput: Record<string, unknown>;
+      if (elementKind === 'metric') {
+        cardInput = {
+          cardType: 'kpi',
+          configVersion: 1,
+          config: { title, metric: String(form.get('metric') ?? 'total_samples') },
+        };
+      } else if (elementKind === 'quality_status') {
+        cardInput = {
+          cardType: 'specification_status',
+          configVersion: 1,
+          config: { title },
+        };
+      } else if (elementKind === 'recent_dataset') {
+        cardInput = {
+          cardType: 'recent_dataset',
+          configVersion: 1,
+          config: { title },
+        };
+      } else if (elementKind === 'overdue_task') {
+        cardInput = {
+          cardType: 'overdue_task',
+          configVersion: 1,
+          config: { title },
+        };
+      } else if (elementKind === 'saved_chart') {
+        const chart = charts.find((candidate) => candidate.id === form.get('chartId'));
+        if (!chart) {
+          validationError = t('visualizations.chooseSavedChart');
+          throw new Error(validationError);
+        }
+        cardInput = {
+          cardType: 'chart',
+          chartRevisionId: chart.current_revision_id,
+          configVersion: 1,
+          config: { title },
+        };
+      } else if (elementKind === 'xy_chart') {
+        const selected = form.getAll('datasets').map(String);
+        if (!selected.length) {
+          validationError = t('visualizations.selectXy');
+          throw new Error(validationError);
+        }
+        const sources = selected.map((datasetId, index) => ({
+          sourceKey: `series-${index + 1}`,
+          datasetId,
+          sourceRole: 'series',
+          seriesOrder: index,
+        }));
+        const series = selected.map((datasetId, index) => {
+          const dataset = xy.find((item) => item.id === datasetId)!;
+          const columns = dataset.schema.columns ?? [];
+          return {
+            sourceKey: `series-${index + 1}`,
+            name: dataset.name,
+            xColumnId: (columns.find((column) => column.role === 'x') ?? columns[0])!.id,
+            yColumnId: (columns.find((column) => column.role === 'y') ?? columns[1])!.id,
+          };
+        });
+        const first = xy.find((item) => item.id === selected[0]);
+        const columns = first?.schema.columns ?? [];
+        const x = columns.find((column) => column.role === 'x') ?? columns[0];
+        const y = columns.find((column) => column.role === 'y') ?? columns[1];
+        const created = await api<Chart>(`${base}/charts`, {
+          method: 'POST',
+          body: JSON.stringify({
+            name: title,
+            description: 'Created while inserting a dashboard element',
+            chartType: form.get('chartType'),
+            configVersion: 1,
+            changeNote: 'Initial chart',
+            sources,
+            config: {
+              title,
+              legend: true,
+              axes: {
+                x: {
+                  label: x?.name ?? 'X',
+                  dimension: x?.dimension,
+                  displayUnit: x?.unit,
+                  scale: 'linear',
+                },
+                y: {
+                  label: y?.name ?? 'Y',
+                  dimension: y?.dimension,
+                  displayUnit: y?.unit,
+                  scale: 'linear',
+                },
+              },
+              series,
+              filter: null,
+              missingData: 'indicate',
+            },
+          }),
+        });
+        cardInput = {
+          cardType: 'chart',
+          chartRevisionId: created.current_revision_id,
+          configVersion: 1,
+          config: { title },
+        };
+      } else if (elementKind === 'statistical_chart') {
+        const dataset = statisticalDatasets.find((item) => item.id === form.get('datasetId'));
+        const column = dataset?.schema.columns?.find((candidate) =>
+          /(int|float|double|decimal)/i.test(candidate.dataType),
+        );
+        if (!dataset || !column) {
+          validationError = t('visualizations.selectNumericError');
+          throw new Error(validationError);
+        }
+        const chartType = String(form.get('chartType')) as 'histogram' | 'box_plot';
+        const valueAxis = {
+          label: column.name,
+          dimension: column.dimension,
+          displayUnit: column.unit,
+          scale: 'linear',
+        };
+        const config =
+          chartType === 'histogram'
+            ? {
+                title,
+                legend: false,
+                axes: { x: valueAxis, y: { label: 'Count', scale: 'linear' } },
+                sourceKey: 'values',
+                columnId: column.id,
+                binStrategy: 'auto',
+                filter: null,
+                missingData: 'indicate',
+              }
+            : {
+                title,
+                legend: false,
+                axes: { x: { label: 'Series', scale: 'linear' }, y: valueAxis },
+                sourceKey: 'values',
+                valueColumnId: column.id,
+                filter: null,
+                missingData: 'indicate',
+              };
+        const created = await api<Chart>(`${base}/charts`, {
+          method: 'POST',
+          body: JSON.stringify({
+            name: title,
+            description: 'Created while inserting a dashboard element',
+            chartType,
+            configVersion: 1,
+            config,
+            sources: [
+              { sourceKey: 'values', datasetId: dataset.id, sourceRole: 'values', seriesOrder: 0 },
+            ],
+            changeNote: 'Initial statistical chart',
+          }),
+        });
+        cardInput = {
+          cardType: 'chart',
+          chartRevisionId: created.current_revision_id,
+          configVersion: 1,
+          config: { title },
+        };
+      } else {
+        if (!selectedRecordTable) {
+          validationError = t('visualizations.selectDashboardSource');
+          throw new Error(validationError);
+        }
+        const source: RecordSourceConfig = {
+          objectTypeId: selectedRecordTable.id,
+          tableName: selectedRecordTable.pluralName,
+          ...(selectedRecordView
+            ? { viewId: selectedRecordView.id, viewName: selectedRecordView.name }
+            : {}),
+          filters: selectedRecordView?.config.filters ?? [],
+          sorts: selectedRecordView?.config.sorts ?? [
+            { systemField: 'updatedAt' as const, direction: 'desc' as const },
+          ],
+        };
+        if (elementKind === 'record_kpi') {
+          cardInput = {
+            cardType: 'record_kpi',
+            configVersion: 2,
+            config: { title, source, metric: 'count' },
+          };
+        } else if (elementKind === 'record_chart') {
+          const groupField = recordFields.find((field) => field.id === recordGroupFieldId);
+          if (!groupField) {
+            validationError = t('visualizations.selectGroup');
+            throw new Error(validationError);
+          }
+          cardInput = {
+            cardType: 'record_chart',
+            configVersion: 2,
+            config: {
+              title,
+              source,
+              groupByFieldId: groupField.id,
+              groupByLabel: groupField.name,
+              groupLabels: Object.fromEntries(
+                (groupField.config.options ?? []).map((option) => [option.key, option.label]),
+              ),
+              chartType: recordChartType,
+            },
+          };
+        } else {
+          const columns = recordListFieldIds
+            .map((fieldId) => recordFields.find((field) => field.id === fieldId))
+            .filter((field): field is RecordField => Boolean(field))
+            .slice(0, 6)
+            .map((field) => ({ fieldId: field.id, key: field.key, label: field.name }));
+          cardInput = {
+            cardType: 'record_list',
+            configVersion: 2,
+            config: { title, source, columns, limit: 10 },
+          };
+        }
+      }
+
+      await api(`${base}/dashboards/${dashboard.id}/revisions`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: dashboard.name,
+          description: dashboard.description,
+          changeNote: `Inserted ${title}`,
+          cards: [
+            ...dashboard.cards.map(dashboardCardInput),
+            { ...cardInput, ...placement, ...dimensions, position },
+          ],
+        }),
+      });
+    });
+    if (inserted) {
+      setShowElementLibrary(false);
+      setElementPickerStep(1);
+      setElementKind(undefined);
+      setMessage(t('visualizations.elementInserted'));
+    } else if (validationError) {
+      setMessage(validationError);
+    }
   }
   async function publishDashboardRevision() {
     if (!dashboard) return;
@@ -1145,85 +1409,6 @@ export function VisualizationsPage({ user }: { user: User }) {
         }),
       }),
     );
-  }
-  async function addRecordCard(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const formElement = event.currentTarget;
-    if (!dashboard || !selectedRecordTable) {
-      setMessageTone('error');
-      setMessage(t('visualizations.selectDashboardSource'));
-      return;
-    }
-    const form = new FormData(formElement);
-    const title = String(form.get('title') ?? '').trim();
-    const source: RecordSourceConfig = {
-      objectTypeId: selectedRecordTable.id,
-      tableName: selectedRecordTable.pluralName,
-      ...(selectedRecordView
-        ? { viewId: selectedRecordView.id, viewName: selectedRecordView.name }
-        : {}),
-      filters: selectedRecordView?.config.filters ?? [],
-      sorts: selectedRecordView?.config.sorts ?? [
-        { systemField: 'updatedAt' as const, direction: 'desc' as const },
-      ],
-    };
-    const dimensions =
-      recordCardType === 'record_kpi'
-        ? { width: 4, height: 3 }
-        : recordCardType === 'record_chart'
-          ? { width: 6, height: 6 }
-          : { width: 12, height: 5 };
-    const placement = nextCardPlacement(dashboard.cards, dimensions.width, dimensions.height);
-    let config: RecordKpiConfig | RecordChartConfig | RecordListConfig;
-    if (recordCardType === 'record_kpi') {
-      config = { title, source, metric: 'count' };
-    } else if (recordCardType === 'record_chart') {
-      const groupField = recordFields.find((field) => field.id === recordGroupFieldId);
-      if (!groupField) {
-        setMessageTone('error');
-        setMessage(t('visualizations.selectGroup'));
-        return;
-      }
-      config = {
-        title,
-        source,
-        groupByFieldId: groupField.id,
-        groupByLabel: groupField.name,
-        groupLabels: Object.fromEntries(
-          (groupField.config.options ?? []).map((option) => [option.key, option.label]),
-        ),
-        chartType: recordChartType,
-      };
-    } else {
-      const columns = recordListFieldIds
-        .map((fieldId) => recordFields.find((field) => field.id === fieldId))
-        .filter((field): field is RecordField => Boolean(field))
-        .slice(0, 6)
-        .map((field) => ({ fieldId: field.id, key: field.key, label: field.name }));
-      config = { title, source, columns, limit: 10 };
-    }
-    await mutate(() =>
-      api(`${base}/dashboards/${dashboard.id}/revisions`, {
-        method: 'POST',
-        body: JSON.stringify({
-          name: dashboard.name,
-          description: dashboard.description,
-          changeNote: `Added ${title} from ${selectedRecordTable.pluralName}`,
-          cards: [
-            ...dashboard.cards.map(dashboardCardInput),
-            {
-              cardType: recordCardType,
-              configVersion: 2,
-              config,
-              ...placement,
-              ...dimensions,
-              position: Math.max(-1, ...dashboard.cards.map((card) => card.position)) + 1,
-            },
-          ],
-        }),
-      }),
-    );
-    formElement.reset();
   }
   async function removeDashboardCard(cardId: string) {
     if (!dashboard) return;
@@ -1351,16 +1536,110 @@ export function VisualizationsPage({ user }: { user: User }) {
           ? '—'
           : `${metrics?.pass_rate}%`
         : metrics?.dataset_count;
+  const elementOptions: Array<{
+    kind: VisualizationElementKind;
+    group: 'project' | 'charts' | 'records';
+    name: string;
+    body: string;
+    accent: string;
+    disabled?: boolean;
+  }> = [
+    {
+      kind: 'metric',
+      group: 'project',
+      name: t('visualizations.elementMetricName'),
+      body: t('visualizations.elementMetricBody'),
+      accent: 'text-sky-300 bg-sky-500/10 border-sky-500/20',
+    },
+    {
+      kind: 'quality_status',
+      group: 'project',
+      name: t('visualizations.elementQualityName'),
+      body: t('visualizations.elementQualityBody'),
+      accent: 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20',
+    },
+    {
+      kind: 'recent_dataset',
+      group: 'project',
+      name: t('visualizations.elementRecentName'),
+      body: t('visualizations.elementRecentBody'),
+      accent: 'text-cyan-300 bg-cyan-500/10 border-cyan-500/20',
+    },
+    {
+      kind: 'overdue_task',
+      group: 'project',
+      name: t('visualizations.elementOverdueName'),
+      body: t('visualizations.elementOverdueBody'),
+      accent: 'text-amber-300 bg-amber-500/10 border-amber-500/20',
+    },
+    {
+      kind: 'saved_chart',
+      group: 'charts',
+      name: t('visualizations.elementSavedChartName'),
+      body: t('visualizations.elementSavedChartBody'),
+      accent: 'text-violet-300 bg-violet-500/10 border-violet-500/20',
+      disabled: charts.filter((chart) => !chart.archived_at).length === 0,
+    },
+    {
+      kind: 'xy_chart',
+      group: 'charts',
+      name: t('visualizations.elementXyName'),
+      body: t('visualizations.elementXyBody'),
+      accent: 'text-indigo-300 bg-indigo-500/10 border-indigo-500/20',
+      disabled: xy.length === 0,
+    },
+    {
+      kind: 'statistical_chart',
+      group: 'charts',
+      name: t('visualizations.elementStatName'),
+      body: t('visualizations.elementStatBody'),
+      accent: 'text-fuchsia-300 bg-fuchsia-500/10 border-fuchsia-500/20',
+      disabled: statisticalDatasets.length === 0,
+    },
+    {
+      kind: 'record_kpi',
+      group: 'records',
+      name: t('visualizations.elementRecordKpiName'),
+      body: t('visualizations.elementRecordKpiBody'),
+      accent: 'text-lime-300 bg-lime-500/10 border-lime-500/20',
+      disabled: recordTables.length === 0,
+    },
+    {
+      kind: 'record_chart',
+      group: 'records',
+      name: t('visualizations.elementRecordChartName'),
+      body: t('visualizations.elementRecordChartBody'),
+      accent: 'text-orange-300 bg-orange-500/10 border-orange-500/20',
+      disabled: recordTables.length === 0,
+    },
+    {
+      kind: 'record_list',
+      group: 'records',
+      name: t('visualizations.elementRecordListName'),
+      body: t('visualizations.elementRecordListBody'),
+      accent: 'text-rose-300 bg-rose-500/10 border-rose-500/20',
+      disabled: recordTables.length === 0,
+    },
+  ];
+  const selectedElement = elementOptions.find((option) => option.kind === elementKind);
   return (
     <>
       <Link className="text-sm text-slate-400 hover:text-sky-300" to={base}>
         ← {t('common.projectBack')}
       </Link>
-      <div className="mt-4 flex items-center gap-3">
-        <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
-          {t('visualizations.heading')}
-        </h1>
-        <HelpTip label={t('visualizations.help')}>{t('visualizations.helpBody')}</HelpTip>
+      <div className="mt-4 flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="font-mono text-xs uppercase tracking-[0.18em] text-sky-400">
+            {t('visualizations.canvasEyebrow')}
+          </p>
+          <div className="mt-2 flex items-center gap-3">
+            <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
+              {t('visualizations.heading')}
+            </h1>
+            <HelpTip label={t('visualizations.help')}>{t('visualizations.helpBody')}</HelpTip>
+          </div>
+          <p className="mt-3 max-w-2xl text-sm text-slate-400">{t('visualizations.canvasBody')}</p>
+        </div>
       </div>
       <NoticeText tone={messageTone}>{message}</NoticeText>
       {loading && (
@@ -1368,454 +1647,806 @@ export function VisualizationsPage({ user }: { user: User }) {
           {t('common.loading')}
         </p>
       )}
-      {allowed(user, 'dashboard.manage') && (
-        <div className="mt-8 grid gap-5 xl:grid-cols-3">
-          <form className={creatorFormClass} onSubmit={(event) => void createChart(event)}>
-            <h2 className={creatorHeadingClass}>{t('visualizations.xyHeading')}</h2>
-            <input
-              className={inputClass}
-              name="name"
-              placeholder={t('visualizations.chartName')}
-              required
-            />
-            <select className={inputClass} name="chartType">
-              <option value="line">{t('visualizations.line')}</option>
-              <option value="scatter">{t('visualizations.scatter')}</option>
-            </select>
-            <div className="max-h-40 space-y-2 overflow-auto">
-              {xy.map((dataset) => (
-                <label className="block text-sm" key={dataset.id}>
-                  <input className="mr-2" name="datasets" type="checkbox" value={dataset.id} />
-                  {dataset.name}
-                </label>
-              ))}
-            </div>
-            <Button disabled={busy} type="submit">
-              {t('visualizations.saveChart')}
-            </Button>
-          </form>
-          <form
-            className={creatorFormClass}
-            onSubmit={(event) => void createStatisticalChart(event)}
+      <div className="flex flex-col">
+        {sourceDiscoveryComplete && !hasVisualizationSources && (
+          <section
+            aria-labelledby="visualization-empty-sources-title"
+            className="order-3 mt-6 overflow-hidden rounded-2xl border border-sky-400/25 bg-gradient-to-br from-sky-500/10 via-slate-900/45 to-indigo-500/10 p-6 shadow-xl shadow-sky-950/10"
           >
-            <h2 className={creatorHeadingClass}>{t('visualizations.statisticalHeading')}</h2>
-            <input
-              className={inputClass}
-              name="name"
-              placeholder={t('visualizations.chartName')}
-              required
-            />
-            <select className={inputClass} name="chartType">
-              <option value="histogram">{t('visualizations.histogram')}</option>
-              <option value="box_plot">{t('visualizations.boxPlot')}</option>
-            </select>
-            <select className={inputClass} name="datasetId" required>
-              <option value="">{t('visualizations.selectNumeric')}</option>
-              {statisticalDatasets.map((dataset) => (
-                <option key={dataset.id} value={dataset.id}>
-                  {dataset.name}
-                </option>
-              ))}
-            </select>
-            <Button disabled={busy} type="submit">
-              {t('visualizations.saveStatistical')}
-            </Button>
-          </form>
-          <form className={creatorFormClass} onSubmit={(event) => void createDashboard(event)}>
-            <h2 className={creatorHeadingClass}>{t('visualizations.dashboardNew')}</h2>
-            <input
-              className={inputClass}
-              name="name"
-              placeholder={t('visualizations.dashboardName')}
-              required
-            />
-            <select className={inputClass} name="chartRevisionId">
-              <option value="">{t('visualizations.emptyDashboard')}</option>
-              {charts
-                .filter((chart) => !chart.archived_at)
-                .map((chart) => (
-                  <option key={chart.current_revision_id} value={chart.current_revision_id}>
-                    {t('visualizations.dashboardOption', {
-                      name: chart.name,
-                      revision: chart.revision_number,
-                    })}
-                  </option>
-                ))}
-            </select>
-            <Button disabled={busy} type="submit">
-              {t('visualizations.publishDashboard')}
-            </Button>
-          </form>
-        </div>
-      )}
-      <section className="mt-10">
-        <h2 className="text-2xl font-semibold">{t('visualizations.savedCharts')}</h2>
-        <div className="mt-4 grid gap-5 xl:grid-cols-2">
-          {charts.map((chart) => (
-            <article
-              className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5 shadow-xl shadow-slate-950/10"
-              key={chart.id}
-            >
-              <div className="flex justify-between">
-                <div>
-                  <h3 className="font-semibold">{chart.name}</h3>
-                  <p className="text-xs text-slate-500">
-                    {t('visualizations.revisionSummary', {
-                      revision: chart.revision_number,
-                      type: chart.chart_type,
-                      count: formatNumber(chart.sources.length),
-                    })}
-                  </p>
-                </div>
-                {allowed(user, 'dashboard.manage') && (
-                  <button
-                    className="text-sm text-sky-400"
-                    onClick={() =>
-                      void mutate(() =>
-                        api(`${base}/charts/${chart.id}/revisions`, {
-                          method: 'POST',
-                          body: JSON.stringify({
-                            name: chart.name,
-                            description: chart.description,
-                            chartType: chart.chart_type,
-                            configVersion: chart.config_version,
-                            config: chart.config,
-                            sources: chart.sources.map((source) => ({
-                              sourceKey: source.source_key,
-                              datasetId: source.dataset_id,
-                              sourceRole: source.source_role,
-                              seriesOrder: source.series_order,
-                            })),
-                            changeNote: 'Explicit republish',
-                          }),
-                        }),
-                      )
-                    }
-                  >
-                    {t('visualizations.publishRevision')}
-                  </button>
-                )}
-              </div>
-              <ChartView base={base} revisionId={chart.current_revision_id} fallback={chart} />
-              <div className="text-xs text-slate-500">
-                {chart.sources.map((source) => (
-                  <Link
-                    className="mr-3 text-sky-400"
-                    key={source.source_key}
-                    to={`${base}/files-datasets`}
-                  >
-                    {t('visualizations.source', { key: source.source_key, id: source.dataset_id })}
-                  </Link>
-                ))}
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
-      <section className="mt-12">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <h2 className="text-2xl font-semibold">{t('visualizations.dashboards')}</h2>
-            <HelpTip label={t('visualizations.dashboardHelp')}>
-              {t('visualizations.dashboardHelpBody')}
-            </HelpTip>
-          </div>
-          <select
-            className={inputClass}
-            value={dashboard?.id ?? ''}
-            onChange={(event) => setSelectedDashboard(event.target.value)}
-          >
-            {dashboards.map((item) => (
-              <option key={item.id} value={item.id}>
-                {t('visualizations.dashboardOption', {
-                  name: item.name,
-                  revision: item.revision_number,
-                })}
-              </option>
-            ))}
-          </select>
-          {liveCardCount > 0 && (
-            <div className="flex items-center gap-2 text-xs text-slate-500">
-              <span aria-live="polite">
-                {t('visualizations.liveUpdated', {
-                  count: formatNumber(liveCardCount),
-                  time: formatTime(lastRecordRefreshAt),
-                })}
-              </span>
-              <button
-                className="rounded-md px-2 py-1 text-sky-400 hover:bg-sky-500/10"
-                onClick={refreshLiveCards}
-                type="button"
+            <div className="max-w-3xl">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-300">
+                {t('common.getStarted')}
+              </p>
+              <h2
+                className="mt-2 text-2xl font-semibold text-slate-100"
+                id="visualization-empty-sources-title"
               >
-                {t('visualizations.refresh')}
-              </button>
-            </div>
-          )}
-          {dashboard && allowed(user, 'dashboard.manage') && (
-            <div className="flex items-center gap-2">
-              {Object.keys(layoutDraft).length > 0 && (
-                <button
-                  className="text-xs text-slate-500 hover:text-slate-200"
-                  onClick={() => setLayoutDraft({})}
-                  type="button"
+                {sourceCopy.emptyTitle}
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-slate-400">{sourceCopy.emptyBody}</p>
+              <div className="mt-5 flex flex-wrap gap-3">
+                <Link
+                  className="rounded-lg bg-sky-400 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-sky-300"
+                  to={`${base}/files-datasets`}
                 >
-                  {t('visualizations.resetLayout')}
-                </button>
-              )}
-              <button
-                className="text-sm text-sky-400"
-                onClick={() => void publishDashboardRevision()}
-                type="button"
-              >
-                {t('visualizations.publishLayout')}
-              </button>
+                  {sourceCopy.addDataset}
+                </Link>
+                <Link
+                  className="rounded-lg border border-slate-700 bg-slate-900/70 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-sky-400/50 hover:text-sky-200"
+                  to={`${base}/data`}
+                >
+                  {sourceCopy.createTable}
+                </Link>
+              </div>
             </div>
-          )}
-        </div>
-        {dashboard && liveCardCount > 0 && (
-          <div className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/45 p-3">
-            <label className="min-w-64 flex-1 text-xs text-slate-400">
-              {t('visualizations.globalFilter')}
-              <input
-                aria-label={t('visualizations.searchSources')}
-                className={`${inputClass} mt-1`}
-                placeholder={t('visualizations.searchPlaceholder')}
-                type="search"
-                value={dashboardSearch}
-                onChange={(event) => setDashboardSearch(event.target.value)}
-              />
-            </label>
-            <p className="max-w-md text-[11px] leading-relaxed text-slate-500">
-              {t('visualizations.searchHelp')}
-            </p>
-          </div>
+          </section>
         )}
-        {dashboard && allowed(user, 'dashboard.manage') && (
-          <form
-            className="mt-5 rounded-2xl border border-slate-800 bg-slate-900/40 p-5"
-            onSubmit={(event) => void addRecordCard(event)}
-          >
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <h3 className="font-semibold">{t('visualizations.compose')}</h3>
-                <HelpTip label={t('visualizations.recordHelp')}>
-                  {t('visualizations.recordHelpBody')}
-                </HelpTip>
-              </div>
-              <Button disabled={!recordTables.length || busy} type="submit">
-                {t('visualizations.addCard')}
-              </Button>
-            </div>
-            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-              <input
-                className={inputClass}
-                name="title"
-                placeholder={t('visualizations.cardTitle')}
-                required
-              />
-              <select
-                className={inputClass}
-                value={recordCardType}
-                onChange={(event) =>
-                  setRecordCardType(
-                    event.target.value as 'record_kpi' | 'record_chart' | 'record_list',
-                  )
-                }
-              >
-                <option value="record_kpi">{t('visualizations.recordKpi')}</option>
-                <option value="record_chart">{t('visualizations.groupedChart')}</option>
-                <option value="record_list">{t('visualizations.recordList')}</option>
-              </select>
-              <select
-                className={inputClass}
-                value={recordSourceId}
-                onChange={(event) => setRecordSourceId(event.target.value)}
-                required
-              >
-                <option value="">{t('visualizations.selectTable')}</option>
-                {recordTables.map((table) => (
-                  <option key={table.id} value={table.id}>
-                    {table.pluralName}
-                  </option>
-                ))}
-              </select>
-              <select
-                className={inputClass}
-                value={recordViewId}
-                onChange={(event) => {
-                  const viewId = event.target.value;
-                  const view = recordViews.find((item) => item.id === viewId);
-                  setRecordViewId(viewId);
-                  if (view) {
-                    const visible = view.config.visibleFieldIds.filter((fieldId) =>
-                      recordFields.some((field) => field.id === fieldId),
-                    );
-                    if (visible.length) setRecordListFieldIds(visible.slice(0, 6));
-                  }
-                }}
-              >
-                <option value="">{t('visualizations.allRecords')}</option>
-                {recordViews.map((view) => (
-                  <option key={view.id} value={view.id}>
-                    {view.name} · {view.viewType}
-                  </option>
-                ))}
-              </select>
-            </div>
-            {recordCardType === 'record_chart' && (
-              <div className="mt-3 grid gap-3 md:grid-cols-2">
-                <select
-                  className={inputClass}
-                  value={recordChartType}
-                  onChange={(event) => setRecordChartType(event.target.value as 'bar' | 'donut')}
+        <details className="group order-4 mt-8 rounded-2xl border border-slate-800 bg-slate-900/30">
+          <summary className="flex cursor-pointer list-none items-center justify-between p-5 marker:content-none">
+            <h2 className="text-lg font-semibold">{t('visualizations.savedCharts')}</h2>
+            <span aria-hidden="true" className="text-slate-500 transition group-open:rotate-180">
+              ⌄
+            </span>
+          </summary>
+          <div className="border-t border-slate-800 p-5">
+            {!loading && charts.length === 0 && (
+              <p className="mt-3 text-sm text-slate-500">{sourceCopy.noSavedCharts}</p>
+            )}
+            <div className="mt-4 grid gap-5 xl:grid-cols-2">
+              {charts.map((chart) => (
+                <article
+                  className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5 shadow-xl shadow-slate-950/10"
+                  key={chart.id}
                 >
-                  <option value="bar">{t('visualizations.barChart')}</option>
-                  <option value="donut">{t('visualizations.donutChart')}</option>
-                </select>
+                  <div className="flex justify-between">
+                    <div>
+                      <h3 className="font-semibold">{chart.name}</h3>
+                      <p className="text-xs text-slate-500">
+                        {t('visualizations.revisionSummary', {
+                          revision: chart.revision_number,
+                          type: chart.chart_type,
+                          count: formatNumber(chart.sources.length),
+                        })}
+                      </p>
+                    </div>
+                    {allowed(user, 'dashboard.manage') && (
+                      <button
+                        className="text-sm text-sky-400"
+                        onClick={() =>
+                          void mutate(() =>
+                            api(`${base}/charts/${chart.id}/revisions`, {
+                              method: 'POST',
+                              body: JSON.stringify({
+                                name: chart.name,
+                                description: chart.description,
+                                chartType: chart.chart_type,
+                                configVersion: chart.config_version,
+                                config: chart.config,
+                                sources: chart.sources.map((source) => ({
+                                  sourceKey: source.source_key,
+                                  datasetId: source.dataset_id,
+                                  sourceRole: source.source_role,
+                                  seriesOrder: source.series_order,
+                                })),
+                                changeNote: 'Explicit republish',
+                              }),
+                            }),
+                          )
+                        }
+                      >
+                        {t('visualizations.publishRevision')}
+                      </button>
+                    )}
+                  </div>
+                  <ChartView base={base} revisionId={chart.current_revision_id} fallback={chart} />
+                  <div className="text-xs text-slate-500">
+                    {chart.sources.map((source) => (
+                      <Link
+                        className="mr-3 text-sky-400"
+                        key={source.source_key}
+                        to={`${base}/files-datasets`}
+                      >
+                        {t('visualizations.source', {
+                          key: source.source_key,
+                          id: source.dataset_id,
+                        })}
+                      </Link>
+                    ))}
+                  </div>
+                </article>
+              ))}
+            </div>
+          </div>
+        </details>
+        <section className="order-2 mt-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <h2 className="text-2xl font-semibold">
+                {dashboard?.name ?? t('visualizations.canvasTitle')}
+              </h2>
+              <HelpTip label={t('visualizations.dashboardHelp')}>
+                {t('visualizations.dashboardHelpBody')}
+              </HelpTip>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {dashboards.length > 0 && (
                 <select
+                  aria-label={t('visualizations.dashboards')}
                   className={inputClass}
-                  value={recordGroupFieldId}
-                  onChange={(event) => setRecordGroupFieldId(event.target.value)}
-                  required
+                  value={dashboard?.id ?? ''}
+                  onChange={(event) => setSelectedDashboard(event.target.value)}
                 >
-                  <option value="">{t('visualizations.groupBy')}</option>
-                  {recordGroupFields.map((field) => (
-                    <option key={field.id} value={field.id}>
-                      {field.name}
+                  {dashboards.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {t('visualizations.dashboardOption', {
+                        name: item.name,
+                        revision: item.revision_number,
+                      })}
                     </option>
                   ))}
                 </select>
+              )}
+              {dashboard && allowed(user, 'dashboard.manage') && (
+                <Button disabled={busy} onClick={openElementPicker}>
+                  <span aria-hidden="true">＋</span> {t('visualizations.addElement')}
+                </Button>
+              )}
+              {allowed(user, 'dashboard.manage') && (
+                <button
+                  className="rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-300 hover:border-sky-500/50 hover:text-sky-200"
+                  onClick={() => setShowNewDashboard((current) => !current)}
+                  type="button"
+                >
+                  {t('visualizations.newDashboard')}
+                </button>
+              )}
+            </div>
+            {liveCardCount > 0 && (
+              <div className="flex items-center gap-2 text-xs text-slate-500">
+                <span aria-live="polite">
+                  {t('visualizations.liveUpdated', {
+                    count: formatNumber(liveCardCount),
+                    time: formatTime(lastRecordRefreshAt),
+                  })}
+                </span>
+                <button
+                  className="rounded-md px-2 py-1 text-sky-400 hover:bg-sky-500/10"
+                  onClick={refreshLiveCards}
+                  type="button"
+                >
+                  {t('visualizations.refresh')}
+                </button>
               </div>
             )}
-            {recordCardType === 'record_list' && (
-              <fieldset className="mt-3">
-                <legend className="text-xs font-medium text-slate-400">
-                  {t('visualizations.visibleColumns')}
-                </legend>
-                <div className="mt-2 flex max-h-28 flex-wrap gap-x-4 gap-y-2 overflow-auto">
-                  {recordFields.map((field) => {
-                    const checked = recordListFieldIds.includes(field.id);
-                    return (
-                      <label className="text-xs text-slate-300" key={field.id}>
-                        <input
-                          checked={checked}
-                          className="mr-2"
-                          disabled={!checked && recordListFieldIds.length >= 6}
-                          onChange={() =>
-                            setRecordListFieldIds((current) =>
-                              current.includes(field.id)
-                                ? current.filter((fieldId) => fieldId !== field.id)
-                                : [...current, field.id].slice(0, 6),
-                            )
-                          }
-                          type="checkbox"
-                        />
-                        {field.name}
-                      </label>
-                    );
-                  })}
-                </div>
-              </fieldset>
-            )}
-          </form>
-        )}
-        {dashboard ? (
-          <div className="dashboard-grid mt-5 grid grid-cols-12 gap-4" ref={dashboardGridRef}>
-            {dashboard.cards.map((card) => (
-              <article
-                className="dashboard-card relative rounded-xl border border-slate-800 bg-slate-900/60 p-4"
-                key={card.id}
-                onContextMenu={(event) => openDashboardCardMenu(event, card)}
-                onKeyDown={(event) => openDashboardCardMenuFromKeyboard(event, card)}
-                style={
-                  {
-                    '--dashboard-column': `${cardWithDraft(card).x + 1} / span ${cardWithDraft(card).width}`,
-                    '--dashboard-row': `${cardWithDraft(card).y + 1} / span ${cardWithDraft(card).height}`,
-                    '--dashboard-height': cardWithDraft(card).height,
-                  } as CSSProperties
-                }
-                tabIndex={0}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-2">
-                    {allowed(user, 'dashboard.manage') && (
-                      <button
-                        aria-label={t('visualizations.moveCard', {
-                          title: card.config.title ?? 'card',
-                        })}
-                        className="cursor-grab rounded px-1 text-slate-600 hover:bg-slate-800 hover:text-sky-300 active:cursor-grabbing"
-                        onPointerDown={(event) => beginLayoutChange(event, card, 'move')}
-                        title={t('visualizations.dragMove')}
-                        type="button"
-                      >
-                        ⠿
-                      </button>
-                    )}
-                    <h3 className="truncate text-sm font-medium text-slate-300">
-                      {card.config.title}
-                    </h3>
-                  </div>
-                  {allowed(user, 'dashboard.manage') && (
-                    <button
-                      aria-label={t('visualizations.removeCard', {
-                        title: card.config.title ?? 'card',
-                      })}
-                      className="text-xs text-slate-500 hover:text-rose-300"
-                      onClick={() => void removeDashboardCard(card.id)}
-                      type="button"
-                    >
-                      {t('visualizations.remove')}
-                    </button>
-                  )}
-                </div>
-                {card.card_type === 'chart' && card.chart_revision_id ? (
-                  <ChartView base={base} revisionId={card.chart_revision_id} />
-                ) : ['record_kpi', 'record_chart', 'record_list'].includes(card.card_type) ? (
-                  <RecordCardView
-                    base={base}
-                    card={card}
-                    globalSearch={dashboardQuery}
-                    refreshKey={recordRefreshKey}
-                  />
-                ) : card.card_type === 'kpi' ? (
-                  <p className="mt-4 text-4xl font-semibold text-sky-300">
-                    {metricValue(card) ?? '—'}
-                  </p>
-                ) : card.card_type === 'specification_status' ? (
-                  <p className="mt-4 text-4xl font-semibold text-rose-300">
-                    {metrics?.failed_evaluations ?? 0}
-                  </p>
-                ) : card.card_type === 'recent_dataset' ? (
-                  <ul className="mt-3 text-sm">
-                    {metrics?.recent_datasets.map((item) => (
-                      <li key={item.id}>
-                        {item.name} · {item.status}
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="mt-4 text-4xl font-semibold">{metrics?.overdue_tasks ?? 0}</p>
-                )}
-                {allowed(user, 'dashboard.manage') && (
+            {dashboard && allowed(user, 'dashboard.manage') && (
+              <div className="flex items-center gap-2">
+                {Object.keys(layoutDraft).length > 0 && (
                   <button
-                    aria-label={t('visualizations.resizeCard', {
-                      title: card.config.title ?? 'card',
-                    })}
-                    className="absolute bottom-1 right-1 cursor-nwse-resize px-1 text-slate-700 hover:text-sky-300"
-                    onPointerDown={(event) => beginLayoutChange(event, card, 'resize')}
-                    title={t('visualizations.dragResize')}
+                    className="text-xs text-slate-500 hover:text-slate-200"
+                    onClick={() => setLayoutDraft({})}
                     type="button"
                   >
-                    ◢
+                    {t('visualizations.resetLayout')}
                   </button>
                 )}
-              </article>
-            ))}
+                <button
+                  className="text-sm text-sky-400"
+                  onClick={() => void publishDashboardRevision()}
+                  type="button"
+                >
+                  {t('visualizations.publishLayout')}
+                </button>
+              </div>
+            )}
           </div>
-        ) : (
-          <p className="mt-5 text-slate-500">{t('visualizations.noDashboard')}</p>
-        )}
-      </section>
+          {showNewDashboard && allowed(user, 'dashboard.manage') && (
+            <form
+              className="mt-4 flex flex-col gap-3 rounded-2xl border border-sky-500/25 bg-sky-500/5 p-4 sm:flex-row sm:items-center"
+              onSubmit={(event) => void createDashboard(event)}
+            >
+              <input
+                aria-label={t('visualizations.dashboardName')}
+                autoFocus
+                className={`${inputClass} flex-1`}
+                name="name"
+                placeholder={t('visualizations.dashboardName')}
+                required
+              />
+              <Button disabled={busy} type="submit">
+                {t('visualizations.createCanvas')}
+              </Button>
+              <button
+                className="px-3 py-2 text-sm text-slate-500 hover:text-slate-200"
+                onClick={() => setShowNewDashboard(false)}
+                type="button"
+              >
+                {t('common.cancel')}
+              </button>
+            </form>
+          )}
+          {dashboard && liveCardCount > 0 && (
+            <div className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/45 p-3">
+              <label className="min-w-64 flex-1 text-xs text-slate-400">
+                {t('visualizations.globalFilter')}
+                <input
+                  aria-label={t('visualizations.searchSources')}
+                  className={`${inputClass} mt-1`}
+                  placeholder={t('visualizations.searchPlaceholder')}
+                  type="search"
+                  value={dashboardSearch}
+                  onChange={(event) => setDashboardSearch(event.target.value)}
+                />
+              </label>
+              <p className="max-w-md text-[11px] leading-relaxed text-slate-500">
+                {t('visualizations.searchHelp')}
+              </p>
+            </div>
+          )}
+          {dashboard?.cards.length ? (
+            <div
+              className="dashboard-grid mt-5 grid min-h-[28rem] grid-cols-12 gap-4 rounded-3xl border border-slate-800 bg-[radial-gradient(circle_at_1px_1px,rgb(51_65_85_/_0.34)_1px,transparent_0)] bg-[size:24px_24px] p-4"
+              ref={dashboardGridRef}
+            >
+              {dashboard.cards.map((card) => (
+                <article
+                  className="dashboard-card relative rounded-xl border border-slate-800 bg-slate-900/60 p-4"
+                  key={card.id}
+                  onContextMenu={(event) => openDashboardCardMenu(event, card)}
+                  onKeyDown={(event) => openDashboardCardMenuFromKeyboard(event, card)}
+                  style={
+                    {
+                      '--dashboard-column': `${cardWithDraft(card).x + 1} / span ${cardWithDraft(card).width}`,
+                      '--dashboard-row': `${cardWithDraft(card).y + 1} / span ${cardWithDraft(card).height}`,
+                      '--dashboard-height': cardWithDraft(card).height,
+                    } as CSSProperties
+                  }
+                  tabIndex={0}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-2">
+                      {allowed(user, 'dashboard.manage') && (
+                        <button
+                          aria-label={t('visualizations.moveCard', {
+                            title: card.config.title ?? 'card',
+                          })}
+                          className="cursor-grab rounded px-1 text-slate-600 hover:bg-slate-800 hover:text-sky-300 active:cursor-grabbing"
+                          onPointerDown={(event) => beginLayoutChange(event, card, 'move')}
+                          title={t('visualizations.dragMove')}
+                          type="button"
+                        >
+                          ⠿
+                        </button>
+                      )}
+                      <h3 className="truncate text-sm font-medium text-slate-300">
+                        {card.config.title}
+                      </h3>
+                    </div>
+                    {allowed(user, 'dashboard.manage') && (
+                      <button
+                        aria-label={t('visualizations.removeCard', {
+                          title: card.config.title ?? 'card',
+                        })}
+                        className="text-xs text-slate-500 hover:text-rose-300"
+                        onClick={() => void removeDashboardCard(card.id)}
+                        type="button"
+                      >
+                        {t('visualizations.remove')}
+                      </button>
+                    )}
+                  </div>
+                  {card.card_type === 'chart' && card.chart_revision_id ? (
+                    <ChartView base={base} revisionId={card.chart_revision_id} />
+                  ) : ['record_kpi', 'record_chart', 'record_list'].includes(card.card_type) ? (
+                    <RecordCardView
+                      base={base}
+                      card={card}
+                      globalSearch={dashboardQuery}
+                      refreshKey={recordRefreshKey}
+                    />
+                  ) : card.card_type === 'kpi' ? (
+                    <p className="mt-4 text-4xl font-semibold text-sky-300">
+                      {metricValue(card) ?? '—'}
+                    </p>
+                  ) : card.card_type === 'specification_status' ? (
+                    <p className="mt-4 text-4xl font-semibold text-rose-300">
+                      {metrics?.failed_evaluations ?? 0}
+                    </p>
+                  ) : card.card_type === 'recent_dataset' ? (
+                    <ul className="mt-3 text-sm">
+                      {metrics?.recent_datasets.map((item) => (
+                        <li key={item.id}>
+                          {item.name} · {item.status}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-4 text-4xl font-semibold">{metrics?.overdue_tasks ?? 0}</p>
+                  )}
+                  {allowed(user, 'dashboard.manage') && (
+                    <button
+                      aria-label={t('visualizations.resizeCard', {
+                        title: card.config.title ?? 'card',
+                      })}
+                      className="absolute bottom-1 right-1 cursor-nwse-resize px-1 text-slate-700 hover:text-sky-300"
+                      onPointerDown={(event) => beginLayoutChange(event, card, 'resize')}
+                      title={t('visualizations.dragResize')}
+                      type="button"
+                    >
+                      ◢
+                    </button>
+                  )}
+                </article>
+              ))}
+              {allowed(user, 'dashboard.manage') && (
+                <button
+                  className="col-span-12 flex min-h-24 items-center justify-center gap-2 rounded-2xl border border-dashed border-slate-700 bg-slate-950/20 text-sm font-medium text-slate-500 transition hover:border-sky-500/50 hover:bg-sky-500/5 hover:text-sky-300"
+                  onClick={openElementPicker}
+                  type="button"
+                >
+                  <span aria-hidden="true" className="text-lg">
+                    ＋
+                  </span>
+                  {t('visualizations.addElement')}
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="mt-5 grid min-h-[32rem] place-items-center rounded-3xl border border-dashed border-slate-700 bg-[radial-gradient(circle_at_1px_1px,rgb(51_65_85_/_0.38)_1px,transparent_0)] bg-[size:24px_24px] p-6 text-center">
+              <div className="max-w-lg rounded-3xl border border-slate-800 bg-slate-950/75 p-8 shadow-2xl shadow-slate-950/30 backdrop-blur">
+                <span className="mx-auto grid size-14 place-items-center rounded-2xl border border-sky-500/25 bg-sky-500/10 text-2xl text-sky-300">
+                  ＋
+                </span>
+                <h3 className="mt-5 text-2xl font-semibold">
+                  {dashboard
+                    ? t('visualizations.emptyCanvasTitle')
+                    : t('visualizations.noDashboardTitle')}
+                </h3>
+                <p className="mt-2 text-sm leading-6 text-slate-500">
+                  {dashboard
+                    ? t('visualizations.emptyCanvasBody')
+                    : t('visualizations.noDashboardBody')}
+                </p>
+                {allowed(user, 'dashboard.manage') && (
+                  <Button
+                    className="mt-6"
+                    onClick={() => (dashboard ? openElementPicker() : setShowNewDashboard(true))}
+                  >
+                    {dashboard
+                      ? t('visualizations.addFirstElement')
+                      : t('visualizations.createCanvas')}
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+        </section>
+      </div>
+      {showElementLibrary && dashboard && allowed(user, 'dashboard.manage') && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/75 p-0 backdrop-blur-sm sm:items-center sm:p-6"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setShowElementLibrary(false);
+          }}
+        >
+          <section
+            aria-labelledby="visualization-element-picker-title"
+            aria-modal="true"
+            className="flex max-h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-t-3xl border border-slate-700 bg-slate-950 shadow-2xl shadow-black/50 sm:rounded-3xl"
+            role="dialog"
+          >
+            <header className="flex items-start justify-between gap-4 border-b border-slate-800 px-5 py-4 sm:px-7">
+              <div>
+                <p className="font-mono text-xs uppercase tracking-[0.18em] text-sky-400">
+                  {t('visualizations.pickerStep', { current: elementPickerStep })}
+                </p>
+                <h2 className="mt-1 text-2xl font-semibold" id="visualization-element-picker-title">
+                  {t('visualizations.elementPicker')}
+                </h2>
+              </div>
+              <button
+                aria-label={t('visualizations.closePicker')}
+                className="grid size-10 place-items-center rounded-xl border border-slate-800 text-xl text-slate-400 transition hover:border-sky-500/50 hover:bg-sky-500/10 hover:text-sky-200"
+                onClick={() => setShowElementLibrary(false)}
+                type="button"
+              >
+                ×
+              </button>
+            </header>
+
+            <div className="grid min-h-0 flex-1 md:grid-cols-[13rem_1fr]">
+              <nav
+                aria-label={t('visualizations.elementPicker')}
+                className="border-b border-slate-800 bg-slate-900/45 p-4 md:border-b-0 md:border-r"
+              >
+                <ol className="grid grid-cols-3 gap-2 md:grid-cols-1 md:gap-1">
+                  {[
+                    [1, t('visualizations.chooseElement')],
+                    [2, t('visualizations.chooseSize')],
+                    [3, t('visualizations.configureElement')],
+                  ].map(([step, label]) => (
+                    <li key={String(step)}>
+                      <button
+                        className={`flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-xs transition md:text-sm ${elementPickerStep === step ? 'bg-sky-500/12 font-medium text-sky-200' : Number(step) < elementPickerStep ? 'text-emerald-300 hover:bg-slate-800' : 'text-slate-600'}`}
+                        disabled={
+                          Number(step) > elementPickerStep || (Number(step) > 1 && !elementKind)
+                        }
+                        onClick={() => setElementPickerStep(Number(step) as 1 | 2 | 3)}
+                        type="button"
+                      >
+                        <span
+                          className={`grid size-6 shrink-0 place-items-center rounded-full border text-[11px] ${Number(step) < elementPickerStep ? 'border-emerald-500/30 bg-emerald-500/10' : elementPickerStep === step ? 'border-sky-400/40 bg-sky-500/10' : 'border-slate-700'}`}
+                        >
+                          {Number(step) < elementPickerStep ? '✓' : step}
+                        </span>
+                        <span className="hidden md:block">{label}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ol>
+                {selectedElement && (
+                  <div className="mt-5 hidden rounded-2xl border border-slate-800 bg-slate-950/40 p-3 md:block">
+                    <span
+                      className={`grid size-10 place-items-center rounded-xl border ${selectedElement.accent}`}
+                    >
+                      <VisualizationElementIcon kind={selectedElement.kind} />
+                    </span>
+                    <p className="mt-3 text-sm font-medium text-slate-200">
+                      {selectedElement.name}
+                    </p>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">{selectedElement.body}</p>
+                  </div>
+                )}
+              </nav>
+
+              <div className="min-h-0 overflow-y-auto p-5 sm:p-7">
+                {elementPickerStep === 1 && (
+                  <div>
+                    <h3 className="text-2xl font-semibold">{t('visualizations.chooseElement')}</h3>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {t('visualizations.chooseElementBody')}
+                    </p>
+                    <div className="mt-5 space-y-5">
+                      {(
+                        [
+                          ['project', t('visualizations.groupProject')],
+                          ['charts', t('visualizations.groupCharts')],
+                          ['records', t('visualizations.groupRecords')],
+                        ] as const
+                      ).map(([group, label]) => (
+                        <section key={group}>
+                          <h4 className="text-xs font-semibold uppercase tracking-[0.15em] text-slate-500">
+                            {label}
+                          </h4>
+                          <div className="mt-2 grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
+                            {elementOptions
+                              .filter((option) => option.group === group)
+                              .map((option, index) => (
+                                <button
+                                  autoFocus={group === 'project' && index === 0}
+                                  className="group flex min-h-24 items-start gap-3 rounded-xl border border-slate-800 bg-slate-900/45 p-3 text-left transition enabled:hover:-translate-y-0.5 enabled:hover:border-sky-500/50 enabled:hover:bg-sky-500/5 disabled:cursor-not-allowed disabled:opacity-35"
+                                  disabled={option.disabled}
+                                  key={option.kind}
+                                  onClick={() => chooseElement(option.kind)}
+                                  type="button"
+                                >
+                                  <span
+                                    className={`grid size-9 shrink-0 place-items-center rounded-lg border [&_svg]:size-5 ${option.accent}`}
+                                  >
+                                    <VisualizationElementIcon kind={option.kind} />
+                                  </span>
+                                  <span className="min-w-0">
+                                    <span className="block text-sm font-semibold leading-5 text-slate-200 group-enabled:group-hover:text-sky-200">
+                                      {option.name}
+                                    </span>
+                                    <span className="mt-0.5 line-clamp-2 block text-[11px] leading-4 text-slate-500">
+                                      {option.body}
+                                    </span>
+                                  </span>
+                                </button>
+                              ))}
+                          </div>
+                        </section>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {elementPickerStep === 2 && selectedElement && (
+                  <div>
+                    <h3 className="text-2xl font-semibold">{t('visualizations.chooseSize')}</h3>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {t('visualizations.chooseSizeBody')}
+                    </p>
+                    <div className="mt-7 grid gap-4 lg:grid-cols-3">
+                      {(
+                        [
+                          [
+                            'compact',
+                            t('visualizations.sizeCompact'),
+                            t('visualizations.sizeCompactBody'),
+                          ],
+                          ['wide', t('visualizations.sizeWide'), t('visualizations.sizeWideBody')],
+                          ['full', t('visualizations.sizeFull'), t('visualizations.sizeFullBody')],
+                        ] as const
+                      ).map(([size, label, body]) => (
+                        <button
+                          className={`rounded-2xl border p-4 text-left transition ${elementSize === size ? 'border-sky-400 bg-sky-500/10 ring-2 ring-sky-500/15' : 'border-slate-800 bg-slate-900/45 hover:border-slate-600'}`}
+                          key={size}
+                          onClick={() => setElementSize(size)}
+                          type="button"
+                        >
+                          <span className="grid h-36 place-items-center rounded-xl border border-slate-800 bg-[radial-gradient(circle_at_1px_1px,rgb(71_85_105_/_0.4)_1px,transparent_0)] bg-[size:16px_16px] p-3">
+                            <span
+                              className={`grid h-20 place-items-center rounded-xl border ${selectedElement.accent}`}
+                              style={{
+                                width: `${(visualizationElementSizes[size].width / 12) * 100}%`,
+                              }}
+                            >
+                              <VisualizationElementIcon kind={selectedElement.kind} />
+                            </span>
+                          </span>
+                          <span className="mt-4 flex items-center justify-between gap-3">
+                            <span>
+                              <span className="block font-semibold text-slate-200">{label}</span>
+                              <span className="mt-1 block text-xs text-slate-500">{body}</span>
+                            </span>
+                            <span
+                              className={`grid size-5 place-items-center rounded-full border ${elementSize === size ? 'border-sky-400 bg-sky-400 text-slate-950' : 'border-slate-600'}`}
+                            >
+                              {elementSize === size ? '✓' : ''}
+                            </span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                    <div className="mt-8 flex items-center justify-between">
+                      <button
+                        className="px-3 py-2 text-sm text-slate-400 hover:text-slate-200"
+                        onClick={() => setElementPickerStep(1)}
+                        type="button"
+                      >
+                        ← {t('visualizations.backStep')}
+                      </button>
+                      <Button onClick={() => setElementPickerStep(3)}>
+                        {t('visualizations.continueStep')} →
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {elementPickerStep === 3 && selectedElement && (
+                  <form key={selectedElement.kind} onSubmit={(event) => void insertElement(event)}>
+                    <div className="flex items-start gap-4">
+                      <span
+                        className={`grid size-12 shrink-0 place-items-center rounded-xl border ${selectedElement.accent}`}
+                      >
+                        <VisualizationElementIcon kind={selectedElement.kind} />
+                      </span>
+                      <div>
+                        <h3 className="text-2xl font-semibold">
+                          {t('visualizations.configureElement')}
+                        </h3>
+                        <p className="mt-1 text-sm text-slate-500">
+                          {t('visualizations.configureElementBody')}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="mt-7 grid gap-5 rounded-2xl border border-slate-800 bg-slate-900/35 p-5 md:grid-cols-2">
+                      <label className="text-sm text-slate-400 md:col-span-2">
+                        {t('visualizations.elementTitle')}
+                        <input
+                          autoFocus
+                          className={inputClass}
+                          defaultValue={selectedElement.name}
+                          name="title"
+                          required
+                        />
+                      </label>
+                      {elementKind === 'metric' && (
+                        <label className="text-sm text-slate-400 md:col-span-2">
+                          {t('visualizations.elementMetric')}
+                          <select className={inputClass} name="metric">
+                            <option value="total_samples">
+                              {t('visualizations.metricSamples')}
+                            </option>
+                            <option value="pass_rate">{t('visualizations.metricPassRate')}</option>
+                            <option value="dataset_count">
+                              {t('visualizations.metricDatasets')}
+                            </option>
+                          </select>
+                        </label>
+                      )}
+                      {elementKind === 'saved_chart' && (
+                        <label className="text-sm text-slate-400 md:col-span-2">
+                          {t('visualizations.elementSavedChartName')}
+                          <select className={inputClass} name="chartId" required>
+                            <option value="">{t('visualizations.chooseSavedChart')}</option>
+                            {charts
+                              .filter((chart) => !chart.archived_at)
+                              .map((chart) => (
+                                <option key={chart.id} value={chart.id}>
+                                  {chart.name}
+                                </option>
+                              ))}
+                          </select>
+                        </label>
+                      )}
+                      {elementKind === 'xy_chart' && (
+                        <>
+                          <label className="text-sm text-slate-400">
+                            {t('visualizations.xyHeading')}
+                            <select className={inputClass} name="chartType">
+                              <option value="line">{t('visualizations.line')}</option>
+                              <option value="scatter">{t('visualizations.scatter')}</option>
+                            </select>
+                          </label>
+                          <fieldset className="text-sm text-slate-400">
+                            <legend>{t('common.filesDatasets')}</legend>
+                            <div className="mt-2 max-h-36 space-y-2 overflow-auto rounded-xl border border-slate-800 p-3">
+                              {xy.map((dataset) => (
+                                <label className="block text-sm text-slate-300" key={dataset.id}>
+                                  <input
+                                    className="mr-2"
+                                    name="datasets"
+                                    type="checkbox"
+                                    value={dataset.id}
+                                  />
+                                  {dataset.name}
+                                </label>
+                              ))}
+                            </div>
+                          </fieldset>
+                        </>
+                      )}
+                      {elementKind === 'statistical_chart' && (
+                        <>
+                          <label className="text-sm text-slate-400">
+                            {t('visualizations.statisticalHeading')}
+                            <select className={inputClass} name="chartType">
+                              <option value="histogram">{t('visualizations.histogram')}</option>
+                              <option value="box_plot">{t('visualizations.boxPlot')}</option>
+                            </select>
+                          </label>
+                          <label className="text-sm text-slate-400">
+                            {t('common.filesDatasets')}
+                            <select className={inputClass} name="datasetId" required>
+                              <option value="">{t('visualizations.selectNumeric')}</option>
+                              {statisticalDatasets.map((dataset) => (
+                                <option key={dataset.id} value={dataset.id}>
+                                  {dataset.name}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </>
+                      )}
+                      {elementKind?.startsWith('record_') && (
+                        <>
+                          <label className="text-sm text-slate-400">
+                            {t('visualizations.selectTable')}
+                            <select
+                              className={inputClass}
+                              value={recordSourceId}
+                              onChange={(event) => setRecordSourceId(event.target.value)}
+                              required
+                            >
+                              {recordTables.map((table) => (
+                                <option key={table.id} value={table.id}>
+                                  {table.pluralName}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="text-sm text-slate-400">
+                            {t('visualizations.allRecords')}
+                            <select
+                              className={inputClass}
+                              value={recordViewId}
+                              onChange={(event) => {
+                                const viewId = event.target.value;
+                                const view = recordViews.find((item) => item.id === viewId);
+                                setRecordViewId(viewId);
+                                if (view) {
+                                  const visible = view.config.visibleFieldIds.filter((fieldId) =>
+                                    recordFields.some((field) => field.id === fieldId),
+                                  );
+                                  if (visible.length) setRecordListFieldIds(visible.slice(0, 6));
+                                }
+                              }}
+                            >
+                              <option value="">{t('visualizations.allRecords')}</option>
+                              {recordViews.map((view) => (
+                                <option key={view.id} value={view.id}>
+                                  {view.name} · {view.viewType}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </>
+                      )}
+                      {elementKind === 'record_chart' && (
+                        <>
+                          <label className="text-sm text-slate-400">
+                            {t('visualizations.groupedChart')}
+                            <select
+                              className={inputClass}
+                              value={recordChartType}
+                              onChange={(event) =>
+                                setRecordChartType(event.target.value as 'bar' | 'donut')
+                              }
+                            >
+                              <option value="bar">{t('visualizations.barChart')}</option>
+                              <option value="donut">{t('visualizations.donutChart')}</option>
+                            </select>
+                          </label>
+                          <label className="text-sm text-slate-400">
+                            {t('visualizations.groupBy')}
+                            <select
+                              className={inputClass}
+                              value={recordGroupFieldId}
+                              onChange={(event) => setRecordGroupFieldId(event.target.value)}
+                              required
+                            >
+                              <option value="">{t('visualizations.groupBy')}</option>
+                              {recordGroupFields.map((field) => (
+                                <option key={field.id} value={field.id}>
+                                  {field.name}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </>
+                      )}
+                      {elementKind === 'record_list' && (
+                        <fieldset className="md:col-span-2">
+                          <legend className="text-sm text-slate-400">
+                            {t('visualizations.visibleColumns')}
+                          </legend>
+                          <div className="mt-2 flex max-h-36 flex-wrap gap-3 overflow-auto rounded-xl border border-slate-800 p-3">
+                            {recordFields.map((field) => {
+                              const checked = recordListFieldIds.includes(field.id);
+                              return (
+                                <label className="text-sm text-slate-300" key={field.id}>
+                                  <input
+                                    checked={checked}
+                                    className="mr-2"
+                                    disabled={!checked && recordListFieldIds.length >= 6}
+                                    onChange={() =>
+                                      setRecordListFieldIds((current) =>
+                                        current.includes(field.id)
+                                          ? current.filter((fieldId) => fieldId !== field.id)
+                                          : [...current, field.id].slice(0, 6),
+                                      )
+                                    }
+                                    type="checkbox"
+                                  />
+                                  {field.name}
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </fieldset>
+                      )}
+                    </div>
+                    <div className="mt-7 flex items-center justify-between gap-4">
+                      <button
+                        className="px-3 py-2 text-sm text-slate-400 hover:text-slate-200"
+                        onClick={() => setElementPickerStep(2)}
+                        type="button"
+                      >
+                        ← {t('visualizations.backStep')}
+                      </button>
+                      <Button disabled={busy} type="submit">
+                        {busy ? t('common.loading') : t('visualizations.insertElement')}
+                      </Button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
       <ContextMenu menu={contextMenu} onClose={() => setContextMenu(undefined)} />
     </>
   );

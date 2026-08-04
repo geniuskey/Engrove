@@ -88,6 +88,50 @@ describe('App', () => {
       if (url.endsWith('/projects/p1234567890abcd/demo')) {
         return json({ installed: true });
       }
+      if (url.includes('/projects/') && url.endsWith('/dashboard-metrics')) {
+        return json({
+          total_samples: 128,
+          dataset_count: 3,
+          failed_evaluations: 2,
+          pass_rate: '96.4',
+          overdue_tasks: 1,
+          recent_datasets: [
+            {
+              id: 'dataset-1',
+              name: 'Force sweep · revision 4',
+              status: 'ready',
+              row_count: 240,
+              created_at: '2026-08-01T12:00:00.000Z',
+            },
+          ],
+        });
+      }
+      if (url.includes('/projects/') && url.endsWith('/tasks?includeArchived=true')) {
+        return json({
+          items: [
+            { id: 'task-1', status: 'done', archived_at: null },
+            { id: 'task-2', status: 'blocked', archived_at: null },
+            { id: 'task-3', status: 'in_progress', archived_at: null },
+          ],
+        });
+      }
+      if (url.includes('/projects/') && url.endsWith('/files?includeArchived=true')) {
+        return json({ items: [{ archived_at: null }, { archived_at: null }] });
+      }
+      if (url.includes('/projects/') && url.endsWith('/datasets?includeArchived=true')) {
+        return json({
+          items: [{ id: 'dataset-1', name: 'Force sweep', status: 'ready', archived_at: null }],
+        });
+      }
+      if (url.includes('/projects/') && url.endsWith('/charts?includeArchived=true')) {
+        return json({ items: [{ archived_at: null }] });
+      }
+      if (url.includes('/projects/') && url.endsWith('/dashboards?includeArchived=true')) {
+        return json({ items: [{ archived_at: null }] });
+      }
+      if (url.includes('/projects/') && url.endsWith('/object-types')) {
+        return json({ items: [{ id: 'type-1' }, { id: 'type-2' }] });
+      }
       throw new Error(`Unexpected fetch ${url}`);
     });
 
@@ -114,6 +158,17 @@ describe('App', () => {
     expect(projectNav).toHaveTextContent('Visualizations');
     expect(projectNav).toHaveTextContent('Tasks');
     expect(screen.getByRole('link', { name: 'Overview' })).toHaveAttribute('aria-current', 'page');
+    expect(await screen.findByText('Project command center · ALPHA')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Open data/ })).toHaveAttribute(
+      'href',
+      '/workspaces/workspace-id/projects/project-id/data',
+    );
+    expect(await screen.findByText('Force sweep · revision 4')).toBeInTheDocument();
+    const dashboardLinks = screen.getByRole('navigation', { name: 'Project quick links' });
+    expect(
+      within(dashboardLinks).getByRole('link', { name: /Engineering records/ }),
+    ).toHaveTextContent('2 tables · 128 samples');
+    expect(screen.getByText('1 of 3 completed')).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByRole('link', { name: 'Overview' })).toHaveAttribute(
         'href',
@@ -161,6 +216,8 @@ describe('App', () => {
     });
     expect(await screen.findByRole('link', { name: '데이터' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '프로젝트' })).toBeInTheDocument();
+    expect(screen.getByText('프로젝트 운영 현황 · ALPHA')).toBeInTheDocument();
+    expect(screen.getByText('작업 이어가기')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '명령 팔레트 열기' }));
     expect(screen.getByRole('dialog', { name: '명령 팔레트' })).toBeInTheDocument();
     expect(screen.getByRole('searchbox', { name: '명령 검색' })).toBeInTheDocument();

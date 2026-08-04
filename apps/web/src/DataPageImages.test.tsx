@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ImageGridCell } from './DataPageImages.js';
+import { I18nProvider } from './i18n.js';
 
 function json(value: unknown): Response {
   return new Response(JSON.stringify(value), {
@@ -12,6 +13,7 @@ function json(value: unknown): Response {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  window.localStorage.clear();
 });
 
 describe('ImageGridCell', () => {
@@ -58,7 +60,7 @@ describe('ImageGridCell', () => {
         onSave={onSave}
       />,
     );
-    fireEvent.change(screen.getByLabelText('Sample A의 Inspection photo 이미지 파일 선택'), {
+    fireEvent.change(screen.getByLabelText('Choose an image file for Sample A Inspection photo'), {
       target: { files: [file] },
     });
 
@@ -106,9 +108,28 @@ describe('ImageGridCell', () => {
       'src',
       'https://images.example.test/inspection.png',
     );
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Sample A의 Inspection photo 이미지 제거' }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: 'Sample A Inspection photo Remove image' }));
     await waitFor(() => expect(onSave).toHaveBeenCalledWith([]));
+  });
+
+  it('renders image actions in Korean', () => {
+    window.localStorage.setItem('engrove-locale', 'ko');
+    render(
+      <I18nProvider>
+        <ImageGridCell
+          base="/workspaces/workspace-1/projects/project-1"
+          editable
+          label="검사 사진"
+          recordName="샘플 A"
+          value={[]}
+          onSave={async () => undefined}
+        />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByText('이미지 없음')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: '샘플 A 검사 사진 이미지 첨부' }),
+    ).toBeInTheDocument();
   });
 });

@@ -45,7 +45,18 @@ const VisualizationsPage = lazy(() =>
 
 function PageLoader({ children, label }: PropsWithChildren<{ label: string }>) {
   return (
-    <Suspense fallback={<p className="text-slate-400">Loading {label}…</p>}>{children}</Suspense>
+    <Suspense
+      fallback={
+        <div aria-label={`Loading ${label}`} aria-live="polite" className="space-y-3 py-2">
+          <div className="h-8 w-48 animate-pulse rounded-lg bg-slate-800/80" />
+          <div className="h-11 animate-pulse rounded-xl bg-slate-900/70" />
+          <div className="h-64 animate-pulse rounded-2xl border border-slate-800 bg-slate-900/40" />
+          <span className="sr-only">Loading {label}…</span>
+        </div>
+      }
+    >
+      {children}
+    </Suspense>
   );
 }
 
@@ -81,6 +92,40 @@ interface Project {
   archivedAt: string | null;
 }
 
+interface ProjectOverviewMetrics {
+  total_samples: number;
+  dataset_count: number;
+  failed_evaluations: number;
+  pass_rate: string | null;
+  overdue_tasks: number;
+  recent_datasets: ProjectOverviewDataset[];
+}
+
+interface ProjectOverviewTask {
+  id: string;
+  status: 'todo' | 'in_progress' | 'blocked' | 'done';
+  archived_at: string | null;
+}
+
+interface ProjectOverviewDataset {
+  id: string;
+  name: string;
+  status: string;
+  row_count?: number;
+  created_at?: string;
+  archived_at?: string | null;
+}
+
+interface ProjectOverview {
+  metrics: ProjectOverviewMetrics | undefined;
+  tasks: ProjectOverviewTask[];
+  files: Array<{ archived_at: string | null }>;
+  datasets: ProjectOverviewDataset[];
+  charts: Array<{ archived_at: string | null }>;
+  dashboards: Array<{ archived_at: string | null }>;
+  objectTypes: Array<{ id: string }>;
+}
+
 interface Member {
   userId: string;
   email: string;
@@ -108,25 +153,21 @@ const memberGroupColors: Array<{ value: MemberGroupColor; label: string; hex: st
   { value: 'violet', label: 'Violet', hex: '#a78bfa' },
 ];
 const memberRoles: Role[] = ['owner', 'admin', 'engineer', 'contributor', 'viewer'];
-const projectLinkClass =
-  'rounded-xl border border-slate-700/70 bg-slate-950/35 p-4 text-sm font-medium text-slate-200 hover:border-sky-500/50 hover:bg-sky-500/10 hover:text-sky-200';
 const formLabelClass = 'text-sm text-slate-300';
 const blockFormLabelClass = `block ${formLabelClass}`;
-const projectLinkHintClass = 'mt-1 block text-xs font-normal text-slate-500';
 const sectionEyebrowClass = 'font-mono text-xs uppercase tracking-widest text-sky-400';
 const pageTitleClass = 'mt-2 text-4xl font-semibold tracking-tight sm:text-5xl';
-const projectLinkArrowClass = 'float-right text-sky-400';
 
 function memberGroupColor(color: MemberGroupColor): string {
   return memberGroupColors.find((candidate) => candidate.value === color)?.hex ?? '#38bdf8';
 }
 
 const onboardingSteps = [
-  { key: 'create-project', label: 'Create a workspace and project' },
-  { key: 'install-template', label: 'Install the Test & Characterization template' },
-  { key: 'load-demo', label: 'Load the traceable demo dataset' },
-  { key: 'trace-results', label: 'Open its chart and trace it to the raw CSV' },
-  { key: 'create-task', label: 'Create or complete a follow-up task' },
+  { key: 'create-project', translationKey: 'onboarding.createProject' },
+  { key: 'install-template', translationKey: 'onboarding.installTemplate' },
+  { key: 'load-demo', translationKey: 'onboarding.loadDemo' },
+  { key: 'trace-results', translationKey: 'onboarding.traceResults' },
+  { key: 'create-task', translationKey: 'onboarding.createTask' },
 ] as const;
 type OnboardingStep = (typeof onboardingSteps)[number]['key'];
 
@@ -175,16 +216,30 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 function useAsyncList<T>(load: () => Promise<{ items: T[] }>, dependencies: unknown[]) {
   const [items, setItems] = useState<T[]>([]);
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const requestId = useRef(0);
   const refresh = useCallback(async () => {
+    const currentRequestId = ++requestId.current;
+    setLoading(true);
     try {
-      setItems((await load()).items);
+      const result = await load();
+      if (currentRequestId !== requestId.current) return;
+      setItems(result.items);
       setError('');
     } catch (cause) {
+      if (currentRequestId !== requestId.current) return;
       setError(cause instanceof Error ? cause.message : 'Request failed.');
+    } finally {
+      if (currentRequestId === requestId.current) setLoading(false);
     }
   }, dependencies);
-  useEffect(() => void refresh(), [refresh]);
-  return { items, error, refresh };
+  useEffect(() => {
+    void refresh();
+    return () => {
+      requestId.current += 1;
+    };
+  }, [refresh]);
+  return { items, error, loading, refresh };
 }
 
 export function ApiStatus() {
@@ -236,6 +291,9 @@ export function ApiStatus() {
 
 function AuthCard({ title, children }: PropsWithChildren<{ title: string }>) {
   const { t } = useI18n();
+  useEffect(() => {
+    document.title = `${title} · Engrove`;
+  }, [title]);
   const strengths = [
     ['01', t('auth.evidenceTitle'), t('auth.evidenceBody')],
     ['02', t('auth.unitsTitle'), t('auth.unitsBody')],
@@ -350,14 +408,14 @@ function SetupPage() {
       });
       navigate('/sign-in', { replace: true });
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : 'Setup failed.');
+      setMessage(cause instanceof Error ? cause.message : t('auth.setupFailed'));
     }
   }
   return (
     <AuthCard title={t('auth.setup')}>
       <form className="space-y-4" onSubmit={(event) => void submit(event)}>
         <label className={blockFormLabelClass}>
-          Setup token
+          {t('auth.setupToken')}
           <input
             className={inputClass}
             required
@@ -365,12 +423,12 @@ function SetupPage() {
             defaultValue={search.get('token') ?? ''}
           />
         </label>
-        <Field label="Email" name="email" type="email" />
-        <Field label="Display name" name="displayName" />
-        <Field label="Password (12+ characters)" name="password" type="password" />
+        <Field label={t('auth.email')} name="email" type="email" />
+        <Field label={t('auth.displayName')} name="displayName" />
+        <Field label={t('auth.passwordRequirements')} name="password" type="password" />
         {message && <p className="text-sm text-rose-300">{message}</p>}
         <Button className="w-full" type="submit">
-          Complete setup
+          {t('auth.completeSetup')}
         </Button>
       </form>
     </AuthCard>
@@ -400,7 +458,7 @@ function SignInPage({ onSignedIn }: { onSignedIn: (user: User) => void }) {
       onSignedIn(result.user);
       navigate('/workspaces', { replace: true });
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : 'Sign in failed.');
+      setMessage(cause instanceof Error ? cause.message : t('auth.signInFailed'));
     } finally {
       setSubmitting(false);
     }
@@ -413,7 +471,7 @@ function SignInPage({ onSignedIn }: { onSignedIn: (user: User) => void }) {
             className="block rounded-lg border border-sky-500 px-4 py-2 text-center text-sky-300"
             href={`${apiBase}/api/v1/auth/oidc/start`}
           >
-            Sign in with OpenID Connect
+            {t('auth.oidc')}
           </a>
         )}
         <Field autoComplete="email" label={t('auth.email')} name="email" type="email" />
@@ -451,14 +509,14 @@ function TokenPasswordPage({ invitation }: { invitation: boolean }) {
       });
       navigate('/sign-in', { replace: true });
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : 'The token could not be used.');
+      setMessage(cause instanceof Error ? cause.message : t('auth.tokenFailed'));
     }
   }
   return (
     <AuthCard title={invitation ? t('auth.acceptInvitation') : t('auth.resetPassword')}>
       <form className="space-y-4" onSubmit={(event) => void submit(event)}>
         <label className={blockFormLabelClass}>
-          Token
+          {t('auth.token')}
           <input
             className={inputClass}
             required
@@ -466,11 +524,11 @@ function TokenPasswordPage({ invitation }: { invitation: boolean }) {
             defaultValue={search.get('token') ?? ''}
           />
         </label>
-        {invitation && <Field label="Display name" name="displayName" />}
-        <Field label="New password (12+ characters)" name="password" type="password" />
+        {invitation && <Field label={t('auth.displayName')} name="displayName" />}
+        <Field label={t('auth.newPasswordRequirements')} name="password" type="password" />
         {message && <p className="text-sm text-rose-300">{message}</p>}
         <Button className="w-full" type="submit">
-          {invitation ? 'Create account' : 'Reset password'}
+          {invitation ? t('auth.createAccount') : t('auth.resetPassword')}
         </Button>
       </form>
     </AuthCard>
@@ -527,19 +585,42 @@ export function ErrorText({ children }: PropsWithChildren) {
   return <NoticeText tone="error">{children}</NoticeText>;
 }
 
+function NotFoundPage() {
+  const { locale } = useI18n();
+  const korean = locale === 'ko';
+  return (
+    <section className="mx-auto max-w-2xl py-16 text-center sm:py-24">
+      <p className={sectionEyebrowClass}>404</p>
+      <h1 className="mt-4 text-3xl font-semibold tracking-tight sm:text-4xl">
+        {korean ? '페이지를 찾을 수 없습니다.' : 'Page not found.'}
+      </h1>
+      <p className="mt-3 text-sm text-slate-500">
+        {korean ? '주소를 확인하거나 다시 시작하세요.' : 'Check the address or start again.'}
+      </p>
+      <Button asChild className="mt-7">
+        <Link to="/workspaces">{korean ? '워크스페이스로 이동' : 'Go to workspaces'}</Link>
+      </Button>
+    </section>
+  );
+}
+
 function WorkspacesPage({ user }: { user: User }) {
   const { locale, t } = useI18n();
-  const { items, error, refresh } = useAsyncList<Workspace>(() => api('/workspaces'), []);
+  const { items, error, loading, refresh } = useAsyncList<Workspace>(() => api('/workspaces'), []);
   const [formError, setFormError] = useState('');
+  const [creating, setCreating] = useState(false);
   const [editingWorkspaceId, setEditingWorkspaceId] = useState('');
   const [editError, setEditError] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
   const [showCreateWorkspace, setShowCreateWorkspace] = useState(false);
   const openWorkspaceLabel = locale === 'ko' ? '워크스페이스 열기' : 'Open workspace';
   const editingWorkspace = items.find((workspace) => workspace.id === editingWorkspaceId);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (creating) return;
     const form = event.currentTarget;
     const data = new FormData(form);
+    setCreating(true);
     try {
       await api('/workspaces', {
         method: 'POST',
@@ -554,13 +635,16 @@ function WorkspacesPage({ user }: { user: User }) {
       setShowCreateWorkspace(false);
       await refresh();
     } catch (cause) {
-      setFormError(cause instanceof Error ? cause.message : 'Workspace creation failed.');
+      setFormError(cause instanceof Error ? cause.message : t('workspaces.creationFailed'));
+    } finally {
+      setCreating(false);
     }
   }
   async function editWorkspace(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!editingWorkspace) return;
+    if (!editingWorkspace || savingEdit) return;
     const data = new FormData(event.currentTarget);
+    setSavingEdit(true);
     try {
       await api(`/workspaces/${editingWorkspace.publicId ?? editingWorkspace.id}`, {
         method: 'PATCH',
@@ -574,7 +658,9 @@ function WorkspacesPage({ user }: { user: User }) {
       setEditingWorkspaceId('');
       setEditError('');
     } catch (cause) {
-      setEditError(cause instanceof Error ? cause.message : 'Workspace update failed.');
+      setEditError(cause instanceof Error ? cause.message : t('workspaces.updateFailed'));
+    } finally {
+      setSavingEdit(false);
     }
   }
   return (
@@ -590,7 +676,7 @@ function WorkspacesPage({ user }: { user: User }) {
               <h1 className="text-4xl font-semibold tracking-[-0.035em] sm:text-5xl">
                 {t('common.workspaces')}
               </h1>
-              <HelpTip label="About workspaces">{t('workspaces.description')}</HelpTip>
+              <HelpTip label={t('workspaces.about')}>{t('workspaces.description')}</HelpTip>
             </div>
             <p className="mt-3 max-w-xl text-sm leading-relaxed text-slate-400">
               {t('workspaces.description')}
@@ -632,6 +718,19 @@ function WorkspacesPage({ user }: { user: User }) {
         </h2>
       </div>
       <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {loading &&
+          Array.from({ length: 3 }, (_, index) => (
+            <div
+              aria-hidden="true"
+              className="min-h-64 animate-pulse rounded-2xl border border-slate-800 bg-slate-900/55 p-6"
+              key={index}
+            >
+              <div className="size-11 rounded-xl bg-slate-800" />
+              <div className="mt-6 h-6 w-2/3 rounded bg-slate-800" />
+              <div className="mt-3 h-3 w-1/2 rounded bg-slate-800/80" />
+              <div className="mt-7 h-10 rounded bg-slate-800/60" />
+            </div>
+          ))}
         {items.map((workspace) => (
           <article
             className="workspace-card group relative rounded-2xl border border-slate-800/90 bg-slate-900/85 shadow-lg shadow-slate-950/10 hover:border-sky-500/55"
@@ -676,7 +775,7 @@ function WorkspacesPage({ user }: { user: User }) {
             )}
           </article>
         ))}
-        {allowed(user, 'workspace.manage') && !showCreateWorkspace && (
+        {!loading && allowed(user, 'workspace.manage') && !showCreateWorkspace && (
           <button
             aria-label={t('workspaces.create')}
             className="group min-h-56 rounded-2xl border border-dashed border-slate-700 bg-slate-900/30 p-6 text-left transition hover:border-sky-500/50 hover:bg-sky-500/5"
@@ -692,7 +791,7 @@ function WorkspacesPage({ user }: { user: User }) {
             </span>
           </button>
         )}
-        {items.length === 0 && !error && (
+        {!loading && items.length === 0 && !error && (
           <p className="rounded-2xl border border-dashed border-slate-700 p-8 text-slate-400">
             {t('workspaces.empty')}
           </p>
@@ -707,7 +806,7 @@ function WorkspacesPage({ user }: { user: User }) {
           <div className="flex items-center justify-between gap-4">
             <h2 className="text-lg font-semibold">{t('workspaces.edit')}</h2>
             <button
-              aria-label="Close workspace editor"
+              aria-label={t('workspaces.closeEditor')}
               className="rounded-md px-2 py-1 text-sm text-slate-500 hover:bg-slate-800 hover:text-slate-200"
               onClick={() => setEditingWorkspaceId('')}
               type="button"
@@ -733,7 +832,7 @@ function WorkspacesPage({ user }: { user: User }) {
                 name="key"
                 pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
                 required
-                title="Use lowercase letters, numbers, and single hyphens."
+                title={t('workspaces.slugHint')}
               />
             </label>
           </div>
@@ -746,13 +845,15 @@ function WorkspacesPage({ user }: { user: User }) {
             />
           </label>
           <div className="mt-5 flex items-center gap-3">
-            <Button type="submit">{t('workspaces.save')}</Button>
+            <Button disabled={savingEdit} type="submit">
+              {savingEdit ? t('common.working') : t('workspaces.save')}
+            </Button>
             <button
               className="rounded-lg px-3 py-2 text-sm text-slate-400 hover:bg-slate-800 hover:text-slate-200"
               onClick={() => setEditingWorkspaceId('')}
               type="button"
             >
-              Cancel
+              {t('common.cancel')}
             </button>
           </div>
           <ErrorText>{editError}</ErrorText>
@@ -766,10 +867,10 @@ function WorkspacesPage({ user }: { user: User }) {
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-2">
               <h2 className="text-xl font-semibold">{t('workspaces.create')}</h2>
-              <HelpTip label="Workspace address help">{t('workspaces.stableSlug')}</HelpTip>
+              <HelpTip label={t('workspaces.addressHelp')}>{t('workspaces.stableSlug')}</HelpTip>
             </div>
             <button
-              aria-label="Close workspace creator"
+              aria-label={t('workspaces.closeCreator')}
               className="grid size-8 place-items-center rounded-full text-lg text-slate-500 hover:bg-slate-800 hover:text-slate-200"
               onClick={() => setShowCreateWorkspace(false)}
               type="button"
@@ -780,7 +881,12 @@ function WorkspacesPage({ user }: { user: User }) {
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <label className={formLabelClass}>
               {t('workspaces.name')}
-              <input className={inputClass} name="name" placeholder="Materials R&D" required />
+              <input
+                className={inputClass}
+                name="name"
+                placeholder={t('workspaces.nameExample')}
+                required
+              />
             </label>
             <label className={formLabelClass}>
               {t('workspaces.key')}
@@ -788,9 +894,9 @@ function WorkspacesPage({ user }: { user: User }) {
                 className={inputClass}
                 name="slug"
                 pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
-                placeholder="materials-rd"
+                placeholder={t('workspaces.keyExample')}
                 required
-                title="Use lowercase letters, numbers, and single hyphens."
+                title={t('workspaces.slugHint')}
               />
             </label>
           </div>
@@ -802,8 +908,8 @@ function WorkspacesPage({ user }: { user: User }) {
               placeholder={t('workspaces.descriptionPlaceholder')}
             />
           </label>
-          <Button className="mt-5" type="submit">
-            {t('workspaces.create')}
+          <Button className="mt-5" disabled={creating} type="submit">
+            {creating ? t('common.working') : t('workspaces.create')}
           </Button>
           <ErrorText>{formError}</ErrorText>
         </form>
@@ -815,36 +921,65 @@ function WorkspacesPage({ user }: { user: User }) {
 function WorkspacePage({ user }: { user: User }) {
   const { t } = useI18n();
   const id = useParams().workspaceId!;
-  const { items, error, refresh } = useAsyncList<Project>(
+  const { items, error, loading, refresh } = useAsyncList<Project>(
     () => api(`/workspaces/${id}/projects`),
     [id],
   );
   const [formError, setFormError] = useState('');
+  const [showCreateProject, setShowCreateProject] = useState(false);
+  const [creating, setCreating] = useState(false);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (creating) return;
     const form = event.currentTarget;
     const data = new FormData(form);
+    setCreating(true);
     try {
       await api(`/workspaces/${id}/projects`, {
         method: 'POST',
         body: JSON.stringify({ name: data.get('name'), key: data.get('key'), description: '' }),
       });
       form.reset();
+      setShowCreateProject(false);
+      setFormError('');
       await refresh();
     } catch (cause) {
-      setFormError(cause instanceof Error ? cause.message : 'Project creation failed.');
+      setFormError(cause instanceof Error ? cause.message : t('projects.creationFailed'));
+    } finally {
+      setCreating(false);
     }
   }
+  const createProjectOpen = showCreateProject || (!loading && items.length === 0);
   return (
     <>
-      <div className="flex items-center gap-3">
-        <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
-          {t('projects.heading')}
-        </h1>
-        <HelpTip label="About projects">{t('projects.description')}</HelpTip>
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
+            {t('projects.heading')}
+          </h1>
+          <HelpTip label={t('projects.about')}>{t('projects.description')}</HelpTip>
+        </div>
+        {allowed(user, 'project.create') && !createProjectOpen && (
+          <Button onClick={() => setShowCreateProject(true)} type="button">
+            <span aria-hidden="true" className="mr-1 text-base leading-none">
+              +
+            </span>
+            {t('projects.create')}
+          </Button>
+        )}
       </div>
       <ErrorText>{error}</ErrorText>
       <div className="mt-8 divide-y divide-slate-800 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/50 shadow-xl shadow-slate-950/10">
+        {loading && (
+          <div aria-label={t('common.loading')} className="space-y-4 p-6">
+            {Array.from({ length: 3 }, (_, index) => (
+              <div className="animate-pulse" key={index}>
+                <div className="h-5 w-1/3 rounded bg-slate-800" />
+                <div className="mt-2 h-3 w-1/5 rounded bg-slate-800/70" />
+              </div>
+            ))}
+          </div>
+        )}
         {items.map((project) => (
           <Link
             className="group flex items-center justify-between gap-4 p-5 hover:bg-slate-800/60 sm:p-6"
@@ -866,16 +1001,28 @@ function WorkspacePage({ user }: { user: User }) {
             </span>
           </Link>
         ))}
-        {items.length === 0 && !error && (
+        {!loading && items.length === 0 && !error && (
           <p className="p-8 text-slate-400">{t('projects.empty')}</p>
         )}
       </div>
-      {allowed(user, 'project.create') && (
+      {allowed(user, 'project.create') && createProjectOpen && (
         <form
           className="mt-10 max-w-2xl rounded-2xl border border-slate-800 bg-slate-900/40 p-5 sm:p-6"
           onSubmit={(event) => void submit(event)}
         >
-          <h2 className="text-lg font-semibold">{t('projects.create')}</h2>
+          <div className="flex items-center justify-between gap-4">
+            <h2 className="text-lg font-semibold">{t('projects.create')}</h2>
+            {items.length > 0 && (
+              <button
+                aria-label={t('common.close')}
+                className="grid size-8 place-items-center rounded-lg text-lg text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+                onClick={() => setShowCreateProject(false)}
+                type="button"
+              >
+                ×
+              </button>
+            )}
+          </div>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <label className={formLabelClass}>
               {t('projects.name')}
@@ -891,8 +1038,8 @@ function WorkspacePage({ user }: { user: User }) {
               <input className={inputClass} name="key" placeholder="FORCE" required />
             </label>
           </div>
-          <Button className="mt-5" type="submit">
-            {t('projects.create')}
+          <Button className="mt-5" disabled={creating} type="submit">
+            {creating ? t('common.working') : t('projects.create')}
           </Button>
           <ErrorText>{formError}</ErrorText>
         </form>
@@ -902,6 +1049,7 @@ function WorkspacePage({ user }: { user: User }) {
 }
 
 function WorkspaceDataPage({ user }: { user: User }) {
+  const { t } = useI18n();
   const workspaceId = useParams().workspaceId!;
   const [context, setContext] = useState<WorkspaceDataContext>();
   const [error, setError] = useState<{ message: string; workspaceId: string }>();
@@ -938,10 +1086,10 @@ function WorkspaceDataPage({ user }: { user: User }) {
       if (currentRequestId !== requestId.current) return;
       setError({
         workspaceId,
-        message: cause instanceof Error ? cause.message : 'Workspace data could not be opened.',
+        message: cause instanceof Error ? cause.message : t('workspaces.dataOpenFailed'),
       });
     }
-  }, [workspaceId]);
+  }, [t, workspaceId]);
   useEffect(() => {
     void load();
     return () => {
@@ -954,20 +1102,20 @@ function WorkspaceDataPage({ user }: { user: User }) {
       <div className="mx-auto max-w-2xl py-12">
         <ErrorText>{error.message}</ErrorText>
         <Button className="mt-4" variant="quiet" onClick={() => void load()}>
-          Retry
+          {t('common.retry')}
         </Button>
       </div>
     );
   if (context?.workspaceId !== workspaceId)
     return (
-      <div aria-label="Opening workspace data" className="animate-pulse space-y-3 p-2">
+      <div aria-label={t('workspaces.openingData')} className="animate-pulse space-y-3 p-2">
         <div className="h-8 w-52 rounded-lg bg-slate-800/80" />
         <div className="h-10 rounded-xl bg-slate-900/70" />
         <div className="h-64 rounded-2xl border border-slate-800 bg-slate-900/35" />
       </div>
     );
   return (
-    <PageLoader label="workspace data">
+    <PageLoader label={t('data.workspaceData')}>
       <DataPage
         key={`${context.workspaceId}:${context.backingProjectId}`}
         user={user}
@@ -988,8 +1136,20 @@ function WorkspaceIndexPage() {
 }
 
 function ProjectPage({ user }: { user: User }) {
+  const { formatDate, formatNumber, t } = useI18n();
   const { workspaceId: wid, projectId: pid } = useParams();
   const [project, setProject] = useState<Project>();
+  const [overview, setOverview] = useState<ProjectOverview>({
+    metrics: undefined,
+    tasks: [],
+    files: [],
+    datasets: [],
+    charts: [],
+    dashboards: [],
+    objectTypes: [],
+  });
+  const [overviewLoading, setOverviewLoading] = useState(true);
+  const [overviewWarning, setOverviewWarning] = useState('');
   const [message, setMessage] = useState('');
   const [messageTone, setMessageTone] = useState<'info' | 'success' | 'error'>('info');
   const [demo, setDemo] = useState<{
@@ -1009,7 +1169,91 @@ function ProjectPage({ user }: { user: User }) {
       .then(setDemo)
       .catch(() => setDemo({ installed: false }));
   }, [wid, pid]);
-  if (!project) return <p>Loading project…</p>;
+  useEffect(() => {
+    let cancelled = false;
+    let partialFailure = false;
+    const base = `/workspaces/${wid}/projects/${pid}`;
+
+    async function safeItems<T>(path: string, enabled: boolean): Promise<T[]> {
+      if (!enabled) return [];
+      try {
+        return (await api<{ items: T[] }>(path)).items;
+      } catch {
+        partialFailure = true;
+        return [];
+      }
+    }
+
+    async function safeMetrics(): Promise<ProjectOverviewMetrics | undefined> {
+      if (!allowed(user, 'dataset.read')) return undefined;
+      try {
+        return await api<ProjectOverviewMetrics>(`${base}/dashboard-metrics`);
+      } catch {
+        partialFailure = true;
+        return undefined;
+      }
+    }
+
+    setOverviewLoading(true);
+    void Promise.all([
+      safeMetrics(),
+      safeItems<ProjectOverviewTask>(
+        `${base}/tasks?includeArchived=true`,
+        allowed(user, 'task.read'),
+      ),
+      safeItems<{ archived_at: string | null }>(
+        `${base}/files?includeArchived=true`,
+        allowed(user, 'file.read'),
+      ),
+      safeItems<ProjectOverviewDataset>(
+        `${base}/datasets?includeArchived=true`,
+        allowed(user, 'dataset.read'),
+      ),
+      safeItems<{ archived_at: string | null }>(
+        `${base}/charts?includeArchived=true`,
+        allowed(user, 'dataset.read'),
+      ),
+      safeItems<{ archived_at: string | null }>(
+        `${base}/dashboards?includeArchived=true`,
+        allowed(user, 'dataset.read'),
+      ),
+      safeItems<{ id: string }>(`${base}/object-types`, allowed(user, 'schema.read')),
+    ]).then(([metrics, tasks, files, datasets, charts, dashboards, objectTypes]) => {
+      if (cancelled) return;
+      setOverview({ metrics, tasks, files, datasets, charts, dashboards, objectTypes });
+      setOverviewWarning(partialFailure ? t('projects.overviewLoadPartial') : '');
+      setOverviewLoading(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [pid, t, user, wid]);
+  if (!project) return <p>{t('projects.loading')}</p>;
+
+  const activeTasks = overview.tasks.filter((task) => !task.archived_at);
+  const openTasks = activeTasks.filter((task) => task.status !== 'done');
+  const completedTasks = activeTasks.filter((task) => task.status === 'done');
+  const blockedTasks = activeTasks.filter((task) => task.status === 'blocked');
+  const taskProgress = activeTasks.length
+    ? Math.round((completedTasks.length / activeTasks.length) * 100)
+    : 0;
+  const activeFiles = overview.files.filter((file) => !file.archived_at);
+  const activeDatasets = overview.datasets.filter((dataset) => !dataset.archived_at);
+  const readyDatasets = activeDatasets.filter((dataset) => dataset.status === 'ready');
+  const activeCharts = overview.charts.filter((chart) => !chart.archived_at);
+  const activeDashboards = overview.dashboards.filter((dashboard) => !dashboard.archived_at);
+  const passRateValue = overview.metrics?.pass_rate
+    ? Number(overview.metrics.pass_rate)
+    : undefined;
+  const passRate = Number.isFinite(passRateValue) ? Math.min(100, Math.max(0, passRateValue!)) : 0;
+  const failedEvaluations = overview.metrics?.failed_evaluations ?? 0;
+  const overdueTasks = overview.metrics?.overdue_tasks ?? 0;
+  const recentDatasets = overview.metrics?.recent_datasets.length
+    ? overview.metrics.recent_datasets
+    : activeDatasets.slice(0, 4);
+  const needsAttention = failedEvaluations + overdueTasks + blockedTasks.length > 0;
+  const basePath = `/workspaces/${wid}/projects/${pid}`;
 
   async function archive(archived: boolean) {
     try {
@@ -1019,10 +1263,10 @@ function ProjectPage({ user }: { user: User }) {
       });
       await load();
       setMessageTone('success');
-      setMessage(archived ? 'Project archived.' : 'Project restored.');
+      setMessage(archived ? t('projects.archived') : t('projects.restored'));
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'Project update failed.');
+      setMessage(cause instanceof Error ? cause.message : t('projects.updateFailed'));
     }
   }
   async function update(event: FormEvent<HTMLFormElement>) {
@@ -1040,16 +1284,16 @@ function ProjectPage({ user }: { user: User }) {
       });
       setProject(updated);
       setMessageTone('success');
-      setMessage('Project settings saved.');
+      setMessage(t('projects.settingsSaved'));
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'Project update failed.');
+      setMessage(cause instanceof Error ? cause.message : t('projects.updateFailed'));
     }
   }
   async function installDemo() {
     setInstallingDemo(true);
     setMessageTone('info');
-    setMessage('Installing the template, immutable CSV, dataset, chart, and follow-up task…');
+    setMessage(t('projects.installing'));
     try {
       const result = await api<Record<string, unknown>>(
         `/workspaces/${wid}/projects/${pid}/demo/install`,
@@ -1072,10 +1316,10 @@ function ProjectPage({ user }: { user: User }) {
         }),
       });
       setMessageTone('success');
-      setMessage('Demo installed. Open Charts & dashboards to inspect exact provenance.');
+      setMessage(t('projects.installedMessage'));
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'Demo installation failed.');
+      setMessage(cause instanceof Error ? cause.message : t('projects.demoFailed'));
     } finally {
       setInstallingDemo(false);
     }
@@ -1086,144 +1330,446 @@ function ProjectPage({ user }: { user: User }) {
         className="text-sm text-slate-400 hover:text-sky-300"
         to={`/workspaces/${wid}/projects`}
       >
-        ← Projects
+        ← {t('common.projects')}
       </Link>
-      <div className="relative mt-5 overflow-hidden rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-900/90 via-slate-900/65 to-sky-950/30 p-6 shadow-2xl shadow-slate-950/20 sm:p-8">
+      <section className="relative mt-5 overflow-hidden rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-900/90 to-sky-950/70 p-6 shadow-2xl shadow-slate-950/20 sm:p-8">
         <div
           aria-hidden="true"
           className="absolute -right-20 -top-24 size-72 rounded-full bg-sky-500/10 blur-3xl"
         />
         <div className="relative">
-          <div className="flex flex-wrap items-center gap-3">
-            <p className="font-mono text-xs uppercase tracking-[0.18em] text-sky-400">
-              {project.key}
-            </p>
-            <span
-              className={`rounded-full px-2.5 py-1 text-xs font-medium ${project.archivedAt ? 'bg-amber-500/10 text-amber-300' : 'bg-emerald-500/10 text-emerald-300'}`}
-            >
-              {project.archivedAt ? 'Archived' : project.status.replace('_', ' ')}
-            </span>
-          </div>
-          <h1 className="mt-3 text-4xl font-semibold tracking-tight sm:text-5xl">{project.name}</h1>
-          <p className="mt-4 text-slate-400">{project.description || 'No description yet.'}</p>
-          <p className="mt-4 text-xs text-slate-600">Configuration version {project.rowVersion}</p>
-          <nav
-            aria-label="Project quick links"
-            className="mt-8 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
-          >
-            {allowed(user, 'record.read') && (
-              <Link className={projectLinkClass} to={`/workspaces/${wid}/projects/${pid}/data`}>
-                Engineering records <span className={projectLinkArrowClass}>→</span>
-                <span className={projectLinkHintClass}>Edit typed records</span>
-              </Link>
+          <div className="grid items-center gap-8 lg:grid-cols-[1fr_auto]">
+            <div>
+              <div className="flex flex-wrap items-center gap-3">
+                <p className="font-mono text-xs uppercase tracking-[0.18em] text-sky-400">
+                  {t('projects.dashboardEyebrow')} · {project.key}
+                </p>
+                <span
+                  className={`rounded-full px-2.5 py-1 text-xs font-medium ${project.archivedAt ? 'bg-amber-500/10 text-amber-300' : 'bg-emerald-500/10 text-emerald-300'}`}
+                >
+                  {project.archivedAt
+                    ? t('common.archived')
+                    : project.status === 'active'
+                      ? t('projects.active')
+                      : project.status === 'on_hold'
+                        ? t('projects.onHold')
+                        : t('projects.completed')}
+                </span>
+              </div>
+              <h1 className="mt-3 text-4xl font-semibold tracking-tight sm:text-5xl">
+                {project.name}
+              </h1>
+              <p className="mt-4 max-w-2xl text-slate-400">
+                {project.description || t('projects.noDescription')}
+              </p>
+              {allowed(user, 'record.read') && (
+                <Link
+                  className="mt-6 inline-flex items-center gap-2 rounded-xl bg-sky-400 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-lg shadow-sky-950/30 transition hover:bg-sky-300"
+                  to={`${basePath}/data`}
+                >
+                  {t('projects.openData')} <span aria-hidden="true">→</span>
+                </Link>
+              )}
+            </div>
+            {allowed(user, 'dataset.read') && (
+              <div className="flex items-center gap-5 rounded-2xl border border-white/10 bg-slate-950/35 p-4 backdrop-blur">
+                <div
+                  aria-label={`${t('projects.passRate')} ${passRateValue === undefined ? t('projects.noQualityData') : `${passRate}%`}`}
+                  className="grid size-28 shrink-0 place-items-center rounded-full"
+                  style={{
+                    background: `conic-gradient(rgb(56 189 248) ${passRate}%, rgb(30 41 59) ${passRate}% 100%)`,
+                  }}
+                >
+                  <div className="grid size-20 place-items-center rounded-full bg-slate-950 text-center">
+                    <span className="text-xl font-semibold">
+                      {overviewLoading || passRateValue === undefined
+                        ? '—'
+                        : `${formatNumber(passRate)}%`}
+                    </span>
+                  </div>
+                </div>
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
+                    {t('projects.health')}
+                  </p>
+                  <p className="mt-1 text-sm font-medium text-slate-200">
+                    {t('projects.passRate')}
+                  </p>
+                  {passRateValue === undefined && !overviewLoading && (
+                    <p className="mt-1 text-xs text-slate-500">{t('projects.noQualityData')}</p>
+                  )}
+                </div>
+              </div>
             )}
+          </div>
+          <div
+            aria-hidden="true"
+            className="absolute -bottom-28 left-1/3 size-64 rounded-full bg-indigo-500/10 blur-3xl"
+          />
+        </div>
+      </section>
+
+      <section
+        aria-label={t('projects.health')}
+        className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
+      >
+        {[
+          {
+            label: t('projects.passRate'),
+            value:
+              overviewLoading || passRateValue === undefined ? '—' : `${formatNumber(passRate)}%`,
+            accent: 'bg-sky-400',
+          },
+          {
+            label: t('projects.openTasks'),
+            value: overviewLoading ? '—' : formatNumber(openTasks.length),
+            accent: 'bg-amber-400',
+          },
+          {
+            label: t('projects.readyDatasets'),
+            value: overviewLoading
+              ? '—'
+              : formatNumber(overview.metrics?.dataset_count ?? readyDatasets.length),
+            accent: 'bg-emerald-400',
+          },
+          {
+            label: t('projects.dataTables'),
+            value: overviewLoading ? '—' : formatNumber(overview.objectTypes.length),
+            accent: 'bg-violet-400',
+          },
+        ].map((metric) => (
+          <article
+            className="relative overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/55 p-5"
+            key={metric.label}
+          >
+            <span className={`absolute inset-y-0 left-0 w-1 ${metric.accent}`} />
+            <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
+              {metric.label}
+            </p>
+            <p className="mt-2 text-3xl font-semibold tracking-tight text-slate-100">
+              {metric.value}
+            </p>
+          </article>
+        ))}
+      </section>
+
+      {overviewWarning && <NoticeText tone="error">{overviewWarning}</NoticeText>}
+
+      <div className="mt-5 grid gap-5 xl:grid-cols-[1.15fr_0.85fr_1fr]">
+        <section className="rounded-2xl border border-slate-800 bg-slate-900/45 p-5">
+          <div className="flex items-center justify-between gap-4">
+            <h2 className="text-lg font-semibold">{t('projects.needsAttention')}</h2>
+            <span
+              className={`size-2.5 rounded-full ${needsAttention ? 'bg-amber-400 shadow-[0_0_12px_rgba(251,191,36,0.65)]' : 'bg-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.55)]'}`}
+            />
+          </div>
+          {overviewLoading ? (
+            <div className="mt-5 space-y-3" aria-hidden="true">
+              <div className="h-11 animate-pulse rounded-xl bg-slate-800/70" />
+              <div className="h-11 animate-pulse rounded-xl bg-slate-800/70" />
+            </div>
+          ) : needsAttention ? (
+            <div className="mt-4 divide-y divide-slate-800">
+              {[
+                [t('projects.failedEvaluations'), failedEvaluations],
+                [t('projects.overdueTasks'), overdueTasks],
+                [t('projects.blockedTasks'), blockedTasks.length],
+              ].map(([label, value]) => (
+                <div className="flex items-center justify-between py-3 text-sm" key={String(label)}>
+                  <span className="text-slate-400">{label}</span>
+                  <span
+                    className={
+                      Number(value) > 0 ? 'font-semibold text-amber-300' : 'text-slate-600'
+                    }
+                  >
+                    {formatNumber(Number(value))}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="mt-5 rounded-xl border border-emerald-500/15 bg-emerald-500/5 p-4">
+              <p className="font-medium text-emerald-300">{t('projects.allClear')}</p>
+              <p className="mt-1 text-sm text-slate-500">{t('projects.allClearBody')}</p>
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900/45 p-5">
+          <h2 className="text-lg font-semibold">{t('projects.taskProgress')}</h2>
+          <div className="mt-5 flex items-end justify-between gap-4">
+            <p className="text-4xl font-semibold tracking-tight">
+              {overviewLoading ? '—' : `${taskProgress}%`}
+            </p>
+            <p className="text-right text-xs text-slate-500">
+              {activeTasks.length
+                ? t('projects.tasksCompleted', {
+                    done: formatNumber(completedTasks.length),
+                    total: formatNumber(activeTasks.length),
+                  })
+                : t('projects.noTasksYet')}
+            </p>
+          </div>
+          <div
+            aria-label={t('projects.taskProgress')}
+            aria-valuemax={100}
+            aria-valuemin={0}
+            aria-valuenow={taskProgress}
+            className="mt-4 h-2 overflow-hidden rounded-full bg-slate-800"
+            role="progressbar"
+          >
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-sky-500 to-emerald-400 transition-[width]"
+              style={{ width: `${taskProgress}%` }}
+            />
+          </div>
+          {allowed(user, 'task.read') && (
+            <Link
+              className="mt-6 inline-flex text-sm font-medium text-sky-300 hover:text-sky-200"
+              to={`${basePath}/tasks`}
+            >
+              {t('common.tasks')}{' '}
+              <span aria-hidden="true" className="ml-2">
+                →
+              </span>
+            </Link>
+          )}
+        </section>
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900/45 p-5">
+          <div className="flex items-center justify-between gap-4">
+            <h2 className="text-lg font-semibold">{t('projects.recentDatasets')}</h2>
             {allowed(user, 'file.read') && (
               <Link
-                className={projectLinkClass}
-                to={`/workspaces/${wid}/projects/${pid}/files-datasets`}
+                className="text-xs font-medium text-sky-300 hover:text-sky-200"
+                to={`${basePath}/files-datasets`}
               >
-                Files &amp; datasets <span className={projectLinkArrowClass}>→</span>
-                <span className={projectLinkHintClass}>Trace raw evidence</span>
+                {t('common.filesDatasets')} →
               </Link>
             )}
-            {allowed(user, 'dataset.read') && (
-              <Link
-                className={projectLinkClass}
-                to={`/workspaces/${wid}/projects/${pid}/visualizations`}
-              >
-                Visualizations <span className={projectLinkArrowClass}>→</span>
-                <span className={projectLinkHintClass}>Compare exact revisions</span>
-              </Link>
-            )}
-            {allowed(user, 'task.read') && (
-              <Link className={projectLinkClass} to={`/workspaces/${wid}/projects/${pid}/tasks`}>
-                Tasks <span className={projectLinkArrowClass}>→</span>
-                <span className={projectLinkHintClass}>Close the follow-up loop</span>
-              </Link>
-            )}
-          </nav>
-          <section className="mt-8 rounded-2xl border border-sky-800/50 bg-sky-950/30 p-5 sm:p-6">
-            <p className={sectionEyebrowClass}>Test &amp; Characterization · v6</p>
-            <h2 className="mt-2 text-xl font-semibold">Traceable onboarding demo</h2>
-            <p className="mt-2 text-sm text-slate-400">
-              Creates clearly labelled synthetic records, an immutable raw CSV and dataset, a pinned
-              chart, and a linked follow-up task. It is safe to archive after evaluation.
-            </p>
-            {demo?.installed ? (
-              <div className="mt-4 flex flex-wrap gap-3 text-sm">
-                <span className="text-emerald-300">Demo installed</span>
-                <Link
-                  className="text-sky-300"
-                  to={`/workspaces/${wid}/projects/${pid}/visualizations`}
-                >
-                  Inspect chart →
-                </Link>
-                <Link
-                  className="text-sky-300"
-                  to={`/workspaces/${wid}/projects/${pid}/files-datasets`}
-                >
-                  Inspect raw source →
-                </Link>
-              </div>
-            ) : allowed(user, 'schema.manage') ? (
-              <Button className="mt-4" disabled={installingDemo} onClick={() => void installDemo()}>
-                {installingDemo ? 'Installing demo…' : 'Install template & demo'}
-              </Button>
-            ) : (
-              <p className="mt-4 text-sm text-slate-500">
-                Ask an Engineer or Admin to install the demo.
-              </p>
-            )}
-          </section>
-          {allowed(user, 'project.update') && !project.archivedAt && (
-            <form
-              className="mt-8 grid max-w-2xl gap-4 border-t border-slate-800 pt-8"
-              onSubmit={(event) => void update(event)}
-            >
-              <h2 className="text-xl font-semibold">Project settings</h2>
-              <label className={formLabelClass}>
-                Project name
-                <input className={inputClass} defaultValue={project.name} name="name" required />
-              </label>
-              <label className={formLabelClass}>
-                Description
-                <textarea
-                  className={inputClass}
-                  defaultValue={project.description}
-                  name="description"
-                  rows={3}
-                />
-              </label>
-              <label className={formLabelClass}>
-                Status
-                <select className={inputClass} defaultValue={project.status} name="status">
-                  <option value="active">Active</option>
-                  <option value="on_hold">On hold</option>
-                  <option value="completed">Completed</option>
-                </select>
-              </label>
-              <Button type="submit">Save project settings</Button>
-            </form>
-          )}
-          <div className="mt-8">
-            {project.archivedAt
-              ? allowed(user, 'project.restore') && (
-                  <Button onClick={() => void archive(false)}>Restore project</Button>
-                )
-              : allowed(user, 'project.archive') && (
-                  <Button variant="quiet" onClick={() => void archive(true)}>
-                    Archive project
-                  </Button>
-                )}
           </div>
-          <NoticeText tone={messageTone}>{message}</NoticeText>
-        </div>
+          {overviewLoading ? (
+            <div className="mt-4 space-y-3" aria-hidden="true">
+              <div className="h-10 animate-pulse rounded-lg bg-slate-800/70" />
+              <div className="h-10 animate-pulse rounded-lg bg-slate-800/70" />
+            </div>
+          ) : recentDatasets.length ? (
+            <div className="mt-3 divide-y divide-slate-800">
+              {recentDatasets.slice(0, 4).map((dataset) => (
+                <div className="flex items-center justify-between gap-3 py-3" key={dataset.id}>
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-slate-200">{dataset.name}</p>
+                    <p className="mt-0.5 text-xs text-slate-600">
+                      {dataset.row_count === undefined
+                        ? dataset.status
+                        : t('projects.rows', { count: formatNumber(dataset.row_count) })}
+                    </p>
+                  </div>
+                  {dataset.created_at && (
+                    <time className="shrink-0 text-xs text-slate-600" dateTime={dataset.created_at}>
+                      {formatDate(dataset.created_at, { month: 'short', day: 'numeric' })}
+                    </time>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-5 text-sm text-slate-500">{t('projects.noDatasetsYet')}</p>
+          )}
+        </section>
       </div>
+      <section className="mt-8">
+        <p className={sectionEyebrowClass}>{t('projects.continueWorking')}</p>
+        <div className="mt-2 flex items-end justify-between gap-4">
+          <h2 className="text-2xl font-semibold">{t('projects.quickLinks')}</h2>
+          <p className="hidden text-sm text-slate-500 sm:block">{t('projects.dashboardHint')}</p>
+        </div>
+        <nav
+          aria-label={t('projects.quickLinks')}
+          className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4"
+        >
+          {allowed(user, 'record.read') && (
+            <Link
+              className="group rounded-2xl border border-slate-800 bg-slate-900/45 p-5 transition hover:-translate-y-0.5 hover:border-sky-500/50 hover:bg-sky-500/5"
+              to={`${basePath}/data`}
+            >
+              <span className="grid size-10 place-items-center rounded-xl bg-sky-500/10 text-lg text-sky-300">
+                ▦
+              </span>
+              <span className="mt-5 flex items-center justify-between font-semibold">
+                <span>{t('common.engineeringRecords')}</span>
+                <span className="text-sky-400 transition group-hover:translate-x-1">→</span>
+              </span>
+              <span className="mt-2 block text-sm text-slate-500">
+                {t('projects.tableCount', { count: formatNumber(overview.objectTypes.length) })} ·{' '}
+                {t('projects.recordCount', {
+                  count: formatNumber(overview.metrics?.total_samples ?? 0),
+                })}
+              </span>
+            </Link>
+          )}
+          {allowed(user, 'file.read') && (
+            <Link
+              className="group rounded-2xl border border-slate-800 bg-slate-900/45 p-5 transition hover:-translate-y-0.5 hover:border-emerald-500/50 hover:bg-emerald-500/5"
+              to={`${basePath}/files-datasets`}
+            >
+              <span className="grid size-10 place-items-center rounded-xl bg-emerald-500/10 text-lg text-emerald-300">
+                ◫
+              </span>
+              <span className="mt-5 flex items-center justify-between font-semibold">
+                <span>{t('common.filesDatasets')}</span>
+                <span className="text-emerald-400 transition group-hover:translate-x-1">→</span>
+              </span>
+              <span className="mt-2 block text-sm text-slate-500">
+                {t('projects.fileDatasetCount', {
+                  files: formatNumber(activeFiles.length),
+                  datasets: formatNumber(activeDatasets.length),
+                })}
+              </span>
+            </Link>
+          )}
+          {allowed(user, 'dataset.read') && (
+            <Link
+              className="group rounded-2xl border border-slate-800 bg-slate-900/45 p-5 transition hover:-translate-y-0.5 hover:border-violet-500/50 hover:bg-violet-500/5"
+              to={`${basePath}/visualizations`}
+            >
+              <span className="grid size-10 place-items-center rounded-xl bg-violet-500/10 text-lg text-violet-300">
+                ⌁
+              </span>
+              <span className="mt-5 flex items-center justify-between font-semibold">
+                <span>{t('common.visualizations')}</span>
+                <span className="text-violet-400 transition group-hover:translate-x-1">→</span>
+              </span>
+              <span className="mt-2 block text-sm text-slate-500">
+                {t('projects.chartDashboardCount', {
+                  charts: formatNumber(activeCharts.length),
+                  dashboards: formatNumber(activeDashboards.length),
+                })}
+              </span>
+            </Link>
+          )}
+          {allowed(user, 'task.read') && (
+            <Link
+              className="group rounded-2xl border border-slate-800 bg-slate-900/45 p-5 transition hover:-translate-y-0.5 hover:border-amber-500/50 hover:bg-amber-500/5"
+              to={`${basePath}/tasks`}
+            >
+              <span className="grid size-10 place-items-center rounded-xl bg-amber-500/10 text-lg text-amber-300">
+                ✓
+              </span>
+              <span className="mt-5 flex items-center justify-between font-semibold">
+                <span>{t('common.tasks')}</span>
+                <span className="text-amber-400 transition group-hover:translate-x-1">→</span>
+              </span>
+              <span className="mt-2 block text-sm text-slate-500">
+                {t('projects.taskCount', {
+                  open: formatNumber(openTasks.length),
+                  blocked: formatNumber(blockedTasks.length),
+                })}
+              </span>
+            </Link>
+          )}
+        </nav>
+      </section>
+
+      <section className="mt-6 flex flex-col gap-4 rounded-2xl border border-sky-500/20 bg-gradient-to-r from-sky-500/10 to-transparent p-5 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="font-medium text-slate-200">
+            {demo?.installed ? t('projects.demoReady') : t('projects.setupWorkspace')}
+          </p>
+          <p className="mt-1 text-sm text-slate-500">
+            {demo?.installed ? t('projects.demoReadyBody') : t('projects.demoBody')}
+          </p>
+        </div>
+        {demo?.installed ? (
+          <div className="flex shrink-0 flex-wrap gap-4 text-sm">
+            <Link className="text-sky-300 hover:text-sky-200" to={`${basePath}/visualizations`}>
+              {t('projects.inspectChart')}
+            </Link>
+            <Link className="text-sky-300 hover:text-sky-200" to={`${basePath}/files-datasets`}>
+              {t('projects.inspectRaw')}
+            </Link>
+          </div>
+        ) : allowed(user, 'schema.manage') ? (
+          <Button className="shrink-0" disabled={installingDemo} onClick={() => void installDemo()}>
+            {installingDemo ? t('projects.installingDemo') : t('projects.installDemo')}
+          </Button>
+        ) : (
+          <p className="shrink-0 text-sm text-slate-500">{t('projects.askInstaller')}</p>
+        )}
+      </section>
+
+      {(allowed(user, 'project.update') ||
+        allowed(user, 'project.archive') ||
+        allowed(user, 'project.restore')) && (
+        <details className="group mt-6 rounded-2xl border border-slate-800 bg-slate-900/35">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-4 p-5 marker:content-none">
+            <span>
+              <span className="block font-medium text-slate-200">
+                {t('projects.settingsSummary')}
+              </span>
+              <span className="mt-1 block text-sm text-slate-500">
+                {t('projects.settingsHint')}
+              </span>
+            </span>
+            <span aria-hidden="true" className="text-slate-500 transition group-open:rotate-180">
+              ⌄
+            </span>
+          </summary>
+          <div className="border-t border-slate-800 p-5">
+            {allowed(user, 'project.update') && !project.archivedAt && (
+              <form className="grid max-w-2xl gap-4" onSubmit={(event) => void update(event)}>
+                <h2 className="text-xl font-semibold">{t('projects.settings')}</h2>
+                <label className={formLabelClass}>
+                  {t('projects.name')}
+                  <input className={inputClass} defaultValue={project.name} name="name" required />
+                </label>
+                <label className={formLabelClass}>
+                  {t('workspaces.descriptionLabel')}
+                  <textarea
+                    className={inputClass}
+                    defaultValue={project.description}
+                    name="description"
+                    rows={3}
+                  />
+                </label>
+                <label className={formLabelClass}>
+                  {t('projects.status')}
+                  <select className={inputClass} defaultValue={project.status} name="status">
+                    <option value="active">{t('projects.active')}</option>
+                    <option value="on_hold">{t('projects.onHold')}</option>
+                    <option value="completed">{t('projects.completed')}</option>
+                  </select>
+                </label>
+                <Button type="submit">{t('projects.saveSettings')}</Button>
+              </form>
+            )}
+            <div
+              className={
+                allowed(user, 'project.update') && !project.archivedAt
+                  ? 'mt-6 border-t border-slate-800 pt-6'
+                  : ''
+              }
+            >
+              {project.archivedAt
+                ? allowed(user, 'project.restore') && (
+                    <Button onClick={() => void archive(false)}>{t('projects.restore')}</Button>
+                  )
+                : allowed(user, 'project.archive') && (
+                    <Button variant="quiet" onClick={() => void archive(true)}>
+                      {t('projects.archive')}
+                    </Button>
+                  )}
+            </div>
+          </div>
+        </details>
+      )}
+      <NoticeText tone={messageTone}>{message}</NoticeText>
     </>
   );
 }
 
 function GetStartedPage() {
+  const { t } = useI18n();
   const [completed, setCompleted] = useState<OnboardingStep[]>([]);
   const [message, setMessage] = useState('');
   const [messageTone, setMessageTone] = useState<'success' | 'error'>('success');
@@ -1232,9 +1778,9 @@ function GetStartedPage() {
       .then((result) => setCompleted(result.completed_steps ?? []))
       .catch((cause) => {
         setMessageTone('error');
-        setMessage(cause instanceof Error ? cause.message : 'Unable to load onboarding.');
+        setMessage(cause instanceof Error ? cause.message : t('onboarding.loadFailed'));
       });
-  }, []);
+  }, [t]);
   async function toggle(step: OnboardingStep) {
     const next = completed.includes(step)
       ? completed.filter((candidate) => candidate !== step)
@@ -1247,26 +1793,27 @@ function GetStartedPage() {
       });
       setMessageTone('success');
       setMessage(
-        next.length === onboardingSteps.length ? 'Onboarding complete.' : 'Progress saved.',
+        next.length === onboardingSteps.length ? t('onboarding.complete') : t('onboarding.saved'),
       );
     } catch (cause) {
       setCompleted(completed);
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'Unable to save onboarding.');
+      setMessage(cause instanceof Error ? cause.message : t('onboarding.saveFailed'));
     }
   }
   return (
     <>
-      <p className={sectionEyebrowClass}>Community pilot</p>
-      <h1 className={pageTitleClass}>Get started</h1>
-      <p className="mt-3 max-w-2xl text-slate-400">
-        This golden path takes a result from immutable raw evidence to a chart and follow-up work.
-      </p>
+      <p className={sectionEyebrowClass}>{t('onboarding.eyebrow')}</p>
+      <h1 className={pageTitleClass}>{t('onboarding.heading')}</h1>
+      <p className="mt-3 max-w-2xl text-slate-400">{t('onboarding.body')}</p>
       <div className="mt-8 max-w-2xl">
         <div className="mb-5 flex items-center justify-between gap-4 text-sm">
-          <span className="text-slate-400">Setup progress</span>
+          <span className="text-slate-400">{t('onboarding.progress')}</span>
           <span className="font-medium text-sky-300">
-            {completed.length} of {onboardingSteps.length}
+            {t('onboarding.progressCount', {
+              completed: completed.length,
+              total: onboardingSteps.length,
+            })}
           </span>
         </div>
         <div className="mb-6 h-2 overflow-hidden rounded-full bg-slate-800">
@@ -1288,11 +1835,13 @@ function GetStartedPage() {
                 onChange={() => void toggle(step.key)}
               />
               <span>
-                <span className="font-mono text-xs text-slate-500">STEP {index + 1}</span>
+                <span className="font-mono text-xs text-slate-500">
+                  {t('onboarding.step', { number: index + 1 })}
+                </span>
                 <span
                   className={`mt-1 block font-medium ${completed.includes(step.key) ? 'text-slate-400 line-through decoration-slate-600' : 'text-slate-100'}`}
                 >
-                  {step.label}
+                  {t(step.translationKey)}
                 </span>
               </span>
             </label>
@@ -1301,10 +1850,10 @@ function GetStartedPage() {
       </div>
       <div className="mt-6 flex gap-4">
         <Link className="text-sky-300" to="/workspaces">
-          Open workspaces →
+          {t('onboarding.openWorkspaces')}
         </Link>
         <Link className="text-sky-300" to="/pilot">
-          Share pilot feedback →
+          {t('onboarding.shareFeedback')}
         </Link>
       </div>
       <NoticeText tone={messageTone}>{message}</NoticeText>
@@ -1313,6 +1862,7 @@ function GetStartedPage() {
 }
 
 function PilotPage({ user }: { user: User }) {
+  const { t } = useI18n();
   const [message, setMessage] = useState('');
   const [messageTone, setMessageTone] = useState<'success' | 'error'>('success');
   const [summary, setSummary] = useState<Record<string, number | string>>();
@@ -1343,24 +1893,24 @@ function PilotPage({ user }: { user: User }) {
       });
       form.reset();
       setMessageTone('success');
-      setMessage('Thank you. The feedback was stored for your Engrove administrators.');
+      setMessage(t('feedback.thanks'));
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'Feedback submission failed.');
+      setMessage(cause instanceof Error ? cause.message : t('feedback.failed'));
     }
   }
   return (
     <>
-      <p className={sectionEyebrowClass}>Pilot</p>
-      <h1 className={pageTitleClass}>Feedback &amp; adoption</h1>
+      <p className={sectionEyebrowClass}>{t('feedback.eyebrow')}</p>
+      <h1 className={pageTitleClass}>{t('feedback.heading')}</h1>
       {summary && (
         <section className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {(
             [
-              ['Repeat users', 'repeat_users'],
-              ['Records', 'records'],
-              ['Ready datasets', 'datasets'],
-              ['Feedback items', 'feedback_items'],
+              [t('feedback.repeatUsers'), 'repeat_users'],
+              [t('feedback.records'), 'records'],
+              [t('feedback.readyDatasets'), 'datasets'],
+              [t('feedback.items'), 'feedback_items'],
             ] as const
           ).map(([label, key]) => (
             <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-5" key={key}>
@@ -1375,17 +1925,17 @@ function PilotPage({ user }: { user: User }) {
         onSubmit={(event) => void submit(event)}
       >
         <label className={blockFormLabelClass}>
-          Category
+          {t('feedback.category')}
           <select className={inputClass} name="category" defaultValue="workflow">
-            <option value="workflow">Workflow</option>
-            <option value="usability">Usability</option>
-            <option value="bug">Bug</option>
-            <option value="idea">Idea</option>
-            <option value="other">Other</option>
+            <option value="workflow">{t('feedback.workflow')}</option>
+            <option value="usability">{t('feedback.usability')}</option>
+            <option value="bug">{t('feedback.bug')}</option>
+            <option value="idea">{t('feedback.idea')}</option>
+            <option value="other">{t('feedback.other')}</option>
           </select>
         </label>
         <label className={blockFormLabelClass}>
-          Rating
+          {t('feedback.rating')}
           <select className={inputClass} name="rating" defaultValue="4">
             {[1, 2, 3, 4, 5].map((rating) => (
               <option key={rating} value={rating}>
@@ -1395,14 +1945,14 @@ function PilotPage({ user }: { user: User }) {
           </select>
         </label>
         <label className={blockFormLabelClass}>
-          What worked, and what blocked you?
+          {t('feedback.prompt')}
           <textarea className={inputClass} minLength={10} name="message" required rows={6} />
         </label>
-        <Button type="submit">Submit feedback</Button>
+        <Button type="submit">{t('feedback.submit')}</Button>
       </form>
       {allowed(user, 'pilot.manage') && feedbackItems.length > 0 && (
         <section className="mt-10">
-          <h2 className="text-2xl font-semibold">Recent feedback</h2>
+          <h2 className="text-2xl font-semibold">{t('feedback.recent')}</h2>
           <div className="mt-4 space-y-3">
             {feedbackItems.map((item) => (
               <article
@@ -1426,6 +1976,7 @@ function PilotPage({ user }: { user: User }) {
 }
 
 export function MembersPage() {
+  const { t } = useI18n();
   const { items, error, refresh } = useAsyncList<Member>(() => api('/members'), []);
   const {
     items: groups,
@@ -1479,10 +2030,10 @@ export function MembersPage() {
       });
       setGeneratedUrl(result.invitationUrl);
       setMessageTone('success');
-      setMessage('Invitation link generated.');
+      setMessage(t('members.invitationGenerated'));
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'Invitation failed.');
+      setMessage(cause instanceof Error ? cause.message : t('members.invitationFailed'));
     }
   }
   function toggleMemberSelection(userId: string, checked: boolean) {
@@ -1504,10 +2055,10 @@ export function MembersPage() {
       });
       await refresh();
       setMessageTone('success');
-      setMessage(`${selectedMemberIds.size} selected members changed to ${bulkRole}.`);
+      setMessage(t('members.rolesChanged', { count: selectedMemberIds.size, role: bulkRole }));
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'Roles could not be updated.');
+      setMessage(cause instanceof Error ? cause.message : t('members.rolesFailed'));
     } finally {
       setBusy(false);
     }
@@ -1519,7 +2070,7 @@ export function MembersPage() {
     setSelectedGroupId(group.id);
     if (addedCount === 0) {
       setMessageTone('success');
-      setMessage(`Selected members are already in ${group.name}.`);
+      setMessage(t('members.alreadyInGroup', { group: group.name }));
       return;
     }
     setBusy(true);
@@ -1530,10 +2081,10 @@ export function MembersPage() {
       });
       await refreshGroups();
       setMessageTone('success');
-      setMessage(`${addedCount} member${addedCount === 1 ? '' : 's'} added to ${group.name}.`);
+      setMessage(t('members.addedToGroup', { count: addedCount, group: group.name }));
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'Members could not be added.');
+      setMessage(cause instanceof Error ? cause.message : t('members.addFailed'));
     } finally {
       setBusy(false);
     }
@@ -1571,10 +2122,10 @@ export function MembersPage() {
       setSelectedGroupId(created.id);
       setShowCreateGroup(false);
       setMessageTone('success');
-      setMessage(`${created.name} group created.`);
+      setMessage(t('groups.created', { name: created.name }));
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'Group creation failed.');
+      setMessage(cause instanceof Error ? cause.message : t('groups.createFailed'));
     } finally {
       setBusy(false);
     }
@@ -1600,17 +2151,17 @@ export function MembersPage() {
       });
       await refreshGroups();
       setMessageTone('success');
-      setMessage(`${String(data.get('name'))} group updated.`);
+      setMessage(t('groups.updated', { name: String(data.get('name')) }));
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'Group update failed.');
+      setMessage(cause instanceof Error ? cause.message : t('groups.updateFailed'));
     } finally {
       setBusy(false);
     }
   }
 
   async function archiveGroup(group: MemberGroup) {
-    if (!window.confirm(`Archive “${group.name}”? Members will keep their organization roles.`)) {
+    if (!window.confirm(t('groups.archiveConfirm', { name: group.name }))) {
       return;
     }
     setBusy(true);
@@ -1618,10 +2169,10 @@ export function MembersPage() {
       await api(`/member-groups/${group.id}/archive`, { method: 'POST' });
       await refreshGroups();
       setMessageTone('success');
-      setMessage(`${group.name} group archived.`);
+      setMessage(t('groups.archived', { name: group.name }));
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'Group could not be archived.');
+      setMessage(cause instanceof Error ? cause.message : t('groups.archiveFailed'));
     } finally {
       setBusy(false);
     }
@@ -1631,20 +2182,20 @@ export function MembersPage() {
     <section>
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="text-xs font-medium uppercase tracking-widest text-sky-400">Organization</p>
+          <p className="text-xs font-medium uppercase tracking-widest text-sky-400">
+            {t('pilot.organization')}
+          </p>
           <div className="mt-1 flex items-center gap-2">
-            <h1 className="text-3xl font-semibold">Members & groups</h1>
-            <HelpTip label="Member management help">
-              Select people for bulk access changes, or drag them directly into a group.
-            </HelpTip>
+            <h1 className="text-3xl font-semibold">{t('members.heading')}</h1>
+            <HelpTip label={t('members.help')}>{t('members.helpBody')}</HelpTip>
           </div>
         </div>
         <div className="flex gap-2 text-xs text-slate-400">
           <span className="rounded-full border border-slate-800 px-3 py-1.5">
-            {items.length} members
+            {t('members.count', { count: items.length })}
           </span>
           <span className="rounded-full border border-slate-800 px-3 py-1.5">
-            {groups.length} groups
+            {t('members.groupCount', { count: groups.length })}
           </span>
         </div>
       </div>
@@ -1654,18 +2205,18 @@ export function MembersPage() {
           <header className="border-b border-slate-800 p-4">
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-2">
-                <h2 className="text-sm font-semibold text-slate-100">Member directory</h2>
-                <HelpTip label="Member role help">Roles control product access.</HelpTip>
+                <h2 className="text-sm font-semibold text-slate-100">{t('members.directory')}</h2>
+                <HelpTip label={t('members.roleHelp')}>{t('members.roleHelpBody')}</HelpTip>
               </div>
               <details className="relative">
                 <summary className="cursor-pointer list-none rounded-md border border-slate-700 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800">
-                  Invite member
+                  {t('members.invite')}
                 </summary>
                 <div className="absolute right-0 top-10 z-40 w-80 rounded-xl border border-slate-700 bg-slate-950 p-4 shadow-2xl">
                   <form className="space-y-3" onSubmit={(event) => void invite(event)}>
-                    <Field label="Invite email" name="email" type="email" />
+                    <Field label={t('members.inviteEmail')} name="email" type="email" />
                     <label className="block text-xs font-medium text-slate-300">
-                      Role
+                      {t('members.role')}
                       <select
                         className={`${inputClass} mt-1.5`}
                         name="role"
@@ -1678,12 +2229,12 @@ export function MembersPage() {
                       </select>
                     </label>
                     <Button className="w-full" type="submit">
-                      Generate invitation link
+                      {t('members.generateInvitation')}
                     </Button>
                   </form>
                   {generatedUrl && (
                     <textarea
-                      aria-label="Invitation URL"
+                      aria-label={t('members.invitationUrl')}
                       className={`${inputClass} mt-3 min-h-20 text-xs`}
                       readOnly
                       value={generatedUrl}
@@ -1693,26 +2244,28 @@ export function MembersPage() {
               </details>
             </div>
             <input
-              aria-label="Search members"
+              aria-label={t('members.search')}
               className={`${inputClass} mt-3`}
-              placeholder="Search name, email, or role"
+              placeholder={t('members.searchPlaceholder')}
               type="search"
               value={memberSearch}
               onChange={(event) => setMemberSearch(event.target.value)}
             />
-            <p className="mt-2 text-xs text-slate-600">{filteredMembers.length} members shown</p>
+            <p className="mt-2 text-xs text-slate-600">
+              {t('members.shown', { count: filteredMembers.length })}
+            </p>
           </header>
           {selectedMemberIds.size > 0 && (
             <div
-              aria-label="Bulk member actions"
+              aria-label={t('members.bulkActions')}
               className="border-b border-sky-500/20 bg-sky-500/5 p-3"
             >
               <div className="flex flex-wrap items-center gap-2">
                 <span className="mr-auto text-xs font-semibold text-sky-200">
-                  {selectedMemberIds.size} selected
+                  {t('members.selected', { count: selectedMemberIds.size })}
                 </span>
                 <select
-                  aria-label="Role for selected members"
+                  aria-label={t('members.selectedRole')}
                   className="rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-300"
                   value={bulkRole}
                   onChange={(event) => setBulkRole(event.target.value as Role)}
@@ -1722,7 +2275,7 @@ export function MembersPage() {
                   ))}
                 </select>
                 <Button disabled={busy} onClick={() => void changeSelectedRoles()} type="button">
-                  Apply role
+                  {t('members.applyRole')}
                 </Button>
               </div>
               <button
@@ -1730,7 +2283,7 @@ export function MembersPage() {
                 onClick={() => setSelectedMemberIds(new Set())}
                 type="button"
               >
-                Clear selection
+                {t('members.clearSelection')}
               </button>
             </div>
           )}
@@ -1747,17 +2300,17 @@ export function MembersPage() {
                   key={member.userId}
                 >
                   <input
-                    aria-label={`Select ${member.displayName}`}
+                    aria-label={t('members.selectPerson', { name: member.displayName })}
                     checked={selectedMemberIds.has(member.userId)}
                     className="accent-sky-500"
                     type="checkbox"
                     onChange={(event) => toggleMemberSelection(member.userId, event.target.checked)}
                   />
                   <button
-                    aria-label={`Drag ${member.displayName}`}
+                    aria-label={t('members.dragPerson', { name: member.displayName })}
                     className="cursor-grab select-none px-1 text-sm text-slate-600 hover:text-slate-200 active:cursor-grabbing"
                     draggable
-                    title="Drag into a group"
+                    title={t('members.dragHint')}
                     type="button"
                     onDragStart={(event) => startMemberDrag(event, member.userId)}
                   >
@@ -1798,7 +2351,7 @@ export function MembersPage() {
               );
             })}
             {filteredMembers.length === 0 && (
-              <p className="p-8 text-center text-xs text-slate-500">No matching members.</p>
+              <p className="p-8 text-center text-xs text-slate-500">{t('members.noMatch')}</p>
             )}
           </div>
         </section>
@@ -1807,9 +2360,9 @@ export function MembersPage() {
           <header className="border-b border-slate-800 p-4">
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-2">
-                <h2 className="text-sm font-semibold text-slate-100">Groups</h2>
-                <HelpTip label="Group assignment help">
-                  Drop one member—or your current selection—onto a group.
+                <h2 className="text-sm font-semibold text-slate-100">{t('groups.heading')}</h2>
+                <HelpTip label={t('groups.assignmentHelp')}>
+                  {t('groups.assignmentHelpBody')}
                 </HelpTip>
               </div>
               <Button
@@ -1818,30 +2371,30 @@ export function MembersPage() {
                 onClick={() => setShowCreateGroup((value) => !value)}
                 type="button"
               >
-                + New group
+                + {t('groups.new')}
               </Button>
             </div>
             {showCreateGroup && (
               <form className="mt-3 grid gap-2" onSubmit={(event) => void createGroup(event)}>
                 <input
-                  aria-label="New group name"
+                  aria-label={t('groups.newName')}
                   autoFocus
                   className={inputClass}
                   maxLength={80}
                   name="name"
-                  placeholder="e.g. Materials laboratory"
+                  placeholder={t('groups.namePlaceholder')}
                   required
                 />
                 <textarea
-                  aria-label="New group description"
+                  aria-label={t('groups.newDescription')}
                   className={`${inputClass} min-h-20 resize-y`}
                   maxLength={500}
                   name="description"
-                  placeholder="What this group works on"
+                  placeholder={t('groups.descriptionPlaceholder')}
                 />
                 <div className="flex items-center gap-2">
                   <select
-                    aria-label="New group color"
+                    aria-label={t('groups.newColor')}
                     className={`${inputClass} flex-1`}
                     defaultValue="sky"
                     name="color"
@@ -1853,15 +2406,15 @@ export function MembersPage() {
                     ))}
                   </select>
                   <Button disabled={busy} type="submit">
-                    {busy ? 'Creating…' : 'Create'}
+                    {busy ? t('groups.creating') : t('common.create')}
                   </Button>
                 </div>
               </form>
             )}
             <input
-              aria-label="Search groups"
+              aria-label={t('groups.search')}
               className={`${inputClass} mt-3`}
-              placeholder="Search groups"
+              placeholder={t('groups.search')}
               type="search"
               value={groupSearch}
               onChange={(event) => setGroupSearch(event.target.value)}
@@ -1870,14 +2423,20 @@ export function MembersPage() {
 
           <div className="grid sm:grid-cols-2">
             <nav
-              aria-label="Member groups"
+              aria-label={t('groups.navigation')}
               className="overflow-y-auto border-b border-slate-800 p-2 sm:border-b-0 sm:border-r"
               style={{ maxHeight: '34rem' }}
             >
               {filteredGroups.map((group) => (
                 <button
                   aria-current={selectedGroupId === group.id ? 'true' : undefined}
-                  aria-label={`${group.name}, ${group.memberIds.length} member${group.memberIds.length === 1 ? '' : 's'}. Drop members here`}
+                  aria-label={t(
+                    group.memberIds.length === 1 ? 'groups.dropLabelOne' : 'groups.dropLabel',
+                    {
+                      name: group.name,
+                      count: group.memberIds.length,
+                    },
+                  )}
                   className={`flex w-full items-center gap-2 rounded-md border px-2 py-2 text-left transition ${
                     selectedGroupId === group.id
                       ? 'border-sky-500/20 bg-sky-500/10 text-sky-200'
@@ -1900,13 +2459,13 @@ export function MembersPage() {
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-xs font-medium">{group.name}</span>
                     <span className="block text-[10px] text-slate-600">
-                      {group.memberIds.length} members
+                      {t('groups.memberCount', { count: group.memberIds.length })}
                     </span>
                   </span>
                 </button>
               ))}
               {filteredGroups.length === 0 && (
-                <p className="p-5 text-center text-xs text-slate-500">No groups yet.</p>
+                <p className="p-5 text-center text-xs text-slate-500">{t('groups.none')}</p>
               )}
             </nav>
 
@@ -1916,24 +2475,24 @@ export function MembersPage() {
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <p className="text-[10px] font-medium uppercase tracking-widest text-sky-400">
-                        Group details
+                        {t('groups.details')}
                       </p>
                       <h3 className="mt-1 truncate text-sm font-semibold text-slate-200">
                         {selectedGroup.name}
                       </h3>
                     </div>
                     <button
-                      aria-label={`Archive group ${selectedGroup.name}`}
+                      aria-label={t('groups.archiveLabel', { name: selectedGroup.name })}
                       className="rounded px-2 py-1 text-xs text-slate-500 hover:bg-rose-500/10 hover:text-rose-300"
                       disabled={busy}
                       onClick={() => void archiveGroup(selectedGroup)}
                       type="button"
                     >
-                      Archive
+                      {t('groups.archive')}
                     </button>
                   </div>
                   <input
-                    aria-label="Group name"
+                    aria-label={t('groups.name')}
                     className={`${inputClass} mt-3`}
                     defaultValue={selectedGroup.name}
                     maxLength={80}
@@ -1941,15 +2500,15 @@ export function MembersPage() {
                     required
                   />
                   <textarea
-                    aria-label="Group description"
+                    aria-label={t('groups.description')}
                     className={`${inputClass} mt-2 min-h-20 resize-y`}
                     defaultValue={selectedGroup.description}
                     maxLength={500}
                     name="description"
-                    placeholder="Group description"
+                    placeholder={t('groups.description')}
                   />
                   <select
-                    aria-label="Group color"
+                    aria-label={t('groups.color')}
                     className={`${inputClass} mt-2`}
                     defaultValue={selectedGroup.color}
                     name="color"
@@ -1962,7 +2521,7 @@ export function MembersPage() {
                   </select>
                   <fieldset className="mt-4">
                     <legend className="text-xs font-medium text-slate-300">
-                      Members · {groupMemberDraft.size}
+                      {t('groups.members', { count: groupMemberDraft.size })}
                     </legend>
                     <div className="mt-2 max-h-48 space-y-1 overflow-y-auto rounded-lg border border-slate-800 p-2">
                       {items.map((member) => (
@@ -1971,7 +2530,10 @@ export function MembersPage() {
                           key={member.userId}
                         >
                           <input
-                            aria-label={`Add ${member.displayName} to ${selectedGroup.name}`}
+                            aria-label={t('groups.addMember', {
+                              member: member.displayName,
+                              group: selectedGroup.name,
+                            })}
                             checked={groupMemberDraft.has(member.userId)}
                             className="accent-sky-500"
                             type="checkbox"
@@ -1991,15 +2553,13 @@ export function MembersPage() {
                     </div>
                   </fieldset>
                   <Button className="mt-4 w-full" disabled={busy} type="submit">
-                    {busy ? 'Saving…' : 'Save group'}
+                    {busy ? t('groups.saving') : t('groups.save')}
                   </Button>
                 </form>
               ) : (
                 <div className="p-6 text-center">
-                  <p className="text-sm font-medium text-slate-400">Create your first group</p>
-                  <p className="mt-1 text-xs text-slate-600">
-                    Group members by team, laboratory, discipline, or responsibility.
-                  </p>
+                  <p className="text-sm font-medium text-slate-400">{t('groups.first')}</p>
+                  <p className="mt-1 text-xs text-slate-600">{t('groups.firstBody')}</p>
                 </div>
               )}
             </div>
@@ -2021,13 +2581,14 @@ export function MembersPage() {
 }
 
 function AuditPage() {
+  const { t } = useI18n();
   const { items, error } = useAsyncList<Record<string, unknown>>(
     () => api('/audit-events?limit=100'),
     [],
   );
   return (
     <>
-      <h1 className="text-4xl font-semibold">Audit events</h1>
+      <h1 className="text-4xl font-semibold">{t('audit.heading')}</h1>
       <ErrorText>{error}</ErrorText>
       <div className="mt-8 space-y-2 font-mono text-sm">
         {items.map((event) => (
@@ -2230,15 +2791,7 @@ function AppContent() {
         />
         <Route path="/members" element={protectedElement(<MembersPage />)} />
         <Route path="/audit" element={protectedElement(<AuditPage />)} />
-        <Route
-          path="*"
-          element={
-            <Navigate
-              to={state === 'setup' ? '/setup' : state === 'signed-in' ? '/workspaces' : '/sign-in'}
-              replace
-            />
-          }
-        />
+        <Route path="*" element={protectedElement(<NotFoundPage />)} />
       </Routes>
     </>
   );

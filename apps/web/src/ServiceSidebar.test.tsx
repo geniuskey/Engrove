@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ServiceShell } from './ServiceSidebar.js';
@@ -6,6 +6,7 @@ import { ServiceShell } from './ServiceSidebar.js';
 const originalMatchMedia = window.matchMedia;
 
 afterEach(() => {
+  cleanup();
   Object.defineProperty(window, 'matchMedia', {
     configurable: true,
     value: originalMatchMedia,
@@ -60,5 +61,42 @@ describe('ServiceShell mobile navigation', () => {
     expect(screen.queryByRole('dialog', { name: 'Service sidebar' })).not.toBeInTheDocument();
     await waitFor(() => expect(trigger).toHaveFocus());
     expect(document.body).not.toHaveStyle({ overflow: 'hidden' });
+  });
+
+  it('supports arrow-key selection in the command palette', async () => {
+    const onToggleTheme = vi.fn();
+    render(
+      <MemoryRouter initialEntries={['/workspaces']}>
+        <ServiceShell
+          can={() => false}
+          onSignedOut={() => undefined}
+          onToggleTheme={onToggleTheme}
+          request={async <T,>() => ({ items: [] }) as T}
+          theme="dark"
+          user={{
+            id: '019fbcf9-e020-71da-935a-6a6a728b3790',
+            email: 'owner@example.com',
+            displayName: 'Owner',
+            organizationId: '019fbcf9-e020-71da-935a-6a6a728b3791',
+            role: 'owner',
+          }}
+        >
+          <p>Page content</p>
+        </ServiceShell>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open command palette' }));
+    const search = screen.getByRole('searchbox', { name: 'Search commands' });
+    expect(search).toHaveFocus();
+    fireEvent.keyDown(search, { key: 'ArrowDown' });
+    expect(screen.getByRole('button', { name: /Use light theme/ })).toHaveAttribute(
+      'aria-current',
+      'true',
+    );
+    fireEvent.keyDown(search, { key: 'Enter' });
+
+    expect(onToggleTheme).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('dialog', { name: 'Command palette' })).not.toBeInTheDocument();
   });
 });

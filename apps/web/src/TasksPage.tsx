@@ -18,6 +18,7 @@ import {
   menuFromPointer,
 } from './ContextMenu.js';
 import { useI18n } from './i18n.js';
+import { useModalDialog } from './useModalDialog.js';
 
 type Status = 'todo' | 'in_progress' | 'blocked' | 'done';
 interface TaskLink {
@@ -55,7 +56,7 @@ const priorityStyle: Record<Task['priority'], string> = {
 const taskFormLabelClass = 'grid gap-1 text-xs text-slate-400';
 
 export function TasksPage({ user }: { user: User }) {
-  const { formatDate, t } = useI18n();
+  const { formatDate, locale, t } = useI18n();
   const { workspaceId, projectId } = useParams();
   const base = `/workspaces/${workspaceId}/projects/${projectId}`;
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -64,7 +65,9 @@ export function TasksPage({ user }: { user: User }) {
   const [messageTone, setMessageTone] = useState<'info' | 'success' | 'error'>('info');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [creatorOpen, setCreatorOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuModel>();
+  const creatorDialogRef = useModalDialog<HTMLDivElement>(creatorOpen, () => setCreatorOpen(false));
   const columns: Array<{ status: Status; label: string }> = [
     { status: 'todo', label: t('tasks.todo') },
     { status: 'in_progress', label: t('tasks.inProgress') },
@@ -130,7 +133,10 @@ export function TasksPage({ user }: { user: User }) {
         }),
       }),
     );
-    if (created) form.reset();
+    if (created) {
+      form.reset();
+      setCreatorOpen(false);
+    }
   }
 
   async function changeStatus(task: Task, status: Status) {
@@ -210,6 +216,19 @@ export function TasksPage({ user }: { user: User }) {
     setContextMenu(menuFromPointer(event, task.title, taskContextItems(task)));
   }
 
+  function openTaskMenuFromButton(event: ReactMouseEvent<HTMLButtonElement>, task: Task) {
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    setContextMenu({
+      label: task.title,
+      x: bounds.right,
+      y: bounds.bottom,
+      items: taskContextItems(task),
+      returnFocus: event.currentTarget,
+    });
+  }
+
   function openTaskMenuFromKeyboard(event: ReactKeyboardEvent<HTMLElement>, task: Task) {
     const menu = menuFromKeyboard(event, task.title, taskContextItems(task));
     if (menu) setContextMenu(menu);
@@ -235,16 +254,36 @@ export function TasksPage({ user }: { user: User }) {
           </h1>
           <p className="mt-3 text-slate-400">{t('tasks.description')}</p>
         </div>
-        <div className="flex gap-2" role="group" aria-label={t('tasks.view')}>
-          <Button variant={view === 'board' ? 'primary' : 'quiet'} onClick={() => setView('board')}>
-            {t('tasks.kanban')}
-          </Button>
-          <Button
-            variant={view === 'calendar' ? 'primary' : 'quiet'}
-            onClick={() => setView('calendar')}
+        <div className="flex flex-wrap items-center gap-2">
+          {allowed(user, 'task.create') && (
+            <Button
+              aria-label={t('tasks.create')}
+              onClick={() => setCreatorOpen(true)}
+              type="button"
+            >
+              + {t('tasks.create')}
+            </Button>
+          )}
+          <div
+            className="flex gap-1 rounded-xl border border-slate-800 bg-slate-900/55 p-1"
+            role="group"
+            aria-label={t('tasks.view')}
           >
-            {t('tasks.calendar')}
-          </Button>
+            <Button
+              className="min-h-8 px-3 py-1.5"
+              variant={view === 'board' ? 'primary' : 'quiet'}
+              onClick={() => setView('board')}
+            >
+              {t('tasks.kanban')}
+            </Button>
+            <Button
+              className="min-h-8 px-3 py-1.5"
+              variant={view === 'calendar' ? 'primary' : 'quiet'}
+              onClick={() => setView('calendar')}
+            >
+              {t('tasks.calendar')}
+            </Button>
+          </div>
         </div>
       </div>
       <NoticeText tone={messageTone}>{message}</NoticeText>
@@ -253,58 +292,11 @@ export function TasksPage({ user }: { user: User }) {
           {t('common.loading')}
         </p>
       )}
-      {allowed(user, 'task.create') && (
-        <form
-          className="mt-8 grid gap-4 rounded-2xl border border-slate-800 bg-slate-900/45 p-5 shadow-xl shadow-slate-950/10 lg:grid-cols-4"
-          onSubmit={(event) => void create(event)}
-        >
-          <label className={taskFormLabelClass}>
-            {t('tasks.title')}
-            <input className={inputClass} name="title" required />
-          </label>
-          <label className={taskFormLabelClass}>
-            {t('tasks.descriptionLabel')}
-            <input className={inputClass} name="description" />
-          </label>
-          <label className={taskFormLabelClass}>
-            {t('tasks.priority')}
-            <select className={inputClass} name="priority" defaultValue="medium">
-              <option value="low">{t('tasks.low')}</option>
-              <option value="medium">{t('tasks.medium')}</option>
-              <option value="high">{t('tasks.high')}</option>
-              <option value="critical">{t('tasks.critical')}</option>
-            </select>
-          </label>
-          <label className={taskFormLabelClass}>
-            {t('tasks.dueDate')}
-            <input className={inputClass} name="dueDate" type="date" />
-          </label>
-          <label className={taskFormLabelClass}>
-            {t('tasks.linkType')}
-            <select className={inputClass} name="entityType" defaultValue="record">
-              <option value="record">{t('tasks.entity.record')}</option>
-              <option value="sample">{t('tasks.entity.sample')}</option>
-              <option value="issue">{t('tasks.entity.issue')}</option>
-              <option value="test_run">{t('tasks.entity.testRun')}</option>
-              <option value="measurement_result">{t('tasks.entity.measurement')}</option>
-              <option value="specification_evaluation">{t('tasks.entity.evaluation')}</option>
-              <option value="dataset">{t('tasks.entity.dataset')}</option>
-            </select>
-          </label>
-          <label className={taskFormLabelClass}>
-            {t('tasks.linkId')}
-            <input className={inputClass} name="entityId" />
-          </label>
-          <Button disabled={busy} type="submit">
-            {busy ? t('tasks.creating') : t('tasks.create')}
-          </Button>
-        </form>
-      )}
       {view === 'board' ? (
-        <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           {columns.map((column) => (
             <section
-              className={`rounded-2xl border border-slate-800 border-t-2 bg-slate-900/55 p-4 shadow-lg shadow-slate-950/10 ${columnAccent[column.status]}`}
+              className={`rounded-xl border border-slate-800 border-t-2 bg-slate-900/55 p-3 shadow-lg shadow-slate-950/10 ${columnAccent[column.status]}`}
               key={column.status}
             >
               <div className="flex items-center justify-between gap-3">
@@ -316,64 +308,62 @@ export function TasksPage({ user }: { user: User }) {
                   }
                 </span>
               </div>
-              <div className="mt-4 space-y-3">
+              <div className="mt-3 space-y-2">
                 {tasks
                   .filter((task) => !task.archived_at && task.status === column.status)
                   .map((task) => (
                     <article
-                      className="rounded-xl border border-slate-800 bg-slate-950/80 p-4 shadow-md shadow-slate-950/20 transition hover:border-slate-700"
+                      className="rounded-lg border border-slate-800 bg-slate-950/80 p-3 shadow-sm shadow-slate-950/20 transition hover:border-slate-700"
                       key={task.id}
                       onContextMenu={(event) => openTaskMenu(event, task)}
                       onKeyDown={(event) => openTaskMenuFromKeyboard(event, task)}
                       tabIndex={0}
                     >
                       <div className="flex items-start justify-between gap-2">
-                        <h3 className="font-medium">{task.title}</h3>
+                        <h3 className="line-clamp-2 text-sm font-medium leading-5">{task.title}</h3>
                         <span
-                          className={`rounded-full px-2 py-1 text-[10px] font-medium uppercase tracking-wide ${priorityStyle[task.priority]}`}
+                          className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${priorityStyle[task.priority]}`}
                         >
                           {priorityLabel(task.priority)}
                         </span>
                       </div>
-                      <p className="mt-2 text-xs text-slate-500">
-                        {task.due_date
-                          ? t('tasks.due', {
+                      {(task.due_date || task.links.length > 0) && (
+                        <p className="mt-1.5 truncate text-[11px] text-slate-500">
+                          {task.due_date &&
+                            t('tasks.due', {
                               date: formatDate(`${task.due_date}T00:00:00`),
-                            })
-                          : t('tasks.noDueDate')}{' '}
-                        · {t('tasks.linkCount', { count: task.links.length })}
-                      </p>
-                      {allowed(user, 'task.update') && (
-                        <select
-                          aria-label={t('tasks.statusFor', { title: task.title })}
-                          className={`${inputClass} mt-3`}
-                          value={task.status}
-                          onChange={(event) =>
-                            void changeStatus(task, event.target.value as Status)
-                          }
-                        >
-                          {columns.map((candidate) => (
-                            <option key={candidate.status} value={candidate.status}>
-                              {candidate.label}
-                            </option>
-                          ))}
-                        </select>
+                            })}
+                          {task.due_date && task.links.length > 0 && ' · '}
+                          {task.links.length > 0 &&
+                            t('tasks.linkCount', { count: task.links.length })}
+                        </p>
                       )}
-                      {allowed(user, 'task.archive') && (
+                      <div className="mt-2 flex items-center gap-1.5">
+                        {allowed(user, 'task.update') && (
+                          <select
+                            aria-label={t('tasks.statusFor', { title: task.title })}
+                            className="h-8 min-w-0 flex-1 rounded-md border border-slate-800 bg-slate-900 px-2 text-xs text-slate-300 outline-none hover:border-slate-700 focus:border-sky-400"
+                            value={task.status}
+                            onChange={(event) =>
+                              void changeStatus(task, event.target.value as Status)
+                            }
+                          >
+                            {columns.map((candidate) => (
+                              <option key={candidate.status} value={candidate.status}>
+                                {candidate.label}
+                              </option>
+                            ))}
+                          </select>
+                        )}
                         <button
-                          className="mt-3 text-xs text-slate-500 hover:text-sky-300"
-                          onClick={() =>
-                            void mutate(() =>
-                              api(`${base}/tasks/${task.id}/archive`, {
-                                method: 'PATCH',
-                                body: JSON.stringify({ reason: 'Archived from task board' }),
-                              }),
-                            )
-                          }
+                          aria-label={`${locale === 'ko' ? '작업 메뉴' : 'Task actions'}: ${task.title}`}
+                          className="grid size-8 shrink-0 place-items-center rounded-md border border-slate-800 text-sm text-slate-500 hover:border-slate-700 hover:bg-slate-900 hover:text-sky-300"
+                          onClick={(event) => openTaskMenuFromButton(event, task)}
+                          type="button"
                         >
-                          {t('common.archive')}
+                          •••
                         </button>
-                      )}
+                      </div>
                     </article>
                   ))}
                 {!tasks.some((task) => !task.archived_at && task.status === column.status) && (
@@ -386,12 +376,12 @@ export function TasksPage({ user }: { user: User }) {
           ))}
         </div>
       ) : (
-        <section className="mt-8 rounded-2xl border border-slate-800 p-5">
+        <section className="mt-6 rounded-xl border border-slate-800 p-4">
           <h2 className="text-xl font-semibold">{t('tasks.calendarHeading')}</h2>
           <div className="mt-4 divide-y divide-slate-800">
             {calendar.map((task) => (
               <article
-                className="grid gap-2 py-4 md:grid-cols-[10rem_1fr_auto]"
+                className="grid gap-2 py-3 text-sm md:grid-cols-[9rem_1fr_auto]"
                 key={task.id}
                 onContextMenu={(event) => openTaskMenu(event, task)}
                 onKeyDown={(event) => openTaskMenuFromKeyboard(event, task)}
@@ -437,6 +427,104 @@ export function TasksPage({ user }: { user: User }) {
               </div>
             ))}
         </section>
+      )}
+      {creatorOpen && allowed(user, 'task.create') && (
+        <div
+          className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-6"
+          role="presentation"
+        >
+          <button
+            aria-label={locale === 'ko' ? '작업 만들기 닫기' : 'Close task creator'}
+            className="absolute inset-0 cursor-default bg-slate-950/70 backdrop-blur-sm"
+            data-modal-backdrop
+            disabled={busy}
+            onClick={() => setCreatorOpen(false)}
+            type="button"
+          />
+          <div
+            aria-labelledby="task-creator-title"
+            aria-modal="true"
+            className="relative max-h-[min(780px,calc(100vh-2rem))] w-full max-w-2xl overflow-y-auto rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl shadow-black/50"
+            ref={creatorDialogRef}
+            role="dialog"
+            tabIndex={-1}
+          >
+            <header className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-slate-800 bg-slate-950/90 px-5 py-4 backdrop-blur-xl sm:px-6">
+              <div>
+                <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-sky-400">
+                  {t('common.project')}
+                </p>
+                <h2 className="mt-1 text-2xl font-semibold" id="task-creator-title">
+                  {t('tasks.create')}
+                </h2>
+              </div>
+              <button
+                aria-label={locale === 'ko' ? '작업 만들기 닫기' : 'Close task creator'}
+                className="grid size-9 place-items-center rounded-lg border border-slate-700 text-xl text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+                disabled={busy}
+                onClick={() => setCreatorOpen(false)}
+                type="button"
+              >
+                ×
+              </button>
+            </header>
+            <form
+              className="grid gap-4 p-5 sm:grid-cols-2 sm:p-6"
+              onSubmit={(event) => void create(event)}
+            >
+              <label className={`${taskFormLabelClass} sm:col-span-2`}>
+                {t('tasks.title')}
+                <input className={inputClass} data-dialog-initial-focus name="title" required />
+              </label>
+              <label className={`${taskFormLabelClass} sm:col-span-2`}>
+                {t('tasks.descriptionLabel')}
+                <textarea className={`${inputClass} min-h-24 resize-y py-2`} name="description" />
+              </label>
+              <label className={taskFormLabelClass}>
+                {t('tasks.priority')}
+                <select className={inputClass} name="priority" defaultValue="medium">
+                  <option value="low">{t('tasks.low')}</option>
+                  <option value="medium">{t('tasks.medium')}</option>
+                  <option value="high">{t('tasks.high')}</option>
+                  <option value="critical">{t('tasks.critical')}</option>
+                </select>
+              </label>
+              <label className={taskFormLabelClass}>
+                {t('tasks.dueDate')}
+                <input className={inputClass} name="dueDate" type="date" />
+              </label>
+              <label className={taskFormLabelClass}>
+                {t('tasks.linkType')}
+                <select className={inputClass} name="entityType" defaultValue="record">
+                  <option value="record">{t('tasks.entity.record')}</option>
+                  <option value="sample">{t('tasks.entity.sample')}</option>
+                  <option value="issue">{t('tasks.entity.issue')}</option>
+                  <option value="test_run">{t('tasks.entity.testRun')}</option>
+                  <option value="measurement_result">{t('tasks.entity.measurement')}</option>
+                  <option value="specification_evaluation">{t('tasks.entity.evaluation')}</option>
+                  <option value="dataset">{t('tasks.entity.dataset')}</option>
+                </select>
+              </label>
+              <label className={taskFormLabelClass}>
+                {t('tasks.linkId')}
+                <input className={inputClass} name="entityId" />
+              </label>
+              <div className="flex justify-end gap-2 border-t border-slate-800 pt-4 sm:col-span-2">
+                <Button
+                  disabled={busy}
+                  onClick={() => setCreatorOpen(false)}
+                  type="button"
+                  variant="quiet"
+                >
+                  {locale === 'ko' ? '취소' : 'Cancel'}
+                </Button>
+                <Button disabled={busy} type="submit">
+                  {busy ? t('tasks.creating') : t('tasks.create')}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
       <ContextMenu menu={contextMenu} onClose={() => setContextMenu(undefined)} />
     </>

@@ -112,9 +112,12 @@ export function ServiceShell({
   );
   const [portal, setPortal] = useState<HTMLElement | null>(null);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
+  const [workspaceLoading, setWorkspaceLoading] = useState(true);
+  const [workspaceLoadError, setWorkspaceLoadError] = useState('');
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [commandOpen, setCommandOpen] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
+  const [commandIndex, setCommandIndex] = useState(0);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const mobileMenuButtonRef = useRef<HTMLButtonElement>(null);
@@ -123,6 +126,7 @@ export function ServiceShell({
   const closeCommands = useCallback(() => {
     setCommandOpen(false);
     setCommandQuery('');
+    setCommandIndex(0);
   }, []);
   const mobileSidebarRef = useModalDialog<HTMLElement>(
     mobileOpen && isMobile,
@@ -136,9 +140,17 @@ export function ServiceShell({
   );
 
   const loadWorkspaces = useCallback(async () => {
-    const result = await request<{ items: WorkspaceSummary[] }>('/workspaces');
-    setWorkspaces(result.items);
-  }, [request]);
+    setWorkspaceLoading(true);
+    try {
+      const result = await request<{ items: WorkspaceSummary[] }>('/workspaces');
+      setWorkspaces(result.items);
+      setWorkspaceLoadError('');
+    } catch {
+      setWorkspaceLoadError(t('sidebar.workspacesUnavailable'));
+    } finally {
+      setWorkspaceLoading(false);
+    }
+  }, [request, t]);
   useEffect(() => void loadWorkspaces(), [loadWorkspaces]);
   useEffect(() => {
     if (!workspaceId) {
@@ -220,6 +232,9 @@ export function ServiceShell({
   const sectionLabel =
     project?.name ??
     (inWorkspaceData ? t('common.data') : inProjects ? t('common.projects') : utilitySection);
+  useEffect(() => {
+    document.title = `${sectionLabel} · Engrove`;
+  }, [sectionLabel]);
   const projectLinks = projectBase
     ? [
         { to: projectBase, label: t('common.overview'), icon: '⌂', end: true, visible: true },
@@ -307,6 +322,10 @@ export function ServiceShell({
   const visibleCommands = commands.filter((command) =>
     `${command.label} ${command.hint}`.toLowerCase().includes(commandQuery.trim().toLowerCase()),
   );
+  useEffect(() => {
+    setCommandIndex(0);
+  }, [commandQuery, commandOpen]);
+  const safeCommandIndex = Math.min(commandIndex, Math.max(visibleCommands.length - 1, 0));
   function runCommand(command: (typeof commands)[number]) {
     closeCommands();
     void command.run();
@@ -317,7 +336,7 @@ export function ServiceShell({
     <ServiceSidebarPortalContext.Provider value={portal}>
       <div className="compact-ui flex min-h-screen flex-col text-slate-100 md:flex-row">
         <a
-          className="fixed left-4 top-3 z-[60] -translate-y-20 rounded-lg bg-sky-300 px-3 py-2 font-semibold text-slate-950 focus:translate-y-0"
+          className="skip-link fixed left-4 top-3 z-[60] rounded-lg bg-sky-300 px-3 py-2 font-semibold text-slate-950"
           href="#main-content"
         >
           {t('sidebar.skip')}
@@ -365,26 +384,50 @@ export function ServiceShell({
 
           <div className="border-b border-slate-800 p-2">
             {sidebarExpanded ? (
-              <label className="block text-[10px] font-medium uppercase tracking-wider text-slate-500">
-                {t('common.workspace')}
-                <select
-                  aria-label={t('sidebar.selectWorkspace')}
-                  className="mt-1 min-h-8 w-full rounded-md border border-slate-700 bg-slate-900 px-2 text-xs font-medium text-slate-200 outline-none focus:border-sky-400"
-                  value={workspaceId ?? ''}
-                  onChange={(event) =>
-                    navigate(
-                      event.target.value ? `/workspaces/${event.target.value}/data` : '/workspaces',
-                    )
-                  }
-                >
-                  <option value="">{t('sidebar.selectWorkspacePlaceholder')}</option>
-                  {workspaces.map((item) => (
-                    <option key={item.id} value={item.publicId ?? item.id}>
-                      {item.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <div>
+                <label className="block text-[10px] font-medium uppercase tracking-wider text-slate-500">
+                  {t('common.workspace')}
+                  <select
+                    aria-label={t('sidebar.selectWorkspace')}
+                    className="mt-1 min-h-8 w-full rounded-md border border-slate-700 bg-slate-900 px-2 text-xs font-medium text-slate-200 outline-none focus:border-sky-400"
+                    value={workspaceId ?? ''}
+                    onChange={(event) =>
+                      navigate(
+                        event.target.value
+                          ? `/workspaces/${event.target.value}/data`
+                          : '/workspaces',
+                      )
+                    }
+                  >
+                    <option value="">{t('sidebar.selectWorkspacePlaceholder')}</option>
+                    {workspaces.map((item) => (
+                      <option key={item.id} value={item.publicId ?? item.id}>
+                        {item.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {workspaceLoading && (
+                  <span className="mt-1 block text-[10px] font-normal normal-case tracking-normal text-slate-500">
+                    {t('common.loading')}
+                  </span>
+                )}
+                {workspaceLoadError && (
+                  <span className="mt-1 flex items-center justify-between gap-2 text-[10px] font-normal normal-case tracking-normal text-amber-300">
+                    <span>{workspaceLoadError}</span>
+                    <button
+                      className="rounded px-1.5 py-1 text-sky-300 hover:bg-slate-800"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        void loadWorkspaces();
+                      }}
+                      type="button"
+                    >
+                      {t('common.retry')}
+                    </button>
+                  </span>
+                )}
+              </div>
             ) : (
               <button
                 aria-label={t('sidebar.selectWorkspace')}
@@ -645,6 +688,9 @@ export function ServiceShell({
             className={`compact-page mx-auto w-full min-w-0 flex-1 ${dataWorkspace ? 'max-w-none px-3 py-3' : 'max-w-[1500px] px-5 py-7 lg:px-8'}`}
             id="main-content"
           >
+            <p aria-live="polite" className="sr-only">
+              {sectionLabel}
+            </p>
             {children}
           </main>
         </div>
@@ -666,6 +712,11 @@ export function ServiceShell({
               tabIndex={-1}
             >
               <input
+                aria-activedescendant={
+                  visibleCommands.length ? `command-option-${safeCommandIndex}` : undefined
+                }
+                aria-controls="command-results"
+                aria-expanded="true"
                 aria-label={t('command.search')}
                 data-dialog-initial-focus
                 className="h-12 w-full border-b border-slate-800 bg-transparent px-4 text-sm text-slate-100 outline-none placeholder:text-slate-600"
@@ -674,15 +725,35 @@ export function ServiceShell({
                 value={commandQuery}
                 onChange={(event) => setCommandQuery(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === 'Enter' && visibleCommands[0]) runCommand(visibleCommands[0]);
+                  if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    setCommandIndex((current) =>
+                      visibleCommands.length ? (current + 1) % visibleCommands.length : 0,
+                    );
+                  }
+                  if (event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    setCommandIndex((current) =>
+                      visibleCommands.length
+                        ? (current - 1 + visibleCommands.length) % visibleCommands.length
+                        : 0,
+                    );
+                  }
+                  if (event.key === 'Enter' && visibleCommands[safeCommandIndex]) {
+                    event.preventDefault();
+                    runCommand(visibleCommands[safeCommandIndex]);
+                  }
                 }}
               />
-              <div className="max-h-80 overflow-y-auto p-2">
-                {visibleCommands.map((command) => (
+              <div className="max-h-80 overflow-y-auto p-2" id="command-results">
+                {visibleCommands.map((command, index) => (
                   <button
-                    className="flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-sky-400/10 hover:text-sky-200"
+                    aria-current={index === safeCommandIndex ? 'true' : undefined}
+                    className={`flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left text-sm ${index === safeCommandIndex ? 'bg-sky-400/10 text-sky-200' : 'text-slate-300 hover:bg-slate-800 hover:text-slate-100'}`}
+                    id={`command-option-${index}`}
                     key={`${command.hint}:${command.label}`}
                     onClick={() => runCommand(command)}
+                    onMouseEnter={() => setCommandIndex(index)}
                     type="button"
                   >
                     <span>{command.label}</span>

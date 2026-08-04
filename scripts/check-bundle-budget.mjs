@@ -1,13 +1,15 @@
-import { readdir, stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 const kibibyte = 1024;
 const budgets = {
   maxJavaScriptChunk: 450 * kibibyte,
-  // Calculated fields, revision history, metadata editing, and the command surface are product-level capabilities.
-  // Keep the post-expansion baseline tight while leaving only modest regression headroom.
-  totalJavaScript: 1_124 * kibibyte,
-  maxCssAsset: 66 * kibibyte,
+  // Calculated fields, revision history, metadata editing, the command surface, the project
+  // dashboard, visual canvas, guided element picker, and bilingual page dictionary are
+  // product-level capabilities. Keep modest headroom above that baseline while retaining the
+  // stricter per-chunk limit.
+  totalJavaScript: 1_232 * kibibyte,
+  maxCssAsset: 90 * kibibyte,
 };
 
 const assetsDirectory = resolve(process.argv[2] ?? 'apps/web/dist/assets');
@@ -29,6 +31,21 @@ if (javascriptAssets.length === 0) {
 }
 
 const failures = [];
+const chunkImports = new Map(
+  await Promise.all(
+    javascriptAssets.map(async (asset) => {
+      const source = await readFile(resolve(assetsDirectory, asset.name), 'utf8');
+      const imports = new Set(
+        [...source.matchAll(/(?:from|import\()["']\.\/([^"']+\.js)["']/g)].map((match) => match[1]),
+      );
+      return [asset.name, imports];
+    }),
+  ),
+);
+const circularImport = findCircularImport(chunkImports);
+if (circularImport) {
+  failures.push(`Circular JavaScript chunk import: ${circularImport.join(' -> ')}.`);
+}
 for (const asset of javascriptAssets) {
   if (asset.size > budgets.maxJavaScriptChunk) {
     failures.push(
@@ -67,4 +84,32 @@ if (failures.length > 0) {
 
 function formatKiB(bytes) {
   return `${(bytes / kibibyte).toFixed(1)} KiB`;
+}
+
+function findCircularImport(graph) {
+  const visiting = new Set();
+  const visited = new Set();
+  const path = [];
+
+  function visit(node) {
+    if (visiting.has(node)) return [...path.slice(path.indexOf(node)), node];
+    if (visited.has(node)) return undefined;
+    visiting.add(node);
+    path.push(node);
+    for (const dependency of graph.get(node) ?? []) {
+      if (!graph.has(dependency)) continue;
+      const cycle = visit(dependency);
+      if (cycle) return cycle;
+    }
+    path.pop();
+    visiting.delete(node);
+    visited.add(node);
+    return undefined;
+  }
+
+  for (const node of graph.keys()) {
+    const cycle = visit(node);
+    if (cycle) return cycle;
+  }
+  return undefined;
 }

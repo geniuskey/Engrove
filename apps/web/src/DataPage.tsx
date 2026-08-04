@@ -32,7 +32,9 @@ import {
   menuFromKeyboard,
   menuFromPointer,
 } from './ContextMenu.js';
+import { CellValuePreview } from './DataPageCharts.js';
 import { useI18n } from './i18n.js';
+import type { TranslationKey } from './i18n-types.js';
 import { useServiceSidebarPortal } from './ServiceSidebar.js';
 import { useModalDialog } from './useModalDialog.js';
 import type {
@@ -111,6 +113,38 @@ const MAX_COLUMN_WIDTH = 480;
 const COLUMN_KEYBOARD_STEP = 8;
 
 type SchemaFieldType = FieldType | 'image';
+const fieldTypeTranslationKeys: Record<SchemaFieldType, TranslationKey> = {
+  text: 'data.fieldTypeText',
+  long_text: 'data.fieldTypeLongText',
+  integer: 'data.fieldTypeInteger',
+  decimal: 'data.fieldTypeDecimal',
+  boolean: 'data.fieldTypeBoolean',
+  date: 'data.fieldTypeDate',
+  datetime: 'data.fieldTypeDatetime',
+  single_select: 'data.fieldTypeSingleSelect',
+  multi_select: 'data.fieldTypeMultiSelect',
+  user: 'data.fieldTypeUser',
+  relation: 'data.fieldTypeRelation',
+  file: 'data.fieldTypeFile',
+  dataset: 'data.fieldTypeDataset',
+  quantity: 'data.fieldTypeQuantity',
+  measurement: 'data.fieldTypeMeasurement',
+  range: 'data.fieldTypeRange',
+  spectral_data: 'data.fieldTypeSpectralData',
+  tabular_data: 'data.fieldTypeTabularData',
+  formula: 'data.fieldTypeFormula',
+  lookup: 'data.fieldTypeLookup',
+  rollup: 'data.fieldTypeRollup',
+  image: 'data.fieldTypeImage',
+};
+const fieldGroupTranslationKeys = {
+  Basic: 'data.fieldGroupBasic',
+  Choice: 'data.fieldGroupChoice',
+  Linked: 'data.fieldGroupLinked',
+  Engineering: 'data.fieldGroupEngineering',
+  Structured: 'data.fieldGroupStructured',
+  Calculated: 'data.fieldGroupCalculated',
+} as const satisfies Record<string, TranslationKey>;
 const imageFieldMeta = {
   label: 'Image',
   description: 'Upload and preview an image in each cell',
@@ -123,6 +157,10 @@ function fieldMeta(field: FieldDefinition) {
   return field.fieldType === 'file' && isImageField(field.config)
     ? imageFieldMeta
     : fieldTypeMeta[field.fieldType];
+}
+
+function schemaTypeForField(field: FieldDefinition): SchemaFieldType {
+  return field.fieldType === 'file' && isImageField(field.config) ? 'image' : field.fieldType;
 }
 
 interface TableLayoutPreference {
@@ -309,6 +347,13 @@ const viewTypeMeta: Record<RecordViewType, { icon: string; label: string }> = {
   kanban: { icon: '▥', label: 'Kanban' },
   calendar: { icon: '□', label: 'Calendar' },
 };
+const viewTypeTranslationKeys: Record<RecordViewType, TranslationKey> = {
+  grid: 'data.viewGrid',
+  form: 'data.viewForm',
+  gallery: 'data.viewGallery',
+  kanban: 'data.viewKanban',
+  calendar: 'data.viewCalendar',
+};
 
 function configuredSorts(
   sortField: string,
@@ -467,6 +512,9 @@ export function DataPage({
   const [bulkBusy, setBulkBusy] = useState(false);
   const [showSchema, setShowSchema] = useState(false);
   const [showTableSettings, setShowTableSettings] = useState(false);
+  const [showCreateTable, setShowCreateTable] = useState(false);
+  const [createTableBusy, setCreateTableBusy] = useState(false);
+  const [createTableError, setCreateTableError] = useState('');
   const [schemaSearch, setSchemaSearch] = useState('');
   const [schemaSelection, setSchemaSelection] = useState<'new' | string>('new');
   const [schemaFieldType, setSchemaFieldType] = useState<SchemaFieldType>('text');
@@ -489,11 +537,17 @@ export function DataPage({
   const [messageTone, setMessageTone] = useState<'info' | 'success' | 'error'>('info');
   const [contextMenu, setContextMenu] = useState<ContextMenuModel>();
   const [csvResult, setCsvResult] = useState<CsvResult>();
+  const createTableTriggerRef = useRef<HTMLButtonElement>(null);
   const newRecordDialogRef = useModalDialog<HTMLElement>(showNewRecord, () =>
     setShowNewRecord(false),
   );
   const quickRecordDialogRef = useModalDialog<HTMLElement>(Boolean(selectedRecord), () =>
     setSelectedRecord(undefined),
+  );
+  const createTableDialogRef = useModalDialog<HTMLElement>(
+    showCreateTable,
+    () => setShowCreateTable(false),
+    createTableTriggerRef,
   );
   const appliedViewKey = useRef('');
   const pendingViewId = useRef('');
@@ -540,6 +594,11 @@ export function DataPage({
     locale === 'ko'
       ? '변경 사항은 이 테이블의 모든 뷰에 공유됩니다.'
       : 'Changes are shared across every view of this table.';
+  const openCreateTable = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    createTableTriggerRef.current = event.currentTarget;
+    setCreateTableError('');
+    setShowCreateTable(true);
+  };
   const selectDataLocation = useCallback(
     (objectTypeIdentifier: string, viewId = 'all', replace = false) => {
       const canonicalIdentifier = canonicalTableIdentifier(objectTypeIdentifier);
@@ -905,7 +964,7 @@ export function DataPage({
       setMessage('');
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'Object types could not be loaded.');
+      setMessage(cause instanceof Error ? cause.message : t('data.objectTypesLoadFailed'));
     } finally {
       setTypesLoading(false);
     }
@@ -936,7 +995,7 @@ export function DataPage({
     } catch (cause) {
       if (requestId === dataContextRequestId.current) {
         setMessageTone('error');
-        setMessage(cause instanceof Error ? cause.message : 'Table context could not be loaded.');
+        setMessage(cause instanceof Error ? cause.message : t('data.tableContextLoadFailed'));
       }
     } finally {
       if (requestId === dataContextRequestId.current) setViewsLoading(false);
@@ -1117,7 +1176,7 @@ export function DataPage({
     } catch (cause) {
       if (requestId === recordsRequestId.current) {
         setMessageTone('error');
-        setMessage(cause instanceof Error ? cause.message : 'Records could not be loaded.');
+        setMessage(cause instanceof Error ? cause.message : t('data.recordsLoadFailed'));
       }
     } finally {
       if (requestId === recordsRequestId.current) setRecordsLoading(false);
@@ -1137,17 +1196,20 @@ export function DataPage({
       );
       await loadTypes();
       setMessageTone('success');
-      setMessage(result.changed ? 'Template installed.' : 'Template is already current.');
+      setMessage(result.changed ? t('data.templateInstalled') : t('data.templateCurrent'));
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'Template installation failed.');
+      setMessage(cause instanceof Error ? cause.message : t('data.templateInstallFailed'));
     }
   }
 
   async function createObjectType(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (createTableBusy) return;
     const form = event.currentTarget;
     const data = new FormData(form);
+    setCreateTableBusy(true);
+    setCreateTableError('');
     try {
       const created = await api<ObjectType>(`${base}/object-types`, {
         method: 'POST',
@@ -1159,11 +1221,16 @@ export function DataPage({
         }),
       });
       form.reset();
+      setShowCreateTable(false);
       await loadTypes();
       selectDataLocation(created.publicId ?? created.id);
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'Object type creation failed.');
+      const nextError = cause instanceof Error ? cause.message : t('data.objectTypeCreateFailed');
+      setMessage(nextError);
+      setCreateTableError(nextError);
+    } finally {
+      setCreateTableBusy(false);
     }
   }
 
@@ -1189,10 +1256,10 @@ export function DataPage({
       );
       setShowTableSettings(false);
       setMessageTone('success');
-      setMessage(`Table “${updated.pluralName}” updated.`);
+      setMessage(t('data.tableUpdated', { name: updated.pluralName }));
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'Table could not be updated.');
+      setMessage(cause instanceof Error ? cause.message : t('data.tableUpdateFailed'));
     } finally {
       setSchemaBusy(false);
     }
@@ -1237,10 +1304,10 @@ export function DataPage({
       setSchemaKeyEdited(false);
       setSchemaFieldType('text');
       setMessageTone('success');
-      setMessage(`${created.name} field created.`);
+      setMessage(t('data.fieldCreated', { name: created.name }));
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'Field creation failed.');
+      setMessage(cause instanceof Error ? cause.message : t('data.fieldCreateFailed'));
     } finally {
       setSchemaBusy(false);
     }
@@ -1281,10 +1348,10 @@ export function DataPage({
       );
       await Promise.all([loadDataContext(), loadRecords()]);
       setMessageTone('success');
-      setMessage(`${updated.name} field updated.`);
+      setMessage(t('data.fieldUpdated', { name: updated.name }));
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'Field update failed.');
+      setMessage(cause instanceof Error ? cause.message : t('data.fieldUpdateFailed'));
     } finally {
       setSchemaBusy(false);
     }
@@ -1304,7 +1371,7 @@ export function DataPage({
       await loadRecords();
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'CSV import failed.');
+      setMessage(cause instanceof Error ? cause.message : t('data.csvImportFailed'));
     }
   }
 
@@ -1328,7 +1395,7 @@ export function DataPage({
       URL.revokeObjectURL(url);
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'CSV export failed.');
+      setMessage(cause instanceof Error ? cause.message : t('data.csvExportFailed'));
     }
   }
 
@@ -1736,7 +1803,7 @@ export function DataPage({
     }));
     setSelectedRecord(updated);
     setMessageTone('success');
-    setMessage(`${updated.displayName} saved.`);
+    setMessage(t('data.recordSaved', { name: updated.displayName }));
   }
 
   async function createInlineRecord(
@@ -1748,14 +1815,11 @@ export function DataPage({
     });
     await loadRecords();
     setMessageTone('success');
-    setMessage(`${created.displayName} created. The next blank row is ready.`);
+    setMessage(t('data.recordCreated', { name: created.displayName }));
   }
 
   function confirmDiscardViewChanges() {
-    return (
-      !viewDirty ||
-      window.confirm('Discard unsaved changes to this shared view? This cannot be undone.')
-    );
+    return !viewDirty || window.confirm(t('data.discardViewConfirm'));
   }
 
   function chooseObjectType(objectTypeId: string) {
@@ -1852,13 +1916,13 @@ export function DataPage({
       );
       setFields(result.items);
       setMessageTone('success');
-      setMessage('Order saved.');
-      setLayoutAnnouncement('Order saved.');
+      setMessage(t('data.orderSaved'));
+      setLayoutAnnouncement(t('data.orderSaved'));
     } catch (error) {
       setFields(previous);
       setFieldOrderIds(previousOrder);
       setMessageTone('error');
-      setMessage(error instanceof ApiError ? error.message : 'Could not reorder columns.');
+      setMessage(error instanceof ApiError ? error.message : t('data.reorderFailed'));
     } finally {
       setSchemaBusy(false);
       setSchemaDraggedFieldId('');
@@ -1877,12 +1941,12 @@ export function DataPage({
     const dateFieldId = String(data.get('dateFieldId') ?? '');
     if (viewType === 'kanban' && !groupFieldId) {
       setMessageTone('error');
-      setMessage('Choose a single-select grouping field for the Kanban view.');
+      setMessage(t('data.chooseKanbanGroup'));
       return;
     }
     if (viewType === 'calendar' && !dateFieldId) {
       setMessageTone('error');
-      setMessage('Choose a date field for the Calendar view.');
+      setMessage(t('data.chooseCalendarDate'));
       return;
     }
     const config: RecordViewConfig = {
@@ -1910,10 +1974,10 @@ export function DataPage({
       form.reset();
       selectDataLocation(selectedPublicId, createdViewId);
       setMessageTone('success');
-      setMessage(`View “${created.name}” created and shared with this project.`);
+      setMessage(t('data.viewCreated', { name: created.name }));
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'View could not be created.');
+      setMessage(cause instanceof Error ? cause.message : t('data.viewCreateFailed'));
     } finally {
       setViewBusy(false);
     }
@@ -1937,18 +2001,18 @@ export function DataPage({
       );
       setViews((current) => current.map((view) => (view.id === updated.id ? updated : view)));
       setMessageTone('success');
-      setMessage(`View “${updated.name}” saved.`);
+      setMessage(t('data.viewSaved', { name: updated.name }));
     } catch (cause) {
       if (cause instanceof ApiError && cause.code === 'VERSION_CONFLICT') await loadDataContext();
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'View could not be saved.');
+      setMessage(cause instanceof Error ? cause.message : t('data.viewSaveFailed'));
     } finally {
       setViewBusy(false);
     }
   }
 
   async function renameView(view: RecordView) {
-    const name = window.prompt('Rename view', view.name)?.trim();
+    const name = window.prompt(t('data.renameViewPrompt'), view.name)?.trim();
     if (!name || name === view.name) return;
     setViewBusy(true);
     try {
@@ -1970,11 +2034,11 @@ export function DataPage({
           .sort((left, right) => left.name.localeCompare(right.name)),
       );
       setMessageTone('success');
-      setMessage(`View renamed to “${updated.name}”.`);
+      setMessage(t('data.viewRenamed', { name: updated.name }));
     } catch (cause) {
       if (cause instanceof ApiError && cause.code === 'VERSION_CONFLICT') await loadDataContext();
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'View could not be renamed.');
+      setMessage(cause instanceof Error ? cause.message : t('data.viewRenameFailed'));
     } finally {
       setViewBusy(false);
     }
@@ -1996,10 +2060,10 @@ export function DataPage({
       );
       chooseView(created.publicId ?? created.id);
       setMessageTone('success');
-      setMessage(`View “${created.name}” duplicated.`);
+      setMessage(t('data.viewDuplicated', { name: created.name }));
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'View could not be duplicated.');
+      setMessage(cause instanceof Error ? cause.message : t('data.viewDuplicateFailed'));
     } finally {
       setViewBusy(false);
     }
@@ -2007,7 +2071,7 @@ export function DataPage({
 
   async function archiveView(target = selectedView) {
     if (!target) return;
-    if (!window.confirm(`Archive the shared view “${target.name}”?`)) return;
+    if (!window.confirm(t('data.archiveViewConfirm', { name: target.name }))) return;
     setViewBusy(true);
     try {
       await api(
@@ -2023,11 +2087,11 @@ export function DataPage({
       setViews((current) => current.filter((view) => view.id !== target.id));
       if (selectedView?.id === target.id) chooseView('all', true);
       setMessageTone('success');
-      setMessage(`View “${target.name}” archived.`);
+      setMessage(t('data.viewArchived', { name: target.name }));
     } catch (cause) {
       if (cause instanceof ApiError && cause.code === 'VERSION_CONFLICT') await loadDataContext();
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'View could not be archived.');
+      setMessage(cause instanceof Error ? cause.message : t('data.viewArchiveFailed'));
     } finally {
       setViewBusy(false);
     }
@@ -2035,8 +2099,7 @@ export function DataPage({
 
   async function archiveSelectedRows() {
     if (!selectedRows.size) return;
-    if (!window.confirm(`Archive ${selectedRows.size} selected record(s)? History is preserved.`))
-      return;
+    if (!window.confirm(t('data.archiveSelectedConfirm', { count: selectedRows.size }))) return;
     setBulkBusy(true);
     try {
       await Promise.all(
@@ -2051,13 +2114,11 @@ export function DataPage({
       );
       setSelectedRows(new Set());
       setMessageTone('success');
-      setMessage('Selected records archived.');
+      setMessage(t('data.selectedArchived'));
       await loadRecords();
     } catch (cause) {
       setMessageTone('error');
-      setMessage(
-        cause instanceof Error ? cause.message : 'Selected records could not be archived.',
-      );
+      setMessage(cause instanceof Error ? cause.message : t('data.selectedArchiveFailed'));
     } finally {
       setBulkBusy(false);
     }
@@ -2068,15 +2129,15 @@ export function DataPage({
       if (!navigator.clipboard) throw new Error('Clipboard is unavailable.');
       await navigator.clipboard.writeText(value);
       setMessageTone('success');
-      setMessage(`${label} copied.`);
+      setMessage(t('data.copied', { label }));
     } catch {
       setMessageTone('error');
-      setMessage('Clipboard access was denied by the browser.');
+      setMessage(t('data.clipboardDenied'));
     }
   }
 
   async function archiveRecord(record: DynamicRecord) {
-    if (!window.confirm(`Archive “${record.displayName}”? History is preserved.`)) return;
+    if (!window.confirm(t('data.archiveRecordConfirm', { name: record.displayName }))) return;
     try {
       await api(`${base}/object-types/${record.objectTypeId}/records/${record.id}/archive`, {
         method: 'POST',
@@ -2089,11 +2150,11 @@ export function DataPage({
       });
       if (selectedRecord?.id === record.id) setSelectedRecord(undefined);
       setMessageTone('success');
-      setMessage(`“${record.displayName}” archived.`);
+      setMessage(t('data.recordArchived', { name: record.displayName }));
       await loadRecords();
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : 'Record could not be archived.');
+      setMessage(cause instanceof Error ? cause.message : t('data.recordArchiveFailed'));
     }
   }
 
@@ -2320,7 +2381,7 @@ export function DataPage({
 
       {sidebarPortal &&
         createPortal(
-          <nav aria-label="Data navigation" className="p-2">
+          <nav aria-label={t('data.navigation')} className="p-2">
             <div className="mb-1 px-2 py-1.5">
               <p className="text-[10px] font-medium uppercase tracking-wider text-slate-500">
                 {workspaceMode ? t('data.workspaceTables') : t('data.engineeringTables')}
@@ -2330,19 +2391,17 @@ export function DataPage({
               </p>
             </div>
             {typesLoading && (
-              <div className="space-y-2 px-3 py-4" aria-label="Loading object types">
+              <div className="space-y-2 px-3 py-4" aria-label={t('data.loadingObjectTypes')}>
                 <div className="h-8 animate-pulse rounded bg-slate-800" />
                 <div className="h-8 animate-pulse rounded bg-slate-800" />
               </div>
             )}
             {!typesLoading && objectTypes.length === 0 && (
               <p className="px-3 py-4 text-sm text-slate-400">
-                {workspaceMode
-                  ? 'No tables yet. Create the first shared table below.'
-                  : 'No schema yet. Install the template or create one below.'}
+                {workspaceMode ? t('data.noWorkspaceTables') : t('data.noSchema')}
               </p>
             )}
-            <div aria-label="Tables and views" className="space-y-0.5">
+            <div aria-label={t('data.tablesAndViews')} className="space-y-0.5">
               {objectTypes.map((objectType) => {
                 const activeTable = selectedId === objectType.id;
                 return (
@@ -2423,38 +2482,38 @@ export function DataPage({
                               {allowed(user, 'schema.manage') && (
                                 <details className="relative -ml-6" data-popover-menu>
                                   <summary
-                                    aria-label={`Actions for view ${view.name}`}
+                                    aria-label={t('data.actionsForView', { name: view.name })}
                                     className="grid size-6 list-none cursor-pointer place-items-center rounded text-slate-600 opacity-0 marker:content-none hover:bg-slate-700 hover:text-slate-200 group-hover/view:opacity-100 focus:opacity-100"
                                   >
                                     ⋯
                                   </summary>
                                   <div className="absolute right-0 top-7 z-40 grid min-w-32 gap-0.5 rounded-md border border-slate-700 bg-slate-950 p-1 shadow-xl">
                                     <button
-                                      aria-label={`Rename view ${view.name}`}
+                                      aria-label={t('data.renameViewLabel', { name: view.name })}
                                       className="rounded px-2 py-1.5 text-left text-xs text-slate-300 hover:bg-slate-800"
                                       disabled={viewBusy}
                                       onClick={() => void renameView(view)}
                                       type="button"
                                     >
-                                      Rename
+                                      {t('data.rename')}
                                     </button>
                                     <button
-                                      aria-label={`Duplicate view ${view.name}`}
+                                      aria-label={t('data.duplicateViewLabel', { name: view.name })}
                                       className="rounded px-2 py-1.5 text-left text-xs text-slate-300 hover:bg-slate-800"
                                       disabled={viewBusy}
                                       onClick={() => void duplicateView(view)}
                                       type="button"
                                     >
-                                      Duplicate
+                                      {t('data.duplicate')}
                                     </button>
                                     <button
-                                      aria-label={`Archive view ${view.name}`}
+                                      aria-label={t('data.archiveViewLabel', { name: view.name })}
                                       className="rounded px-2 py-1.5 text-left text-xs text-rose-300 hover:bg-rose-500/10"
                                       disabled={viewBusy}
                                       onClick={() => void archiveView(view)}
                                       type="button"
                                     >
-                                      Archive
+                                      {t('common.archive')}
                                     </button>
                                   </div>
                                 </details>
@@ -2467,16 +2526,16 @@ export function DataPage({
                             onSubmit={(event) => void createView(event)}
                           >
                             <input
-                              aria-label="View name"
+                              aria-label={t('data.viewName')}
                               autoFocus
                               className={inputClass}
                               maxLength={120}
                               name="name"
-                              placeholder="View name"
+                              placeholder={t('data.viewName')}
                               required
                             />
                             <select
-                              aria-label="View type"
+                              aria-label={t('data.viewType')}
                               className={inputClass}
                               name="viewType"
                               value={newViewType}
@@ -2488,21 +2547,21 @@ export function DataPage({
                                 Object.entries(viewTypeMeta) as Array<
                                   [RecordViewType, (typeof viewTypeMeta)[RecordViewType]]
                                 >
-                              ).map(([type, meta]) => (
+                              ).map(([type]) => (
                                 <option key={type} value={type}>
-                                  {meta.label}
+                                  {t(viewTypeTranslationKeys[type])}
                                 </option>
                               ))}
                             </select>
                             {newViewType === 'kanban' && (
                               <select
-                                aria-label="Kanban grouping field"
+                                aria-label={t('data.kanbanGroupField')}
                                 className={inputClass}
                                 defaultValue=""
                                 name="groupFieldId"
                                 required
                               >
-                                <option value="">Kanban group field…</option>
+                                <option value="">{t('data.kanbanGroupFieldOption')}</option>
                                 {fields
                                   .filter((field) => field.fieldType === 'single_select')
                                   .map((field) => (
@@ -2514,13 +2573,13 @@ export function DataPage({
                             )}
                             {newViewType === 'calendar' && (
                               <select
-                                aria-label="Calendar date field"
+                                aria-label={t('data.calendarDateField')}
                                 className={inputClass}
                                 defaultValue=""
                                 name="dateFieldId"
                                 required
                               >
-                                <option value="">Calendar date field…</option>
+                                <option value="">{t('data.calendarDateFieldOption')}</option>
                                 {fields
                                   .filter((field) => ['date', 'datetime'].includes(field.fieldType))
                                   .map((field) => (
@@ -2532,7 +2591,7 @@ export function DataPage({
                             )}
                             <div className="flex gap-1">
                               <Button
-                                aria-label="Save new view"
+                                aria-label={t('data.saveNewView')}
                                 className="flex-1"
                                 disabled={viewBusy}
                                 variant="quiet"
@@ -2545,7 +2604,7 @@ export function DataPage({
                                 onClick={() => setShowCreateView(false)}
                                 type="button"
                               >
-                                Cancel
+                                {t('common.cancel')}
                               </button>
                             </div>
                           </form>
@@ -2557,35 +2616,15 @@ export function DataPage({
               })}
             </div>
             {allowed(user, 'schema.manage') && (
-              <details className="group mt-2 border-t border-slate-800 px-1 pt-2">
-                <summary className="cursor-pointer list-none rounded-md px-2 py-1.5 text-xs font-medium text-slate-400 hover:bg-slate-800 hover:text-sky-300">
+              <div className="mt-2 border-t border-slate-800 px-1 pt-2">
+                <button
+                  className="w-full rounded-md px-2 py-2 text-left text-xs font-medium text-slate-400 hover:bg-slate-800 hover:text-sky-300"
+                  onClick={openCreateTable}
+                  type="button"
+                >
                   {t('data.createTable')}
-                </summary>
-                <form className="mt-2 space-y-2" onSubmit={(event) => void createObjectType(event)}>
-                  <input
-                    className={inputClass}
-                    name="name"
-                    placeholder={t('data.typeName')}
-                    required
-                  />
-                  <input
-                    aria-label={t('data.tableLabel')}
-                    className={inputClass}
-                    name="pluralName"
-                    placeholder={t('data.tableLabel')}
-                    required
-                  />
-                  <input
-                    className={inputClass}
-                    name="key"
-                    placeholder={t('data.stableKey')}
-                    required
-                  />
-                  <Button className="w-full" variant="quiet" type="submit">
-                    {t('data.addTable')}
-                  </Button>
-                </form>
-              </details>
+                </button>
+              </div>
             )}
           </nav>,
           sidebarPortal,
@@ -2622,6 +2661,14 @@ export function DataPage({
                 </span>
               ))}
             </div>
+            {allowed(user, 'schema.manage') && (
+              <Button className="mt-6" onClick={openCreateTable} type="button">
+                <span aria-hidden="true" className="mr-1 text-base leading-none">
+                  +
+                </span>
+                {t('data.createTable')}
+              </Button>
+            )}
           </div>
         ) : (
           <>
@@ -2633,10 +2680,7 @@ export function DataPage({
                 <p className="font-mono text-[10px] uppercase tracking-widest text-sky-400">
                   {selected.key}
                 </p>
-                <HelpTip label="Table controls help">
-                  Drag to resize or reorder columns. Select cell ranges to copy or paste, and
-                  right-click for more actions.
-                </HelpTip>
+                <HelpTip label={t('data.tableControlsHelp')}>{t('data.tableControlsBody')}</HelpTip>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 {workspaceMode && Boolean(workspaceData?.legacyProjects?.length) && (
@@ -2704,17 +2748,18 @@ export function DataPage({
                 {allowed(user, 'record.create') && (
                   <details className="group relative" data-popover-menu>
                     <summary
-                      aria-label="More table actions"
+                      aria-label={t('data.moreTableActions')}
                       className="grid size-9 cursor-pointer list-none place-items-center rounded-lg border border-slate-800 bg-slate-900/75 text-base text-slate-500 shadow-sm marker:content-none hover:border-slate-700 hover:bg-slate-800 hover:text-slate-200"
-                      title="More table actions"
+                      title={t('data.moreTableActions')}
                     >
                       ⋯
                     </summary>
                     <div className="absolute right-0 top-10 z-50 w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-slate-700 bg-slate-950 p-4 shadow-2xl shadow-black/40">
-                      <h3 className="text-sm font-semibold text-slate-200">Import CSV</h3>
+                      <h3 className="text-sm font-semibold text-slate-200">
+                        {t('data.importCsv')}
+                      </h3>
                       <p className="mt-1 text-xs leading-relaxed text-slate-500">
-                        Use displayName and stable field keys as headers. Relations use
-                        semicolon-separated record UUIDs.
+                        {t('data.importHint')}
                       </p>
                       <form className="mt-3" onSubmit={(event) => void importCsv(event)}>
                         <input
@@ -2725,7 +2770,7 @@ export function DataPage({
                           type="file"
                         />
                         <Button className="mt-3 w-full" variant="quiet" type="submit">
-                          Import records
+                          {t('data.importRecords')}
                         </Button>
                       </form>
                       {csvResult && (
@@ -2788,7 +2833,7 @@ export function DataPage({
                     />
                     {selected.system && (
                       <span className="text-[10px] font-normal text-slate-500">
-                        Template table keys are protected.
+                        {t('data.templateKeysProtected')}
                       </span>
                     )}
                   </label>
@@ -2810,7 +2855,7 @@ export function DataPage({
                     onClick={() => setShowTableSettings(false)}
                     type="button"
                   >
-                    Cancel
+                    {t('common.cancel')}
                   </button>
                 </div>
               </form>
@@ -2825,11 +2870,10 @@ export function DataPage({
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
                       <h3 className="text-sm font-semibold text-slate-100" id="schema-editor-title">
-                        Schema editor
+                        {t('data.schemaEditor')}
                       </h3>
-                      <HelpTip label="Schema editor help">
-                        Drag fields to set their shared order. Status dots show whether searchable
-                        projections are ready.
+                      <HelpTip label={t('data.schemaEditorHelp')}>
+                        {t('data.schemaEditorBody')}
                       </HelpTip>
                       <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-400">
                         {fields.length} {fields.length === 1 ? 'field' : 'fields'}
@@ -2843,7 +2887,7 @@ export function DataPage({
                     </div>
                   </div>
                   <button
-                    aria-label="Close schema editor"
+                    aria-label={t('data.closeSchemaEditor')}
                     className="grid size-7 place-items-center rounded-md text-sm text-slate-500 hover:bg-slate-800 hover:text-slate-200"
                     onClick={() => setShowSchema(false)}
                     type="button"
@@ -2863,16 +2907,16 @@ export function DataPage({
                           ⌕
                         </span>
                         <input
-                          aria-label="Search fields"
+                          aria-label={t('data.searchFields')}
                           className={`${inputClass} pl-7`}
-                          placeholder="Search fields"
+                          placeholder={t('data.searchFields')}
                           type="search"
                           value={schemaSearch}
                           onChange={(event) => setSchemaSearch(event.target.value)}
                         />
                       </div>
                       <Button
-                        aria-label="Add field"
+                        aria-label={t('data.addField')}
                         className="shrink-0"
                         variant="quiet"
                         onClick={beginNewSchemaField}
@@ -2883,7 +2927,7 @@ export function DataPage({
                     </div>
 
                     <div
-                      aria-label="Field definitions"
+                      aria-label={t('data.fieldDefinitions')}
                       className="mt-2 overflow-y-auto pr-1"
                       role="list"
                       style={{ maxHeight: '16rem' }}
@@ -2893,7 +2937,7 @@ export function DataPage({
                         const active = schemaSelection === field.id;
                         return (
                           <div
-                            aria-label={`Field ${field.name}`}
+                            aria-label={t('data.fieldLabel', { name: field.name })}
                             className={`group flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors ${
                               active || schemaDragTargetId === field.id
                                 ? 'border-sky-400/30 bg-sky-400/10'
@@ -2925,14 +2969,14 @@ export function DataPage({
                             }}
                           >
                             <button
-                              aria-label={`Reorder field ${field.name}`}
+                              aria-label={t('data.reorderField', { name: field.name })}
                               className="shrink-0 cursor-grab rounded px-0.5 py-1 text-sm leading-none text-slate-600 hover:bg-slate-800 hover:text-sky-300 active:cursor-grabbing"
                               disabled={schemaBusy || Boolean(schemaSearch.trim())}
                               draggable={!schemaBusy && !schemaSearch.trim()}
                               title={
                                 schemaSearch.trim()
-                                  ? 'Clear search to reorder fields.'
-                                  : 'Drag to reorder. Arrow keys also work.'
+                                  ? t('data.clearSearchToReorder')
+                                  : t('data.dragToReorder')
                               }
                               type="button"
                               onDragEnd={() => {
@@ -2960,7 +3004,7 @@ export function DataPage({
                               ⠿
                             </button>
                             <button
-                              aria-label={`Edit field ${field.name}`}
+                              aria-label={t('data.editField', { name: field.name })}
                               className="flex min-w-0 flex-1 items-center gap-2 text-left"
                               onClick={() => setSchemaSelection(field.id)}
                               type="button"
@@ -2982,7 +3026,7 @@ export function DataPage({
                                   </span>
                                   {field.required && (
                                     <span
-                                      aria-label="Required"
+                                      aria-label={t('data.required')}
                                       className="text-[10px] text-amber-300"
                                     >
                                       *
@@ -2990,11 +3034,14 @@ export function DataPage({
                                   )}
                                 </span>
                                 <span className="block truncate font-mono text-[9px] leading-tight text-slate-600">
-                                  {field.key} · {meta.label}
+                                  {field.key} ·{' '}
+                                  {t(fieldTypeTranslationKeys[schemaTypeForField(field)])}
                                 </span>
                               </span>
                               <span
-                                aria-label={`Projection ${field.projectionStatus}`}
+                                aria-label={t('data.projectionStatus', {
+                                  status: field.projectionStatus,
+                                })}
                                 className={`mt-1 size-1.5 shrink-0 rounded-full ${
                                   field.projectionStatus === 'ready'
                                     ? 'bg-emerald-400'
@@ -3002,7 +3049,9 @@ export function DataPage({
                                       ? 'bg-rose-400'
                                       : 'animate-pulse bg-amber-400'
                                 }`}
-                                title={`Projection ${field.projectionStatus}`}
+                                title={t('data.projectionStatus', {
+                                  status: field.projectionStatus,
+                                })}
                               />
                             </button>
                           </div>
@@ -3010,9 +3059,11 @@ export function DataPage({
                       })}
                       {filteredSchemaFields.length === 0 && (
                         <div className="rounded-lg border border-dashed border-slate-800 px-4 py-8 text-center">
-                          <p className="text-xs font-medium text-slate-400">No matching fields</p>
+                          <p className="text-xs font-medium text-slate-400">
+                            {t('data.noMatchingFields')}
+                          </p>
                           <p className="mt-1 text-[11px] text-slate-600">
-                            Try a field name, key, or type.
+                            {t('data.tryFieldSearch')}
                           </p>
                         </div>
                       )}
@@ -3025,14 +3076,13 @@ export function DataPage({
                         <div className="flex items-start justify-between gap-3">
                           <div>
                             <p className="text-[10px] font-semibold uppercase tracking-widest text-sky-400">
-                              New field
+                              {t('data.newField')}
                             </p>
                             <h4 className="mt-1 text-base font-semibold text-slate-100">
-                              Add a field
+                              {t('data.addFieldHeading')}
                             </h4>
                             <p className="mt-1 max-w-xl text-xs leading-relaxed text-slate-500">
-                              Choose a data type first. Only the settings relevant to that type will
-                              appear.
+                              {t('data.addFieldBody')}
                             </p>
                           </div>
                           <span
@@ -3045,14 +3095,14 @@ export function DataPage({
 
                         <div className="mt-5 grid gap-4 sm:grid-cols-2">
                           <label className={fieldLabelClass}>
-                            Field name
+                            {t('data.fieldName')}
                             <input
-                              aria-label="Field name"
+                              aria-label={t('data.fieldName')}
                               autoFocus
                               className={`${inputClass} mt-1.5`}
                               maxLength={120}
                               name="name"
-                              placeholder="e.g. Inspection status"
+                              placeholder={t('data.fieldNameExample')}
                               required
                               value={schemaFieldName}
                               onChange={(event) => {
@@ -3067,9 +3117,9 @@ export function DataPage({
                             />
                           </label>
                           <label className={fieldLabelClass}>
-                            Stable field key
+                            {t('data.stableFieldKey')}
                             <input
-                              aria-label="Stable field key"
+                              aria-label={t('data.stableFieldKey')}
                               className={`${inputClass} mt-1.5 font-mono`}
                               maxLength={64}
                               name="key"
@@ -3082,14 +3132,12 @@ export function DataPage({
                                 setSchemaFieldKeyValue(event.target.value.toLowerCase());
                               }}
                             />
-                            <span className={fieldHintClass}>
-                              Used by imports and API integrations; it cannot change later.
-                            </span>
+                            <span className={fieldHintClass}>{t('data.stableKeyHint')}</span>
                           </label>
                           <label className={wideFieldLabelClass}>
-                            Field type
+                            {t('data.fieldType')}
                             <select
-                              aria-label="Field type"
+                              aria-label={t('data.fieldType')}
                               className={`${inputClass} mt-1.5`}
                               name="fieldType"
                               value={schemaFieldType}
@@ -3112,11 +3160,10 @@ export function DataPage({
                                 );
                                 if (!groupTypes.length) return null;
                                 return (
-                                  <optgroup key={group} label={group}>
+                                  <optgroup key={group} label={t(fieldGroupTranslationKeys[group])}>
                                     {groupTypes.map((type) => (
                                       <option key={type} value={type}>
-                                        {schemaFieldTypeMeta[type].label} —{' '}
-                                        {schemaFieldTypeMeta[type].description}
+                                        {t(fieldTypeTranslationKeys[type])}
                                       </option>
                                     ))}
                                   </optgroup>
@@ -3125,45 +3172,45 @@ export function DataPage({
                             </select>
                           </label>
                           <label className={wideFieldLabelClass}>
-                            Description <span className="font-normal text-slate-600">Optional</span>
+                            {t('workspaces.descriptionLabel')}{' '}
+                            <span className="font-normal text-slate-600">
+                              {t('common.optional')}
+                            </span>
                             <textarea
-                              aria-label="Field description"
+                              aria-label={t('data.fieldDescription')}
                               className={`${inputClass} mt-1.5 min-h-20 resize-y`}
                               maxLength={500}
                               name="description"
-                              placeholder="Explain what belongs in this field."
+                              placeholder={t('data.descriptionPlaceholder')}
                             />
                           </label>
 
                           {['single_select', 'multi_select'].includes(schemaFieldType) && (
                             <label className={wideFieldLabelClass}>
-                              Options
+                              {t('data.options')}
                               <textarea
-                                aria-label="Select options"
+                                aria-label={t('data.selectOptions')}
                                 className={`${inputClass} mt-1.5 min-h-28 resize-y font-mono`}
                                 name="options"
                                 placeholder={'ready: Ready\nblocked: Blocked\napproved: Approved'}
                                 required
                               />
-                              <span className={fieldHintClass}>
-                                One option per line. Use “stable-key: Display label” to preserve API
-                                values.
-                              </span>
+                              <span className={fieldHintClass}>{t('data.optionsHint')}</span>
                             </label>
                           )}
 
                           {schemaFieldType === 'relation' && (
                             <label className={wideFieldLabelClass}>
-                              Related table
+                              {t('data.relatedTable')}
                               <select
-                                aria-label="Related table"
+                                aria-label={t('data.relatedTable')}
                                 className={`${inputClass} mt-1.5`}
                                 defaultValue=""
                                 name="targetObjectTypeId"
                                 required
                               >
                                 <option disabled value="">
-                                  Select a table…
+                                  {t('data.selectTable')}
                                 </option>
                                 {objectTypes.map((objectType) => (
                                   <option key={objectType.id} value={objectType.id}>
@@ -3185,9 +3232,9 @@ export function DataPage({
                           {['quantity', 'measurement', 'range'].includes(schemaFieldType) && (
                             <>
                               <label className={fieldLabelClass}>
-                                Dimension
+                                {t('data.dimension')}
                                 <input
-                                  aria-label="Engineering dimension"
+                                  aria-label={t('data.engineeringDimension')}
                                   className={`${inputClass} mt-1.5`}
                                   name="dimension"
                                   placeholder="length"
@@ -3195,9 +3242,9 @@ export function DataPage({
                                 />
                               </label>
                               <label className={fieldLabelClass}>
-                                Canonical unit
+                                {t('data.canonicalUnit')}
                                 <input
-                                  aria-label="Canonical unit"
+                                  aria-label={t('data.canonicalUnit')}
                                   className={`${inputClass} mt-1.5 font-mono`}
                                   name="canonicalUnit"
                                   placeholder="m"
@@ -3205,9 +3252,9 @@ export function DataPage({
                                 />
                               </label>
                               <label className={wideFieldLabelClass}>
-                                Allowed units
+                                {t('data.allowedUnits')}
                                 <input
-                                  aria-label="Allowed units"
+                                  aria-label={t('data.allowedUnits')}
                                   className={`${inputClass} mt-1.5 font-mono`}
                                   name="allowedUnits"
                                   placeholder="m, mm, μm"
@@ -3215,9 +3262,9 @@ export function DataPage({
                                 />
                               </label>
                               <label className={fieldLabelClass}>
-                                Display precision
+                                {t('data.displayPrecision')}
                                 <input
-                                  aria-label="Display precision"
+                                  aria-label={t('data.displayPrecision')}
                                   className={`${inputClass} mt-1.5`}
                                   defaultValue="3"
                                   max="34"
@@ -3232,41 +3279,39 @@ export function DataPage({
                           {schemaFieldType === 'spectral_data' && (
                             <>
                               <div className="sm:col-span-2 rounded-lg border border-sky-400/20 bg-sky-400/10 px-3 py-2 text-[11px] leading-relaxed text-slate-400">
-                                Paste an Excel range with X values in the first column and one or
-                                more signal series in the remaining columns. The first row may
-                                contain headers.
+                                {t('data.spectralPasteHint')}
                               </div>
                               <label className={fieldLabelClass}>
-                                X-axis label
+                                {t('data.xAxisLabel')}
                                 <input
-                                  aria-label="X-axis label"
+                                  aria-label={t('data.xAxisLabel')}
                                   className={`${inputClass} mt-1.5`}
                                   defaultValue="Wavelength"
                                   name="xLabel"
                                 />
                               </label>
                               <label className={fieldLabelClass}>
-                                X-axis unit
+                                {t('data.xAxisUnit')}
                                 <input
-                                  aria-label="X-axis unit"
+                                  aria-label={t('data.xAxisUnit')}
                                   className={`${inputClass} mt-1.5 font-mono`}
                                   defaultValue="nm"
                                   name="xUnit"
                                 />
                               </label>
                               <label className={fieldLabelClass}>
-                                Signal label
+                                {t('data.signalLabel')}
                                 <input
-                                  aria-label="Signal label"
+                                  aria-label={t('data.signalLabel')}
                                   className={`${inputClass} mt-1.5`}
                                   defaultValue="Intensity"
                                   name="yLabel"
                                 />
                               </label>
                               <label className={fieldLabelClass}>
-                                Signal unit
+                                {t('data.signalUnit')}
                                 <input
-                                  aria-label="Signal unit"
+                                  aria-label={t('data.signalUnit')}
                                   className={`${inputClass} mt-1.5 font-mono`}
                                   defaultValue="a.u."
                                   name="yUnit"
@@ -3284,11 +3329,10 @@ export function DataPage({
                                   name="firstRowHeader"
                                   type="checkbox"
                                 />
-                                Treat the first pasted row as column headers
+                                {t('data.firstRowHeaders')}
                               </label>
                               <p className="mt-1 pl-5 text-[10px] leading-relaxed text-slate-500">
-                                Excel cells are stored as JSON columns and rows while preserving
-                                numbers, booleans, text, and blanks.
+                                {t('data.firstRowHeadersHint')}
                               </p>
                             </div>
                           )}
@@ -3317,24 +3361,24 @@ export function DataPage({
                                 }
                                 type="checkbox"
                               />
-                              Required value
+                              {t('data.requiredValue')}
                             </label>
                           )}
                           {schemaFieldType !== 'image' && fieldSupportsUnique(schemaFieldType) && (
                             <label className={checkboxLabelClass}>
                               <input className={checkboxClass} name="unique" type="checkbox" />
-                              Unique values
+                              {t('data.uniqueValues')}
                             </label>
                           )}
                           {schemaFieldType === 'relation' && (
                             <label className={checkboxLabelClass}>
                               <input className={checkboxClass} name="multiple" type="checkbox" />
-                              Allow multiple records
+                              {t('data.allowMultipleRecords')}
                             </label>
                           )}
                           {records.total > 0 && (
                             <span className="text-[10px] text-slate-600">
-                              Required becomes available after existing records are backfilled.
+                              {t('data.requiredBackfillHint')}
                             </span>
                           )}
                         </div>
@@ -3345,7 +3389,7 @@ export function DataPage({
                             onClick={() => setShowSchema(false)}
                             type="button"
                           >
-                            Cancel
+                            {t('common.cancel')}
                           </button>
                           <Button
                             disabled={
@@ -3365,13 +3409,14 @@ export function DataPage({
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div>
                             <p className="text-[10px] font-semibold uppercase tracking-widest text-sky-400">
-                              {fieldMeta(selectedSchemaField).label} field
+                              {t(fieldTypeTranslationKeys[schemaTypeForField(selectedSchemaField)])}{' '}
+                              {t('data.field')}
                             </p>
                             <h4 className="mt-1 text-base font-semibold text-slate-100">
                               Edit {selectedSchemaField.name}
                             </h4>
                             <p className="mt-1 max-w-xl text-xs leading-relaxed text-slate-500">
-                              Update labels and validation without breaking existing API references.
+                              {t('data.updateFieldBody')}
                             </p>
                           </div>
                           <span
@@ -3394,15 +3439,15 @@ export function DataPage({
                         <div className="mt-4 grid grid-cols-2 gap-3 rounded-lg border border-slate-800 bg-slate-900/40 p-3">
                           <div>
                             <p className="text-[10px] font-medium uppercase tracking-wide text-slate-600">
-                              Type
+                              {t('data.type')}
                             </p>
                             <p className="mt-1 text-xs text-slate-300">
-                              {fieldMeta(selectedSchemaField).label}
+                              {t(fieldTypeTranslationKeys[schemaTypeForField(selectedSchemaField)])}
                             </p>
                           </div>
                           <div>
                             <p className="text-[10px] font-medium uppercase tracking-wide text-slate-600">
-                              Stable key
+                              {t('data.stableKey')}
                             </p>
                             <p className="mt-1 truncate font-mono text-xs text-slate-300">
                               {selectedSchemaField.key}
@@ -3412,9 +3457,9 @@ export function DataPage({
 
                         <div className="mt-5 grid gap-4 sm:grid-cols-2">
                           <label className={wideFieldLabelClass}>
-                            Field name
+                            {t('data.fieldName')}
                             <input
-                              aria-label="Field name"
+                              aria-label={t('data.fieldName')}
                               className={`${inputClass} mt-1.5`}
                               defaultValue={selectedSchemaField.name}
                               maxLength={120}
@@ -3423,14 +3468,17 @@ export function DataPage({
                             />
                           </label>
                           <label className={wideFieldLabelClass}>
-                            Description <span className="font-normal text-slate-600">Optional</span>
+                            {t('workspaces.descriptionLabel')}{' '}
+                            <span className="font-normal text-slate-600">
+                              {t('common.optional')}
+                            </span>
                             <textarea
-                              aria-label="Field description"
+                              aria-label={t('data.fieldDescription')}
                               className={`${inputClass} mt-1.5 min-h-20 resize-y`}
                               defaultValue={selectedSchemaField.description}
                               maxLength={500}
                               name="description"
-                              placeholder="Explain what belongs in this field."
+                              placeholder={t('data.descriptionPlaceholder')}
                             />
                           </label>
 
@@ -3438,9 +3486,9 @@ export function DataPage({
                             selectedSchemaField.fieldType,
                           ) && (
                             <label className={wideFieldLabelClass}>
-                              Options
+                              {t('data.options')}
                               <textarea
-                                aria-label="Select options"
+                                aria-label={t('data.selectOptions')}
                                 className={`${inputClass} mt-1.5 min-h-28 resize-y font-mono`}
                                 defaultValue={(selectedSchemaField.config.options ?? [])
                                   .map((option) => `${option.key}: ${option.label}`)
@@ -3448,19 +3496,16 @@ export function DataPage({
                                 name="options"
                                 required
                               />
-                              <span className={fieldHintClass}>
-                                Changing stable option keys can invalidate existing values. Prefer
-                                editing labels only.
-                              </span>
+                              <span className={fieldHintClass}>{t('data.optionKeyWarning')}</span>
                             </label>
                           )}
 
                           {selectedSchemaField.fieldType === 'relation' && (
                             <>
                               <label className={wideFieldLabelClass}>
-                                Related table
+                                {t('data.relatedTable')}
                                 <select
-                                  aria-label="Related table"
+                                  aria-label={t('data.relatedTable')}
                                   aria-readonly="true"
                                   className={`${inputClass} mt-1.5 opacity-70`}
                                   disabled
@@ -3478,7 +3523,7 @@ export function DataPage({
                                   value={selectedSchemaField.config.targetObjectTypeId ?? ''}
                                 />
                                 <span className={fieldHintClass}>
-                                  The target is locked after creation to protect linked records.
+                                  {t('data.relationTargetLocked')}
                                 </span>
                               </label>
                             </>
@@ -3500,9 +3545,9 @@ export function DataPage({
                           ) && (
                             <>
                               <label className={fieldLabelClass}>
-                                Dimension
+                                {t('data.dimension')}
                                 <input
-                                  aria-label="Engineering dimension"
+                                  aria-label={t('data.engineeringDimension')}
                                   className={`${inputClass} mt-1.5 opacity-70`}
                                   defaultValue={selectedSchemaField.config.dimension}
                                   name="dimension"
@@ -3510,9 +3555,9 @@ export function DataPage({
                                 />
                               </label>
                               <label className={fieldLabelClass}>
-                                Canonical unit
+                                {t('data.canonicalUnit')}
                                 <input
-                                  aria-label="Canonical unit"
+                                  aria-label={t('data.canonicalUnit')}
                                   className={`${inputClass} mt-1.5 font-mono opacity-70`}
                                   defaultValue={selectedSchemaField.config.canonicalUnit}
                                   name="canonicalUnit"
@@ -3520,9 +3565,9 @@ export function DataPage({
                                 />
                               </label>
                               <label className={wideFieldLabelClass}>
-                                Allowed units
+                                {t('data.allowedUnits')}
                                 <input
-                                  aria-label="Allowed units"
+                                  aria-label={t('data.allowedUnits')}
                                   className={`${inputClass} mt-1.5 font-mono`}
                                   defaultValue={selectedSchemaField.config.allowedUnits?.join(', ')}
                                   name="allowedUnits"
@@ -3530,9 +3575,9 @@ export function DataPage({
                                 />
                               </label>
                               <label className={fieldLabelClass}>
-                                Display precision
+                                {t('data.displayPrecision')}
                                 <input
-                                  aria-label="Display precision"
+                                  aria-label={t('data.displayPrecision')}
                                   className={`${inputClass} mt-1.5`}
                                   defaultValue={selectedSchemaField.config.displayPrecision ?? 3}
                                   max="34"
@@ -3547,36 +3592,36 @@ export function DataPage({
                           {selectedSchemaField.fieldType === 'spectral_data' && (
                             <>
                               <label className={fieldLabelClass}>
-                                X-axis label
+                                {t('data.xAxisLabel')}
                                 <input
-                                  aria-label="X-axis label"
+                                  aria-label={t('data.xAxisLabel')}
                                   className={`${inputClass} mt-1.5`}
                                   defaultValue={selectedSchemaField.config.xLabel}
                                   name="xLabel"
                                 />
                               </label>
                               <label className={fieldLabelClass}>
-                                X-axis unit
+                                {t('data.xAxisUnit')}
                                 <input
-                                  aria-label="X-axis unit"
+                                  aria-label={t('data.xAxisUnit')}
                                   className={`${inputClass} mt-1.5 font-mono`}
                                   defaultValue={selectedSchemaField.config.xUnit}
                                   name="xUnit"
                                 />
                               </label>
                               <label className={fieldLabelClass}>
-                                Signal label
+                                {t('data.signalLabel')}
                                 <input
-                                  aria-label="Signal label"
+                                  aria-label={t('data.signalLabel')}
                                   className={`${inputClass} mt-1.5`}
                                   defaultValue={selectedSchemaField.config.yLabel}
                                   name="yLabel"
                                 />
                               </label>
                               <label className={fieldLabelClass}>
-                                Signal unit
+                                {t('data.signalUnit')}
                                 <input
-                                  aria-label="Signal unit"
+                                  aria-label={t('data.signalUnit')}
                                   className={`${inputClass} mt-1.5 font-mono`}
                                   defaultValue={selectedSchemaField.config.yUnit}
                                   name="yUnit"
@@ -3593,14 +3638,14 @@ export function DataPage({
                                 name="firstRowHeader"
                                 type="checkbox"
                               />
-                              Treat the first pasted row as column headers
+                              {t('data.firstRowHeaders')}
                             </label>
                           )}
 
                           <label className={fieldLabelClass}>
-                            Order
+                            {t('data.order')}
                             <input
-                              aria-label="Field order"
+                              aria-label={t('data.fieldOrder')}
                               className={`${inputClass} mt-1.5`}
                               defaultValue={selectedSchemaField.position}
                               min="0"
@@ -3619,7 +3664,7 @@ export function DataPage({
                                 name="required"
                                 type="checkbox"
                               />
-                              Required value
+                              {t('data.requiredValue')}
                             </label>
                           )}
                           {fieldSupportsUnique(selectedSchemaField.fieldType) && (
@@ -3630,7 +3675,7 @@ export function DataPage({
                                 name="unique"
                                 type="checkbox"
                               />
-                              Unique values
+                              {t('data.uniqueValues')}
                             </label>
                           )}
                           {selectedSchemaField.fieldType === 'relation' && (
@@ -3641,7 +3686,7 @@ export function DataPage({
                                 name="multiple"
                                 type="checkbox"
                               />
-                              Allow multiple records
+                              {t('data.allowMultipleRecords')}
                             </label>
                           )}
                         </div>
@@ -3661,9 +3706,7 @@ export function DataPage({
                         )}
 
                         <div className="mt-5 flex items-center justify-between gap-3 border-t border-slate-800 pt-4">
-                          <p className="text-[10px] text-slate-600">
-                            Type and stable key are protected after creation.
-                          </p>
+                          <p className="text-[10px] text-slate-600">{t('data.typeKeyProtected')}</p>
                           <Button disabled={schemaBusy} type="submit">
                             {schemaBusy ? 'Saving…' : 'Save changes'}
                           </Button>
@@ -3683,7 +3726,7 @@ export function DataPage({
                   </span>
                   {viewDirty && (
                     <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase text-amber-300">
-                      Unsaved
+                      {t('data.unsaved')}
                     </span>
                   )}
                 </div>
@@ -3737,15 +3780,15 @@ export function DataPage({
                         onClick={() => applyViewConfig(selectedView.config)}
                         type="button"
                       >
-                        Discard changes
+                        {t('data.discardChanges')}
                       </button>
                     )}
                     <button
-                      aria-label={`Archive view ${selectedView.name}`}
+                      aria-label={t('data.archiveViewLabel', { name: selectedView.name })}
                       className="rounded-lg px-2 py-2 text-sm text-slate-500 hover:bg-rose-500/10 hover:text-rose-300"
                       disabled={viewBusy}
                       onClick={() => void archiveView()}
-                      title="Archive view"
+                      title={t('data.archiveView')}
                       type="button"
                     >
                       ⋯
@@ -3782,7 +3825,7 @@ export function DataPage({
                 )}
                 {workspaceMode && (
                   <select
-                    aria-label="Project filter"
+                    aria-label={t('data.projectFilter')}
                     className="max-w-48 rounded-lg border border-transparent bg-transparent px-3 py-2 text-sm text-slate-300 outline-none hover:bg-slate-800 focus:border-sky-500"
                     value={contextProjectFilter}
                     onChange={(event) => {
@@ -3947,7 +3990,7 @@ export function DataPage({
                           )}
                           <div className="flex">
                             <button
-                              aria-label={`Move ${field.name} left`}
+                              aria-label={t('data.moveFieldLeft', { name: field.name })}
                               className="rounded px-1.5 py-1 text-slate-500 hover:bg-slate-800 hover:text-sky-300 disabled:opacity-30"
                               disabled={index === 0}
                               onClick={() => moveField(field.id, -1)}
@@ -3956,7 +3999,7 @@ export function DataPage({
                               ←
                             </button>
                             <button
-                              aria-label={`Move ${field.name} right`}
+                              aria-label={t('data.moveFieldRight', { name: field.name })}
                               className="rounded px-1.5 py-1 text-slate-500 hover:bg-slate-800 hover:text-sky-300 disabled:opacity-30"
                               disabled={index === orderedFields.length - 1}
                               onClick={() => moveField(field.id, 1)}
@@ -4118,7 +4161,7 @@ export function DataPage({
             </div>
 
             <div
-              aria-label={`${selected.pluralName} table. Scroll horizontally to view more columns.`}
+              aria-label={t('data.tableAccessibleLabel', { name: selected.pluralName })}
               className={`mt-1.5 w-full min-w-0 max-w-full overflow-x-auto overflow-y-auto overscroll-x-contain rounded-md border border-slate-800 ${activeViewType === 'grid' ? 'max-h-[72vh]' : ''}`}
               onScroll={(event) => {
                 if (virtualizeGrid) setGridScrollTop(event.currentTarget.scrollTop);
@@ -4130,7 +4173,7 @@ export function DataPage({
                 {layoutAnnouncement}
               </p>
               {recordsLoading && (
-                <div className="space-y-3 p-5" aria-label="Loading records">
+                <div className="space-y-3 p-5" aria-label={t('data.loadingRecords')}>
                   <div className={skeletonLineClass} />
                   <div className={skeletonLineClass} />
                   <div className={skeletonLineClass} />
@@ -4379,7 +4422,7 @@ export function DataPage({
                                 </span>
                               )}
                               <span className="ml-2 truncate font-normal normal-case text-slate-600">
-                                {fieldMeta(field).label}
+                                {t(fieldTypeTranslationKeys[schemaTypeForField(field)])}
                               </span>
                             </button>
                             <details className="relative shrink-0 normal-case" data-popover-menu>
@@ -4402,7 +4445,9 @@ export function DataPage({
                                 ].includes(field.fieldType) && (
                                   <>
                                     <button
-                                      aria-label={`Sort ${field.name} ascending`}
+                                      aria-label={t('data.sortFieldAscending', {
+                                        name: field.name,
+                                      })}
                                       className={compactMenuItemClass}
                                       onClick={() => {
                                         setSortField(field.id);
@@ -4415,7 +4460,9 @@ export function DataPage({
                                       {t('data.sortAscending')}
                                     </button>
                                     <button
-                                      aria-label={`Sort ${field.name} descending`}
+                                      aria-label={t('data.sortFieldDescending', {
+                                        name: field.name,
+                                      })}
                                       className={compactMenuItemClass}
                                       onClick={() => {
                                         setSortField(field.id);
@@ -4429,7 +4476,9 @@ export function DataPage({
                                     </button>
                                     {sortField === field.id && (
                                       <button
-                                        aria-label={`Remove sorting from ${field.name}`}
+                                        aria-label={t('data.removeFieldSorting', {
+                                          name: field.name,
+                                        })}
                                         className={compactMenuItemClass}
                                         onClick={() => {
                                           setSortField('');
@@ -4446,7 +4495,7 @@ export function DataPage({
                                 )}
                                 {!['measurement', 'range'].includes(field.fieldType) && (
                                   <button
-                                    aria-label={`Filter ${field.name}`}
+                                    aria-label={t('data.filterField', { name: field.name })}
                                     className={compactMenuItemClass}
                                     onClick={() => {
                                       setFilterField(field.id);
@@ -4463,7 +4512,7 @@ export function DataPage({
                                   </button>
                                 )}
                                 <button
-                                  aria-label={`Hide ${field.name} column`}
+                                  aria-label={t('data.hideFieldColumn', { name: field.name })}
                                   className={compactMenuItemClass}
                                   onClick={() =>
                                     setHiddenFieldIds((current) => new Set([...current, field.id]))
@@ -4583,7 +4632,7 @@ export function DataPage({
                           <td className="border-b border-r border-slate-800 px-3 text-xs text-slate-600">
                             <span className="flex items-center gap-2">
                               <input
-                                aria-label={`Select ${record.displayName}`}
+                                aria-label={t('data.selectRecord', { name: record.displayName })}
                                 checked={selectedRows.has(record.id)}
                                 type="checkbox"
                                 onChange={(event) =>
@@ -4596,10 +4645,10 @@ export function DataPage({
                                 }
                               />
                               <button
-                                aria-label={`Quick view ${record.displayName}`}
+                                aria-label={t('data.quickViewRecord', { name: record.displayName })}
                                 className="rounded px-1 py-2 font-mono hover:bg-slate-800 hover:text-sky-300"
                                 onClick={() => setSelectedRecord(record)}
-                                title="Open quick view"
+                                title={t('data.openQuickView')}
                                 type="button"
                               >
                                 {(records.page - 1) * records.pageSize + index + 1}
@@ -4661,7 +4710,9 @@ export function DataPage({
                             >
                               {allowed(user, 'record.update') ? (
                                 <select
-                                  aria-label={`Project for ${record.displayName}`}
+                                  aria-label={t('data.projectForRecord', {
+                                    name: record.displayName,
+                                  })}
                                   className="min-h-7 w-full select-text rounded border border-transparent bg-transparent px-1.5 text-xs text-slate-300 outline-none hover:border-slate-700 focus:border-sky-400"
                                   value={record.contextProjectId ?? ''}
                                   onChange={(event) =>
@@ -4671,7 +4722,7 @@ export function DataPage({
                                         setMessage(
                                           cause instanceof Error
                                             ? cause.message
-                                            : 'Project link could not be saved.',
+                                            : t('data.projectLinkSaveFailed'),
                                         );
                                       },
                                     )
@@ -4734,6 +4785,7 @@ export function DataPage({
                               ) : allowed(user, 'record.update') &&
                                 !calculatedFieldTypeSet.has(field.fieldType) ? (
                                 <GridCell
+                                  base={base}
                                   comfortable={rowDensity === 'comfortable'}
                                   field={field}
                                   label={field.name}
@@ -4743,9 +4795,14 @@ export function DataPage({
                                 />
                               ) : (
                                 <span
-                                  className={`block max-w-64 truncate px-2.5 text-xs text-slate-300 ${rowDensity === 'comfortable' ? 'py-3' : 'py-1.5'}`}
+                                  className={`flex w-full items-center px-2.5 text-xs text-slate-300 ${rowDensity === 'comfortable' ? 'min-h-11 py-2' : 'min-h-8 py-1'}`}
                                 >
-                                  {displayFieldValue(field, recordGridValue(record, field))}
+                                  <CellValuePreview
+                                    base={base}
+                                    field={field}
+                                    label={field.name}
+                                    value={recordGridValue(record, field)}
+                                  />
                                 </span>
                               )}
                             </td>
@@ -4757,10 +4814,10 @@ export function DataPage({
                           </td>
                           <td className="border-b border-slate-800 px-3 py-2">
                             <button
-                              aria-label={`Expand ${record.displayName}`}
+                              aria-label={t('data.expandRecord', { name: record.displayName })}
                               className="rounded-lg px-2 py-1 text-sky-400 hover:bg-sky-500/10 hover:text-sky-300"
                               onClick={() => setSelectedRecord(record)}
-                              title={`Quick view ${record.displayName}`}
+                              title={t('data.quickViewRecord', { name: record.displayName })}
                               type="button"
                             >
                               ↗
@@ -4841,7 +4898,7 @@ export function DataPage({
                     />
                   ) : (
                     <p className="p-8 text-center text-sm text-rose-300">
-                      This Kanban view needs a valid single-select field.
+                      {t('data.invalidKanban')}
                     </p>
                   )}
                 </>
@@ -4863,7 +4920,7 @@ export function DataPage({
                     />
                   ) : (
                     <p className="p-8 text-center text-sm text-rose-300">
-                      This Calendar view needs a valid date field.
+                      {t('data.invalidCalendar')}
                     </p>
                   )}
                 </>
@@ -4898,13 +4955,13 @@ export function DataPage({
                           },
                         );
                         setMessageTone('success');
-                        setMessage(`${created.displayName} submitted.`);
+                        setMessage(t('data.recordSubmitted', { name: created.displayName }));
                         await loadRecords();
                       }}
                     />
                   ) : (
                     <p className="rounded-md border border-dashed border-slate-800 p-6 text-center text-sm text-slate-500">
-                      You have read-only access to this form.
+                      {t('data.readOnlyForm')}
                     </p>
                   )}
                 </div>
@@ -4957,7 +5014,7 @@ export function DataPage({
       {showNewRecord && selected && allowed(user, 'record.create') && (
         <div className="fixed inset-0 z-[70] flex justify-end" role="presentation">
           <button
-            aria-label="Close new record panel"
+            aria-label={t('data.closeNewRecordPanel')}
             className="absolute inset-0 cursor-default bg-slate-950/65 backdrop-blur-sm"
             data-modal-backdrop
             onClick={() => setShowNewRecord(false)}
@@ -4977,11 +5034,11 @@ export function DataPage({
                   {selected.name}
                 </p>
                 <h2 className="mt-1 text-2xl font-semibold" id="new-record-title">
-                  New record
+                  {t('data.newRecord')}
                 </h2>
               </div>
               <button
-                aria-label="Close new record panel"
+                aria-label={t('data.closeNewRecordPanel')}
                 className="grid size-9 place-items-center rounded-lg border border-slate-700 text-xl text-slate-400 hover:bg-slate-800 hover:text-slate-100"
                 data-dialog-initial-focus
                 onClick={() => setShowNewRecord(false)}
@@ -5018,7 +5075,7 @@ export function DataPage({
       {selectedRecord && (
         <div className="fixed inset-0 z-[70] flex justify-end" role="presentation">
           <button
-            aria-label="Close quick record view"
+            aria-label={t('data.closeQuickRecordView')}
             className="absolute inset-0 cursor-default bg-slate-950/65 backdrop-blur-sm"
             data-modal-backdrop
             onClick={() => setSelectedRecord(undefined)}
@@ -5050,11 +5107,11 @@ export function DataPage({
                     className="rounded-lg px-3 py-2 text-sm text-sky-300 hover:bg-sky-500/10"
                     to={`${base}/data/${objectTypes.find((item) => item.id === selectedRecord.objectTypeId)?.publicId ?? selectedRecord.objectTypeId}/records/${selectedRecord.id}`}
                   >
-                    Full record
+                    {t('data.fullRecord')}
                   </Link>
                 )}
                 <button
-                  aria-label="Close quick record view"
+                  aria-label={t('data.closeQuickRecordView')}
                   className="grid size-9 place-items-center rounded-lg border border-slate-700 text-xl text-slate-400 hover:bg-slate-800 hover:text-slate-100"
                   data-dialog-initial-focus
                   onClick={() => setSelectedRecord(undefined)}
@@ -5096,6 +5153,90 @@ export function DataPage({
           </aside>
         </div>
       )}
+      {showCreateTable && allowed(user, 'schema.manage') && (
+        <div className="fixed inset-0 z-[100] grid place-items-center bg-slate-950/75 p-4 backdrop-blur-sm">
+          <button
+            aria-label={t('common.close')}
+            className="absolute inset-0 cursor-default"
+            data-modal-backdrop
+            onClick={() => setShowCreateTable(false)}
+            type="button"
+          />
+          <section
+            aria-labelledby="create-table-title"
+            aria-modal="true"
+            className="relative w-full max-w-lg rounded-2xl border border-slate-700 bg-slate-950 p-5 shadow-2xl shadow-black/40 sm:p-6"
+            ref={createTableDialogRef}
+            role="dialog"
+            tabIndex={-1}
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-xl font-semibold" id="create-table-title">
+                  {t('data.createTable')}
+                </h2>
+                <p className="mt-1 text-sm leading-relaxed text-slate-500">
+                  {t('data.createTableHint')}
+                </p>
+              </div>
+              <button
+                aria-label={t('common.close')}
+                className="grid size-9 shrink-0 place-items-center rounded-lg text-xl text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+                onClick={() => setShowCreateTable(false)}
+                type="button"
+              >
+                ×
+              </button>
+            </div>
+            <form className="mt-5 space-y-4" onSubmit={(event) => void createObjectType(event)}>
+              <label className="block text-sm font-medium text-slate-300">
+                {t('data.typeName')}
+                <input
+                  autoFocus
+                  className={inputClass}
+                  data-dialog-initial-focus
+                  name="name"
+                  placeholder={t('data.typeName')}
+                  required
+                />
+              </label>
+              <label className="block text-sm font-medium text-slate-300">
+                {t('data.tableLabel')}
+                <input
+                  className={inputClass}
+                  name="pluralName"
+                  placeholder={t('data.tableLabel')}
+                  required
+                />
+              </label>
+              <label className="block text-sm font-medium text-slate-300">
+                {t('data.stableKey')}
+                <input
+                  className={inputClass}
+                  name="key"
+                  pattern="[a-z][a-z0-9-]{1,63}"
+                  placeholder="test-samples"
+                  required
+                />
+              </label>
+              <ErrorText>{createTableError}</ErrorText>
+              <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:justify-end">
+                <Button
+                  className="sm:min-w-24"
+                  onClick={() => setShowCreateTable(false)}
+                  type="button"
+                  variant="quiet"
+                >
+                  {t('common.cancel')}
+                </Button>
+                <Button className="sm:min-w-28" disabled={createTableBusy} type="submit">
+                  {createTableBusy ? t('common.working') : t('data.addTable')}
+                </Button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
       <ContextMenu menu={contextMenu} onClose={() => setContextMenu(undefined)} />
     </>
   );
@@ -5106,6 +5247,7 @@ function apiBaseForDownload(): string {
 }
 
 export function RecordDetailPage({ user }: { user: User }) {
+  const { t } = useI18n();
   const { workspaceId = '', projectId = '', objectTypeId = '', recordId = '' } = useParams();
   const navigate = useNavigate();
   const base = projectPath(workspaceId, projectId);
@@ -5132,17 +5274,13 @@ export function RecordDetailPage({ user }: { user: User }) {
         });
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Record could not be loaded.');
+      setError(cause instanceof Error ? cause.message : t('data.recordLoadFailed'));
     }
-  }, [base, navigate, objectTypeId, recordId]);
+  }, [base, navigate, objectTypeId, recordId, t]);
   useEffect(() => void load(), [load]);
 
   async function archive(archived: boolean) {
-    if (
-      archived &&
-      !window.confirm('Archive this record? Relations and history will be preserved.')
-    )
-      return;
+    if (archived && !window.confirm(t('data.recordArchiveConfirm'))) return;
     try {
       await api(
         `${base}/object-types/${objectTypeId}/records/${recordId}/${archived ? 'archive' : 'restore'}`,
@@ -5153,46 +5291,48 @@ export function RecordDetailPage({ user }: { user: User }) {
       );
       await load();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Lifecycle action failed.');
+      setError(cause instanceof Error ? cause.message : t('data.lifecycleFailed'));
     }
   }
 
-  if (!record && !error) return <p className="text-slate-400">Loading record…</p>;
+  if (!record && !error) return <p className="text-slate-400">{t('data.loadingRecord')}</p>;
   if (!record) return <ErrorText>{error}</ErrorText>;
   return (
     <>
       <Link className="text-sm text-sky-400" to={`${base}/data?type=${objectTypeId}`}>
-        ← Data grid
+        ← {t('data.dataGrid')}
       </Link>
       <div className="mt-5 flex flex-wrap items-start justify-between gap-4">
         <div>
-          <p className="font-mono text-xs uppercase tracking-widest text-sky-400">Record detail</p>
+          <p className="font-mono text-xs uppercase tracking-widest text-sky-400">
+            {t('data.recordDetail')}
+          </p>
           <h1 className="mt-2 text-4xl font-semibold">{record.displayName}</h1>
           <p className="mt-2 text-sm text-slate-500">
-            Version {record.rowVersion} · stable ID {record.id}
+            {t('data.versionStableId', { version: record.rowVersion, id: record.id })}
           </p>
         </div>
         <div className="flex gap-2">
           {record.archivedAt
             ? allowed(user, 'record.restore') && (
-                <Button onClick={() => void archive(false)}>Restore</Button>
+                <Button onClick={() => void archive(false)}>{t('common.restore')}</Button>
               )
             : allowed(user, 'record.archive') && (
                 <Button variant="quiet" onClick={() => void archive(true)}>
-                  Archive
+                  {t('common.archive')}
                 </Button>
               )}
         </div>
       </div>
       <ErrorText>{error}</ErrorText>
       <section className={emptyPanelClass}>
-        <h2 className="mb-5 text-xl font-semibold">Properties and relations</h2>
+        <h2 className="mb-5 text-xl font-semibold">{t('data.propertiesRelations')}</h2>
         {allowed(user, 'record.update') ? (
           <RecordForm
             key={record.rowVersion}
             fields={fields}
             record={record}
-            submitLabel="Save changes"
+            submitLabel={t('data.saveChanges')}
             onSubmit={async (form) => {
               const updated = await api<DynamicRecord>(
                 `${base}/object-types/${objectTypeId}/records/${recordId}`,
@@ -5242,7 +5382,7 @@ export function RecordDetailPage({ user }: { user: User }) {
         className="mt-8 text-sm text-slate-500 hover:text-rose-300"
         onClick={() => navigate(`${base}/data?type=${objectTypeId}`)}
       >
-        Close detail
+        {t('data.closeDetail')}
       </button>
     </>
   );

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, inputClass } from './App.js';
 import type { FieldDefinition, FieldType } from './DataPageTypes.js';
+import { useI18n } from './i18n.js';
 
 export const fieldTypeMeta: Record<
   FieldType,
@@ -209,6 +210,7 @@ export function CalculatedFieldSettings({
   base: string;
   defaults?: FieldDefinition['config'];
 }) {
+  const { t } = useI18n();
   const relationFields = fields.filter((field) => field.fieldType === 'relation');
   const [relationFieldId, setRelationFieldId] = useState(
     defaults?.relationFieldId ?? relationFields[0]?.id ?? '',
@@ -241,9 +243,9 @@ export function CalculatedFieldSettings({
   if (type === 'formula')
     return (
       <label className={wideFieldLabelClass}>
-        Formula expression
+        {t('data.formulaExpression')}
         <textarea
-          aria-label="Formula expression"
+          aria-label={t('data.formulaExpression')}
           className={`${inputClass} mt-1.5 min-h-24 resize-y font-mono`}
           defaultValue={defaults?.expression}
           maxLength={2000}
@@ -251,10 +253,7 @@ export function CalculatedFieldSettings({
           placeholder={'ROUND({quantity} * {unit-price}, 2)'}
           required
         />
-        <span className={fieldHintClass}>
-          Reference fields as {'{field-key}'}. Supports + − × ÷, comparisons, IF, SUM, AVG, MIN,
-          MAX, ROUND, ABS, and CONCAT.
-        </span>
+        <span className={fieldHintClass}>{t('data.formulaHelp')}</span>
       </label>
     );
   const targetOptions = targetFields.filter(
@@ -266,7 +265,7 @@ export function CalculatedFieldSettings({
   return (
     <>
       <label className={fieldLabelClass}>
-        Relation field
+        {t('data.relationField')}
         <select
           className={`${inputClass} mt-1.5`}
           name="relationFieldId"
@@ -274,7 +273,7 @@ export function CalculatedFieldSettings({
           value={relationFieldId}
           onChange={(event) => setRelationFieldId(event.target.value)}
         >
-          <option value="">Select a relation…</option>
+          <option value="">{t('data.selectRelation')}</option>
           {relationFields.map((field) => (
             <option key={field.id} value={field.id}>
               {field.name}
@@ -284,7 +283,7 @@ export function CalculatedFieldSettings({
       </label>
       {type === 'rollup' && (
         <label className={fieldLabelClass}>
-          Aggregation
+          {t('data.aggregation')}
           <select
             className={`${inputClass} mt-1.5`}
             name="aggregation"
@@ -293,16 +292,16 @@ export function CalculatedFieldSettings({
               setAggregation(event.target.value as 'count' | 'sum' | 'average' | 'min' | 'max')
             }
           >
-            <option value="count">Count</option>
-            <option value="sum">Sum</option>
-            <option value="average">Average</option>
-            <option value="min">Minimum</option>
-            <option value="max">Maximum</option>
+            <option value="count">{t('data.count')}</option>
+            <option value="sum">{t('data.sum')}</option>
+            <option value="average">{t('data.average')}</option>
+            <option value="min">{t('data.minimum')}</option>
+            <option value="max">{t('data.maximum')}</option>
           </select>
         </label>
       )}
       <label className={type === 'lookup' ? wideFieldLabelClass : fieldLabelClass}>
-        Target field
+        {t('data.targetField')}
         <select
           className={`${inputClass} mt-1.5`}
           defaultValue={defaults?.targetFieldId ?? 'displayName'}
@@ -310,7 +309,7 @@ export function CalculatedFieldSettings({
           required
         >
           {(type === 'lookup' || aggregation === 'count') && (
-            <option value="displayName">Display name</option>
+            <option value="displayName">{t('data.displayName')}</option>
           )}
           {targetOptions.map((field) => (
             <option key={field.id} value={field.id}>

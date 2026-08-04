@@ -80,6 +80,16 @@ body {
     var(--color-slate-950);
   color: var(--color-slate-100);
   -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+.skip-link {
+  max-width: calc(100vw - 2rem);
+  transform: translateY(calc(-100% - 1rem));
+}
+
+.skip-link:focus-visible {
+  transform: translateY(0);
 }
 
 /* Shared UI primitives live in a workspace package. Keep their utility classes in the
@@ -343,6 +353,36 @@ a {
 
 :focus-visible {
   scroll-margin: 7rem;
+}
+
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-sky-400);
+  outline-offset: 2px;
+}
+
+:where(p, dd, td, [role='alert']) {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 47.999rem) {
+  .app-header {
+    padding-inline: 0.75rem;
+  }
+
+  .app-header button,
+  .service-sidebar button,
+  .service-sidebar summary {
+    min-height: 2.75rem;
+    min-width: 2.75rem;
+  }
+
+  .compact-ui .engrove-button {
+    min-height: 2.75rem;
+  }
+
+  .workspace-card:hover {
+    transform: none;
+  }
 }
 
 .dashboard-grid {
