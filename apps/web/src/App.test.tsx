@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router';
+import { MemoryRouter, useLocation } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiStatus, App, MembersPage } from './App.js';
 
@@ -94,6 +94,7 @@ describe('App', () => {
     render(
       <MemoryRouter initialEntries={['/workspaces/workspace-id/projects/project-id']}>
         <App />
+        <LocationProbe />
       </MemoryRouter>,
     );
 
@@ -162,6 +163,123 @@ describe('App', () => {
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(document.documentElement).toHaveAttribute('lang', 'ko');
     expect(window.localStorage.getItem('engrove-locale')).toBe('ko');
+    fireEvent.click(screen.getByRole('link', { name: 'Engrove 홈' }));
+    await waitFor(() => expect(screen.getByTestId('current-location')).toHaveTextContent(/^\/$/));
+  });
+
+  it('switches workspaces without reusing the previous table context', async () => {
+    const alphaWorkspaceId = 'w11111111111111';
+    const primaryWorkspaceId = 'w22222222222222';
+    const requestedUrls: string[] = [];
+    let resolvePrimaryContext!: (response: Response) => void;
+    const primaryContext = new Promise<Response>((resolve) => {
+      resolvePrimaryContext = resolve;
+    });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url.endsWith('/setup/status')) return json({ available: false });
+      if (url.endsWith('/auth/me')) {
+        return json({
+          user: {
+            id: '019fbcf9-e020-71da-935a-6a6a728b3790',
+            email: 'owner@example.com',
+            displayName: 'Owner',
+            organizationId: '019fbcf9-e020-71da-935a-6a6a728b3791',
+            role: 'owner',
+          },
+        });
+      }
+      if (url.endsWith('/workspaces')) {
+        return json({
+          items: [
+            { id: 'alpha-id', publicId: alphaWorkspaceId, name: 'Alpha' },
+            { id: 'primary-id', publicId: primaryWorkspaceId, name: 'Primary' },
+          ],
+        });
+      }
+      if (url.endsWith(`/workspaces/${alphaWorkspaceId}/data-context`)) {
+        return json({ projectId: 'alpha-project', legacyProjectIds: [] });
+      }
+      if (url.endsWith(`/workspaces/${primaryWorkspaceId}/data-context`)) {
+        return primaryContext;
+      }
+      if (url.endsWith(`/workspaces/${alphaWorkspaceId}/projects`)) {
+        return json({
+          items: [
+            {
+              id: 'alpha-project',
+              name: 'Alpha project',
+              key: 'ALPHA',
+              archivedAt: null,
+            },
+          ],
+        });
+      }
+      if (url.endsWith(`/workspaces/${primaryWorkspaceId}/projects`)) {
+        return json({ items: [] });
+      }
+      if (url.endsWith(`/workspaces/${alphaWorkspaceId}/projects/alpha-project/object-types`)) {
+        return json({
+          items: [
+            {
+              id: 'alpha-type-id',
+              publicId: 't11111111111111',
+              projectId: 'alpha-project',
+              name: 'Sample',
+              pluralName: 'Samples',
+              key: 'sample',
+              icon: 'table',
+              description: '',
+              system: false,
+            },
+          ],
+        });
+      }
+      if (url.endsWith(`/workspaces/${primaryWorkspaceId}/projects/primary-project/object-types`)) {
+        return json({ items: [] });
+      }
+      if (url.endsWith('/object-types/alpha-type-id/fields')) return json({ items: [] });
+      if (url.endsWith('/object-types/alpha-type-id/views')) return json({ items: [] });
+      if (url.endsWith('/object-types/alpha-type-id/records/query')) {
+        return json({ items: [], page: 1, pageSize: 25, total: 0 });
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+
+    render(
+      <MemoryRouter initialEntries={[`/workspaces/${alphaWorkspaceId}/data`]}>
+        <App />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Samples' })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Workspace selector' }), {
+      target: { value: primaryWorkspaceId },
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId('current-location')).toHaveTextContent(
+        `/workspaces/${primaryWorkspaceId}/data`,
+      ),
+    );
+    expect(screen.getByLabelText('Opening workspace data')).toBeInTheDocument();
+
+    resolvePrimaryContext(json({ projectId: 'primary-project', legacyProjectIds: [] }));
+    expect(await screen.findByRole('heading', { name: 'Workspace data' })).toBeInTheDocument();
+    expect(screen.getByTestId('current-location')).toHaveTextContent(
+      `/workspaces/${primaryWorkspaceId}/data`,
+    );
+    expect(screen.queryByText('Object type was not found.')).not.toBeInTheDocument();
+    expect(
+      requestedUrls.some((url) =>
+        url.includes(
+          `/workspaces/${primaryWorkspaceId}/projects/primary-project/object-types/alpha-type-id/`,
+        ),
+      ),
+    ).toBe(false);
   });
 
   it('edits a workspace name and key without changing its public route', async () => {
@@ -406,6 +524,10 @@ describe('App', () => {
     );
   });
 });
+
+function LocationProbe() {
+  return <output data-testid="current-location">{useLocation().pathname}</output>;
+}
 
 function json(value: unknown): Response {
   return new Response(JSON.stringify(value), {

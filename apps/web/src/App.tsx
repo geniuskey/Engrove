@@ -9,6 +9,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from 'react';
 import {
@@ -831,8 +832,10 @@ function WorkspacePage({ user }: { user: User }) {
 function WorkspaceDataPage({ user }: { user: User }) {
   const workspaceId = useParams().workspaceId!;
   const [context, setContext] = useState<WorkspaceDataContext>();
-  const [error, setError] = useState('');
+  const [error, setError] = useState<{ message: string; workspaceId: string }>();
+  const requestId = useRef(0);
   const load = useCallback(async () => {
+    const currentRequestId = ++requestId.current;
     try {
       const [dataContext, projectResult] = await Promise.all([
         api<{ projectId: string; legacyProjectIds?: string[] }>(
@@ -844,6 +847,7 @@ function WorkspaceDataPage({ user }: { user: User }) {
         ),
         api<{ items: Project[] }>(`/workspaces/${workspaceId}/projects`),
       ]);
+      if (currentRequestId !== requestId.current) return;
       setContext({
         workspaceId,
         backingProjectId: dataContext.projectId,
@@ -857,23 +861,32 @@ function WorkspaceDataPage({ user }: { user: User }) {
           .filter((project) => dataContext.legacyProjectIds?.includes(project.id))
           .map(({ id, name }) => ({ id, name })),
       });
-      setError('');
+      setError(undefined);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Workspace data could not be opened.');
+      if (currentRequestId !== requestId.current) return;
+      setError({
+        workspaceId,
+        message: cause instanceof Error ? cause.message : 'Workspace data could not be opened.',
+      });
     }
   }, [workspaceId]);
-  useEffect(() => void load(), [load]);
+  useEffect(() => {
+    void load();
+    return () => {
+      requestId.current += 1;
+    };
+  }, [load]);
 
-  if (error)
+  if (error?.workspaceId === workspaceId)
     return (
       <div className="mx-auto max-w-2xl py-12">
-        <ErrorText>{error}</ErrorText>
+        <ErrorText>{error.message}</ErrorText>
         <Button className="mt-4" variant="quiet" onClick={() => void load()}>
           Retry
         </Button>
       </div>
     );
-  if (!context)
+  if (context?.workspaceId !== workspaceId)
     return (
       <div aria-label="Opening workspace data" className="animate-pulse space-y-3 p-2">
         <div className="h-8 w-52 rounded-lg bg-slate-800/80" />
@@ -883,9 +896,18 @@ function WorkspaceDataPage({ user }: { user: User }) {
     );
   return (
     <PageLoader label="workspace data">
-      <DataPage user={user} workspaceData={context} />
+      <DataPage
+        key={`${context.workspaceId}:${context.backingProjectId}`}
+        user={user}
+        workspaceData={context}
+      />
     </PageLoader>
   );
+}
+
+function ProjectDataPage({ user }: { user: User }) {
+  const { projectId = '', workspaceId = '' } = useParams();
+  return <DataPage key={`${workspaceId}:${projectId}`} user={user} />;
 }
 
 function WorkspaceIndexPage() {
@@ -2048,6 +2070,7 @@ function AppContent() {
         </>
       )}
       <Routes>
+        <Route path="/" element={protectedElement(user && <WorkspacesPage user={user} />)} />
         <Route path="/setup" element={<SetupPage />} />
         <Route
           path="/sign-in"
@@ -2094,7 +2117,7 @@ function AppContent() {
           element={protectedElement(
             user && (
               <PageLoader label="records">
-                <DataPage user={user} />
+                <ProjectDataPage user={user} />
               </PageLoader>
             ),
           )}
