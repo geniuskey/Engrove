@@ -11,6 +11,7 @@ cleanup() {
 trap cleanup EXIT
 
 export ENGROVE_PUBLIC_URL=https://engrove.example.test
+export ENGROVE_TRUST_PROXY='172.16.0.0/12'
 export VITE_API_BASE_URL=https://engrove.example.test
 export S3_PUBLIC_ENDPOINT=https://objects.example.test
 export POSTGRES_MIGRATION_PASSWORD='migration-production-test-password'
@@ -41,6 +42,9 @@ for service in api worker-node worker-python web; do
   docker inspect "$container" --format '{{json .HostConfig.CapDrop}}' | grep -q 'ALL'
   docker inspect "$container" --format '{{json .HostConfig.SecurityOpt}}' | grep -q 'no-new-privileges'
 done
+
+worker_python_container="$("${compose[@]}" ps -q worker-python)"
+test "$(docker inspect "$worker_python_container" --format '{{range .Mounts}}{{if eq .Destination "/tmp"}}{{.Type}}{{end}}{{end}}')" = volume
 
 for service in postgres redis minio api web; do
   container="$("${compose[@]}" ps -q "$service")"

@@ -5,10 +5,12 @@ import {
   type TaskEntityType,
   type TaskLinkInput,
 } from '@engrove/database';
-import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Get, Inject, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import type { Request } from 'express';
 import { z } from 'zod';
-import { appRuntime, requestId, requireActor } from './community.controller.js';
+import { requestId, requireActor } from './community.controller.js';
+import type { Runtime } from './runtime.js';
+import { RUNTIME } from './runtime.provider.js';
 
 const id = z.string().uuid();
 const status = z.enum(['todo', 'in_progress', 'blocked', 'done']);
@@ -35,23 +37,26 @@ const createInput = z.object({ ...baseInput, links: z.array(link).max(30).defaul
 const updateInput = z.object({ ...baseInput, rowVersion: z.number().int().positive() }).strict();
 
 async function repository(
+  runtime: Runtime,
   request: Request,
   workspaceId: string,
   projectId: string,
   action: 'task.read' | 'task.create' | 'task.update' | 'task.archive' | 'task.restore',
   mutation = false,
 ) {
-  const actor = await requireActor(request, action, mutation);
+  const actor = await requireActor(runtime, request, action, mutation);
   return ScopedTaskRepository.open(
-    appRuntime().pool,
+    runtime.pool,
     actor,
-    await resolveWorkspaceIdentifier(appRuntime().pool, workspaceId),
-    await resolveProjectIdentifier(appRuntime().pool, projectId),
+    await resolveWorkspaceIdentifier(runtime.pool, workspaceId),
+    await resolveProjectIdentifier(runtime.pool, projectId),
   );
 }
 
 @Controller('api/v1/workspaces/:workspaceId/projects/:projectId')
 export class TasksController {
+  constructor(@Inject(RUNTIME) private readonly runtime: Runtime) {}
+
   @Get('tasks') async tasks(
     @Req() request: Request,
     @Param('workspaceId') workspaceId: string,
@@ -64,7 +69,7 @@ export class TasksController {
     const parsedEntityId = rawEntityId ? id.parse(rawEntityId) : undefined;
     return {
       items: await (
-        await repository(request, workspaceId, projectId, 'task.read')
+        await repository(this.runtime, request, workspaceId, projectId, 'task.read')
       ).listTasks({
         includeArchived: includeArchived === 'true',
         entityType: parsedEntityType as TaskEntityType | undefined,
@@ -79,7 +84,7 @@ export class TasksController {
     @Param('projectId') projectId: string,
     @Param('taskId') taskId: string,
   ) {
-    return (await repository(request, workspaceId, projectId, 'task.read')).getTask(
+    return (await repository(this.runtime, request, workspaceId, projectId, 'task.read')).getTask(
       id.parse(taskId),
     );
   }
@@ -91,7 +96,9 @@ export class TasksController {
     @Body() raw: unknown,
   ) {
     const input = createInput.parse(raw);
-    return (await repository(request, workspaceId, projectId, 'task.create', true)).createTask({
+    return (
+      await repository(this.runtime, request, workspaceId, projectId, 'task.create', true)
+    ).createTask({
       ...input,
       links: input.links as TaskLinkInput[],
       requestId: requestId(request),
@@ -105,10 +112,9 @@ export class TasksController {
     @Param('taskId') taskId: string,
     @Body() raw: unknown,
   ) {
-    return (await repository(request, workspaceId, projectId, 'task.update', true)).updateTask(
-      id.parse(taskId),
-      { ...updateInput.parse(raw), requestId: requestId(request) },
-    );
+    return (
+      await repository(this.runtime, request, workspaceId, projectId, 'task.update', true)
+    ).updateTask(id.parse(taskId), { ...updateInput.parse(raw), requestId: requestId(request) });
   }
 
   @Patch('tasks/:taskId/archive') async archive(
@@ -122,12 +128,9 @@ export class TasksController {
       .object({ reason: z.string().trim().min(1).max(2_000) })
       .strict()
       .parse(raw);
-    return (await repository(request, workspaceId, projectId, 'task.archive', true)).setArchived(
-      id.parse(taskId),
-      true,
-      body.reason,
-      requestId(request),
-    );
+    return (
+      await repository(this.runtime, request, workspaceId, projectId, 'task.archive', true)
+    ).setArchived(id.parse(taskId), true, body.reason, requestId(request));
   }
 
   @Post('tasks/:taskId/restore') async restore(
@@ -136,12 +139,9 @@ export class TasksController {
     @Param('projectId') projectId: string,
     @Param('taskId') taskId: string,
   ) {
-    return (await repository(request, workspaceId, projectId, 'task.restore', true)).setArchived(
-      id.parse(taskId),
-      false,
-      '',
-      requestId(request),
-    );
+    return (
+      await repository(this.runtime, request, workspaceId, projectId, 'task.restore', true)
+    ).setArchived(id.parse(taskId), false, '', requestId(request));
   }
 
   @Post('specification-evaluations/:evaluationId/task') async fromEvaluation(
@@ -151,7 +151,7 @@ export class TasksController {
     @Param('evaluationId') evaluationId: string,
   ) {
     return (
-      await repository(request, workspaceId, projectId, 'task.create', true)
+      await repository(this.runtime, request, workspaceId, projectId, 'task.create', true)
     ).createFromFailedEvaluation(id.parse(evaluationId), requestId(request));
   }
 }

@@ -6,10 +6,12 @@ import {
   type ChartSourceInput,
   type DashboardCardInput,
 } from '@engrove/database';
-import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Get, Inject, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import type { Request } from 'express';
 import { z } from 'zod';
-import { appRuntime, requestId, requireActor } from './community.controller.js';
+import { requestId, requireActor } from './community.controller.js';
+import type { Runtime } from './runtime.js';
+import { RUNTIME } from './runtime.provider.js';
 
 const id = z.string().uuid();
 const safeText = z
@@ -329,26 +331,30 @@ function dashboardInput(raw: unknown) {
 }
 
 async function repository(
+  runtime: Runtime,
   request: Request,
   workspaceId: string,
   projectId: string,
   mutation = false,
 ) {
   const actor = await requireActor(
+    runtime,
     request,
     mutation ? 'dashboard.manage' : 'dataset.read',
     mutation,
   );
   return ScopedVisualizationRepository.open(
-    appRuntime().pool,
+    runtime.pool,
     actor,
-    await resolveWorkspaceIdentifier(appRuntime().pool, workspaceId),
-    await resolveProjectIdentifier(appRuntime().pool, projectId),
+    await resolveWorkspaceIdentifier(runtime.pool, workspaceId),
+    await resolveProjectIdentifier(runtime.pool, projectId),
   );
 }
 
 @Controller('api/v1/workspaces/:workspaceId/projects/:projectId')
 export class VisualizationsController {
+  constructor(@Inject(RUNTIME) private readonly runtime: Runtime) {}
+
   @Get('charts') async charts(
     @Req() request: Request,
     @Param('workspaceId') workspaceId: string,
@@ -357,7 +363,7 @@ export class VisualizationsController {
   ) {
     return {
       items: await (
-        await repository(request, workspaceId, projectId)
+        await repository(this.runtime, request, workspaceId, projectId)
       ).listCharts(includeArchived === 'true'),
     };
   }
@@ -367,7 +373,9 @@ export class VisualizationsController {
     @Param('projectId') projectId: string,
     @Param('chartId') chartId: string,
   ) {
-    return (await repository(request, workspaceId, projectId)).getChart(id.parse(chartId));
+    return (await repository(this.runtime, request, workspaceId, projectId)).getChart(
+      id.parse(chartId),
+    );
   }
   @Get('chart-revisions/:revisionId') async chartRevision(
     @Req() request: Request,
@@ -375,7 +383,7 @@ export class VisualizationsController {
     @Param('projectId') projectId: string,
     @Param('revisionId') revisionId: string,
   ) {
-    return (await repository(request, workspaceId, projectId)).getChartRevision(
+    return (await repository(this.runtime, request, workspaceId, projectId)).getChartRevision(
       id.parse(revisionId),
     );
   }
@@ -386,7 +394,7 @@ export class VisualizationsController {
     @Body() raw: unknown,
   ) {
     const input = chartInput(raw);
-    return (await repository(request, workspaceId, projectId, true)).createChart({
+    return (await repository(this.runtime, request, workspaceId, projectId, true)).createChart({
       ...input,
       sources: input.sources as ChartSourceInput[],
       requestId: requestId(request),
@@ -400,7 +408,7 @@ export class VisualizationsController {
     @Body() raw: unknown,
   ) {
     const input = chartInput(raw);
-    return (await repository(request, workspaceId, projectId, true)).reviseChart(
+    return (await repository(this.runtime, request, workspaceId, projectId, true)).reviseChart(
       id.parse(chartId),
       { ...input, sources: input.sources as ChartSourceInput[], requestId: requestId(request) },
     );
@@ -416,7 +424,7 @@ export class VisualizationsController {
       .object({ reason: safeText.max(2_000) })
       .strict()
       .parse(raw);
-    return (await repository(request, workspaceId, projectId, true)).setChartArchived(
+    return (await repository(this.runtime, request, workspaceId, projectId, true)).setChartArchived(
       id.parse(chartId),
       true,
       body.reason,
@@ -429,7 +437,7 @@ export class VisualizationsController {
     @Param('projectId') projectId: string,
     @Param('chartId') chartId: string,
   ) {
-    return (await repository(request, workspaceId, projectId, true)).setChartArchived(
+    return (await repository(this.runtime, request, workspaceId, projectId, true)).setChartArchived(
       id.parse(chartId),
       false,
       '',
@@ -444,7 +452,7 @@ export class VisualizationsController {
   ) {
     return {
       items: await (
-        await repository(request, workspaceId, projectId)
+        await repository(this.runtime, request, workspaceId, projectId)
       ).listDashboards(includeArchived === 'true'),
     };
   }
@@ -453,7 +461,7 @@ export class VisualizationsController {
     @Param('workspaceId') workspaceId: string,
     @Param('projectId') projectId: string,
   ) {
-    return (await repository(request, workspaceId, projectId)).dashboardMetrics();
+    return (await repository(this.runtime, request, workspaceId, projectId)).dashboardMetrics();
   }
   @Get('dashboards/:dashboardId') async dashboard(
     @Req() request: Request,
@@ -461,7 +469,9 @@ export class VisualizationsController {
     @Param('projectId') projectId: string,
     @Param('dashboardId') dashboardId: string,
   ) {
-    return (await repository(request, workspaceId, projectId)).getDashboard(id.parse(dashboardId));
+    return (await repository(this.runtime, request, workspaceId, projectId)).getDashboard(
+      id.parse(dashboardId),
+    );
   }
   @Post('dashboards') async createDashboard(
     @Req() request: Request,
@@ -469,7 +479,7 @@ export class VisualizationsController {
     @Param('projectId') projectId: string,
     @Body() raw: unknown,
   ) {
-    return (await repository(request, workspaceId, projectId, true)).createDashboard({
+    return (await repository(this.runtime, request, workspaceId, projectId, true)).createDashboard({
       ...dashboardInput(raw),
       requestId: requestId(request),
     });
@@ -481,7 +491,7 @@ export class VisualizationsController {
     @Param('dashboardId') dashboardId: string,
     @Body() raw: unknown,
   ) {
-    return (await repository(request, workspaceId, projectId, true)).reviseDashboard(
+    return (await repository(this.runtime, request, workspaceId, projectId, true)).reviseDashboard(
       id.parse(dashboardId),
       { ...dashboardInput(raw), requestId: requestId(request) },
     );
@@ -497,12 +507,9 @@ export class VisualizationsController {
       .object({ reason: safeText.max(2_000) })
       .strict()
       .parse(raw);
-    return (await repository(request, workspaceId, projectId, true)).setDashboardArchived(
-      id.parse(dashboardId),
-      true,
-      body.reason,
-      requestId(request),
-    );
+    return (
+      await repository(this.runtime, request, workspaceId, projectId, true)
+    ).setDashboardArchived(id.parse(dashboardId), true, body.reason, requestId(request));
   }
   @Post('dashboards/:dashboardId/restore') async restoreDashboard(
     @Req() request: Request,
@@ -510,11 +517,8 @@ export class VisualizationsController {
     @Param('projectId') projectId: string,
     @Param('dashboardId') dashboardId: string,
   ) {
-    return (await repository(request, workspaceId, projectId, true)).setDashboardArchived(
-      id.parse(dashboardId),
-      false,
-      '',
-      requestId(request),
-    );
+    return (
+      await repository(this.runtime, request, workspaceId, projectId, true)
+    ).setDashboardArchived(id.parse(dashboardId), false, '', requestId(request));
   }
 }

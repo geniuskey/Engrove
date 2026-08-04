@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
+import { httpRouteLabel } from './metrics.controller.js';
 import { runReadinessChecks } from './runtime.js';
+
+describe('HTTP metrics', () => {
+  it('uses matched route templates and collapses unmatched requests', () => {
+    expect(httpRouteLabel({ path: '/api/v1/workspaces/:workspaceId' })).toBe(
+      '/api/v1/workspaces/:workspaceId',
+    );
+    expect(httpRouteLabel(undefined)).toBe('unmatched');
+    expect(httpRouteLabel({ path: 42 })).toBe('unmatched');
+  });
+});
 
 describe('readiness', () => {
   it('reports every dependency failure with stable safe codes', async () => {

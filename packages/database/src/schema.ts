@@ -132,6 +132,27 @@ export const users = pgTable('users', {
   ...auditColumns,
 });
 
+export const oidcIdentities = pgTable(
+  'oidc_identities',
+  {
+    id: uuid('id').primaryKey(),
+    issuer: text('issuer').notNull(),
+    subject: text('subject').notNull(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    ...auditColumns,
+  },
+  (table) => [
+    uniqueIndex('oidc_identities_issuer_subject_key').on(table.issuer, table.subject),
+    index('oidc_identities_user_idx').on(table.userId),
+    check(
+      'oidc_identities_issuer_subject_length_check',
+      sql`length(${table.issuer}) between 1 and 2048 and length(${table.subject}) between 1 and 255`,
+    ),
+  ],
+);
+
 export const memberships = pgTable(
   'memberships',
   {

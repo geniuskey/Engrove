@@ -91,6 +91,10 @@ export class ScopedFileDatasetRepository {
     };
   }
 
+  get canonicalProjectId() {
+    return this.projectId;
+  }
+
   async issueUpload(input: {
     fileId: string;
     uploadId: string;
@@ -486,7 +490,10 @@ export class ScopedFileDatasetRepository {
         "update file_upload_sessions set status='expired',failure_code='UPLOAD_EXPIRED' where project_id=$1 and status='issued' and expires_at<now()",
         [this.projectId],
       );
-      const [active, eligible, committed, checkpoints] = await Promise.all([
+      const [project, active, eligible, committed, checkpoints] = await Promise.all([
+        client.query<{ public_id: string }>('select public_id from projects where id=$1', [
+          this.projectId,
+        ]),
         client.query<{ staging_object_key: string }>(
           "select staging_object_key from file_upload_sessions where project_id=$1 and status in ('issued','verifying')",
           [this.projectId],
@@ -497,7 +504,7 @@ export class ScopedFileDatasetRepository {
           [this.projectId, graceSeconds],
         ),
         client.query<{ object_key: string }>(
-          `select final_object_key object_key from file_objects where project_id=$1 and status='available'
+          `select final_object_key object_key from file_objects where project_id=$1 and status in ('pending_upload','verifying','available')
            union all select object_key from dataset_artifacts where project_id=$1`,
           [this.projectId],
         ),
@@ -508,6 +515,10 @@ export class ScopedFileDatasetRepository {
         ),
       ]);
       return {
+        storageProjectIds: [
+          this.projectId,
+          ...project.rows.flatMap((row) => (row.public_id ? [row.public_id] : [])),
+        ],
         activeStagingKeys: active.rows.map((row) => row.staging_object_key),
         eligibleStagingKeys: eligible.rows.map((row) => row.staging_object_key),
         protectedCommittedKeys: [
@@ -520,6 +531,41 @@ export class ScopedFileDatasetRepository {
         ],
       };
     });
+  }
+
+  async storageCleanupCandidateDeletable(
+    objectKey: string,
+    reason: 'eligible-staging' | 'unreferenced-committed',
+    graceSeconds: number,
+  ): Promise<boolean> {
+    if (reason === 'eligible-staging') {
+      const result = await this.pool.query(
+        `select 1 from file_upload_sessions
+         where project_id=$1 and staging_object_key=$2
+           and status in ('finalized','failed','expired')
+           and created_at<now()-($3||' seconds')::interval`,
+        [this.projectId, objectKey, graceSeconds],
+      );
+      return Boolean(result.rowCount);
+    }
+
+    const referenced = await this.pool.query(
+      `select 1 from file_objects
+       where project_id=$1 and final_object_key=$2 and status in ('pending_upload','verifying','available')
+       union all
+       select 1 from dataset_artifacts where project_id=$1 and object_key=$2
+       union all
+       select 1 from background_job_attempts a
+       join background_jobs j on j.id=a.job_id and j.project_id=a.project_id
+       where j.project_id=$1 and j.status='running' and a.status='running'
+         and exists (
+           select 1 from jsonb_array_elements(coalesce(a.result_checkpoint->'artifacts','[]'::jsonb)) artifact
+           where artifact->>'objectKey'=$2
+         )
+       limit 1`,
+      [this.projectId, objectKey],
+    );
+    return !referenced.rowCount;
   }
 
   async auditStorageCleanup(
@@ -541,21 +587,51 @@ export class ScopedFileDatasetRepository {
   }
 }
 
+async function lockActiveDatasetJob(
+  client: PoolClient,
+  input: {
+    jobId: string;
+    attemptId: string;
+    datasetId: string;
+    workerId: string;
+    projectId?: string | undefined;
+  },
+) {
+  const active = await client.query<{ project_id: string }>(
+    `select j.project_id from background_jobs j
+     join background_job_attempts a on a.project_id=j.project_id and a.job_id=j.id
+     where j.id=$1 and a.id=$2 and j.entity_type='dataset' and j.entity_id=$3
+       and j.status='running' and j.lease_owner=$4 and j.lease_expires_at>now()
+       and a.status='running' and a.worker_identity=$4
+       and ($5::uuid is null or j.project_id=$5)
+     for update of j,a`,
+    [input.jobId, input.attemptId, input.datasetId, input.workerId, input.projectId ?? null],
+  );
+  if (!active.rows[0])
+    throw new RepositoryError(
+      'JOB_LEASE_LOST',
+      409,
+      'The dataset job lease is no longer owned by this attempt.',
+    );
+  return active.rows[0];
+}
+
 export async function claimDatasetJob(pool: Pool, workerId: string, leaseSeconds = 60) {
   return tx(pool, async (client) => {
     await client.query(
       `update background_job_attempts a set status='failed',completed_at=now(),error_code='JOB_LEASE_EXPIRED',retryable=true
-       from background_jobs j where a.job_id=j.id and a.status='running' and j.status='running' and j.lease_expires_at<now()`,
+       from background_jobs j where a.job_id=j.id and a.status='running' and j.status='running'
+         and j.job_type='dataset.process' and j.entity_type='dataset' and j.lease_expires_at<now()`,
     );
     await client.query(
-      "update background_jobs set status='queued',lease_owner=null,lease_expires_at=null,updated_at=now() where status='running' and lease_expires_at<now()",
+      "update background_jobs set status='queued',lease_owner=null,lease_expires_at=null,updated_at=now() where job_type='dataset.process' and entity_type='dataset' and status='running' and lease_expires_at<now()",
     );
     await client.query(
       `update background_jobs j set status='succeeded',progress=100,completed_at=coalesce(completed_at,now()),lease_owner=null,lease_expires_at=null,updated_at=now()
-       from datasets d where j.entity_type='dataset' and j.entity_id=d.id and j.project_id=d.project_id and d.status='ready' and j.status in ('queued','running')`,
+       from datasets d where j.job_type='dataset.process' and j.entity_type='dataset' and j.entity_id=d.id and j.project_id=d.project_id and d.status='ready' and j.status in ('queued','running')`,
     );
     const job = await client.query(
-      `select * from background_jobs where status='queued' and scheduled_at<=now() order by scheduled_at,id for update skip locked limit 1`,
+      `select * from background_jobs where job_type='dataset.process' and entity_type='dataset' and status='queued' and scheduled_at<=now() order by scheduled_at,id for update skip locked limit 1`,
     );
     if (!job.rows[0]) return null;
     const row = job.rows[0];
@@ -608,6 +684,7 @@ export async function completeDatasetJob(
   input: {
     jobId: string;
     attemptId: string;
+    workerId: string;
     datasetId: string;
     projectId: string;
     artifacts: Array<{
@@ -625,6 +702,7 @@ export async function completeDatasetJob(
   },
 ) {
   return tx(pool, async (client) => {
+    await lockActiveDatasetJob(client, input);
     for (const artifact of input.artifacts)
       await client.query(
         `insert into dataset_artifacts (id,project_id,dataset_id,artifact_kind,object_key,storage_version_id,content_type,size_bytes,checksum) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
@@ -688,6 +766,7 @@ export async function failDatasetJob(
   input: {
     jobId: string;
     attemptId: string;
+    workerId: string;
     datasetId: string;
     attemptNumber: number;
     maxAttempts: number;
@@ -696,6 +775,7 @@ export async function failDatasetJob(
   },
 ) {
   return tx(pool, async (client) => {
+    await lockActiveDatasetJob(client, input);
     const retry = input.retryable && input.attemptNumber < input.maxAttempts;
     await client.query(
       "update background_job_attempts set status='failed',completed_at=now(),heartbeat_at=now(),error_code=$2,retryable=$3 where id=$1 and status='running'",

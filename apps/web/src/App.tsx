@@ -20,7 +20,7 @@ import {
   useParams,
   useSearchParams,
 } from 'react-router';
-import type { WorkspaceDataContext } from './DataPage.js';
+import type { WorkspaceDataContext } from './DataPageTypes.js';
 import { I18nProvider, useI18n } from './i18n.js';
 import { ServiceShell } from './ServiceSidebar.js';
 

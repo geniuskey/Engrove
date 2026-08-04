@@ -141,6 +141,13 @@
       "when": 1785795549025,
       "tag": "0019_nifty_ultimo",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1785801025369,
+      "tag": "0020_optimal_vulcan",
+      "breakpoints": true
     }
   ]
 }

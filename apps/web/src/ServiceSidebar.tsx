@@ -5,11 +5,13 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router';
 import type { User } from './App.js';
 import { useI18n } from './i18n.js';
+import { useModalDialog } from './useModalDialog.js';
 
 interface WorkspaceSummary {
   id: string;
@@ -74,6 +76,25 @@ export function ServiceShell({
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [commandOpen, setCommandOpen] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+  const mobileMenuButtonRef = useRef<HTMLButtonElement>(null);
+  const commandButtonRef = useRef<HTMLButtonElement>(null);
+  const closeMobile = useCallback(() => setMobileOpen(false), []);
+  const closeCommands = useCallback(() => {
+    setCommandOpen(false);
+    setCommandQuery('');
+  }, []);
+  const mobileSidebarRef = useModalDialog<HTMLElement>(
+    mobileOpen && isMobile,
+    closeMobile,
+    mobileMenuButtonRef,
+  );
+  const commandDialogRef = useModalDialog<HTMLElement>(
+    commandOpen,
+    closeCommands,
+    commandButtonRef,
+  );
 
   const loadWorkspaces = useCallback(async () => {
     const result = await request<{ items: WorkspaceSummary[] }>('/workspaces');
@@ -94,12 +115,20 @@ export function ServiceShell({
     window.localStorage.setItem('engrove-service-sidebar', expanded ? 'expanded' : 'collapsed');
   }, [expanded]);
   useEffect(() => {
+    if (!window.matchMedia) return;
+    const media = window.matchMedia('(max-width: 767px)');
+    const update = () => setIsMobile(media.matches);
+    update();
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+  useEffect(() => setMobileOpen(false), [location.pathname]);
+  useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
         setCommandOpen((current) => !current);
       }
-      if (event.key === 'Escape') setCommandOpen(false);
     };
     window.addEventListener('keydown', shortcut);
     return () => window.removeEventListener('keydown', shortcut);
@@ -193,45 +222,57 @@ export function ServiceShell({
 
   const commands: Array<{ label: string; hint: string; run: () => void | Promise<void> }> = [
     {
-      label: 'Open workspace data',
-      hint: 'Navigation',
+      label: t('command.openWorkspaceData'),
+      hint: t('command.navigation'),
       run: () => navigate(workspaceBase ? `${workspaceBase}/data` : '/workspaces'),
     },
     ...(workspaceBase
       ? [
           {
-            label: 'Open projects',
-            hint: 'Navigation',
+            label: t('command.openProjects'),
+            hint: t('command.navigation'),
             run: () => navigate(`${workspaceBase}/projects`),
           },
         ]
       : []),
     ...projectLinks.map((item) => ({
-      label: `Open ${item.label}`,
-      hint: project?.name ?? 'Project',
+      label: t('command.openSection', { section: item.label }),
+      hint: project?.name ?? t('common.project'),
       run: () => navigate(item.to),
     })),
     ...(can(user, 'member.manage')
-      ? [{ label: 'Manage members and groups', hint: 'Settings', run: () => navigate('/members') }]
+      ? [
+          {
+            label: t('command.manageMembers'),
+            hint: t('command.settings'),
+            run: () => navigate('/members'),
+          },
+        ]
       : []),
     ...(can(user, 'audit.read')
-      ? [{ label: 'Open audit log', hint: 'Settings', run: () => navigate('/audit') }]
+      ? [
+          {
+            label: t('command.openAudit'),
+            hint: t('command.settings'),
+            run: () => navigate('/audit'),
+          },
+        ]
       : []),
     {
-      label: theme === 'dark' ? 'Use light theme' : 'Use dark theme',
-      hint: 'Appearance',
+      label: theme === 'dark' ? t('sidebar.useLightTheme') : t('sidebar.useDarkTheme'),
+      hint: t('command.appearance'),
       run: onToggleTheme,
     },
-    { label: 'Sign out', hint: user.displayName, run: signOut },
+    { label: t('sidebar.signOut'), hint: user.displayName, run: signOut },
   ];
   const visibleCommands = commands.filter((command) =>
     `${command.label} ${command.hint}`.toLowerCase().includes(commandQuery.trim().toLowerCase()),
   );
   function runCommand(command: (typeof commands)[number]) {
-    setCommandOpen(false);
-    setCommandQuery('');
+    closeCommands();
     void command.run();
   }
+  const sidebarExpanded = expanded || isMobile;
 
   return (
     <ServiceSidebarPortalContext.Provider value={portal}>
@@ -242,33 +283,47 @@ export function ServiceShell({
         >
           {t('sidebar.skip')}
         </a>
+        {mobileOpen && (
+          <button
+            aria-label={t('sidebar.closeMenu')}
+            className="fixed inset-0 z-30 cursor-default bg-slate-950/70 backdrop-blur-sm md:hidden"
+            data-modal-backdrop
+            onClick={closeMobile}
+            type="button"
+          />
+        )}
         <aside
-          aria-label="Service sidebar"
-          className={`service-sidebar z-40 flex shrink-0 flex-col border-b border-slate-800 bg-slate-950/95 transition-[width] duration-200 md:sticky md:top-0 md:h-screen md:border-b-0 md:border-r ${expanded ? 'md:w-60' : 'md:w-14'}`}
+          aria-label={t('sidebar.label')}
+          aria-modal={isMobile && mobileOpen ? 'true' : undefined}
+          className={`service-sidebar fixed inset-y-0 left-0 z-40 flex w-72 shrink-0 flex-col border-r border-slate-800 bg-slate-950/95 transition-[transform,width] duration-200 md:sticky md:top-0 md:h-screen md:translate-x-0 ${mobileOpen ? 'translate-x-0' : '-translate-x-full'} ${expanded ? 'md:w-60' : 'md:w-14'}`}
+          ref={mobileSidebarRef}
+          role={isMobile && mobileOpen ? 'dialog' : undefined}
+          tabIndex={isMobile && mobileOpen ? -1 : undefined}
+          id="service-navigation-drawer"
         >
           <div
-            className={`flex h-12 shrink-0 items-center justify-between border-b border-slate-800 ${expanded ? 'px-2' : 'px-0.5'}`}
+            className={`flex h-12 shrink-0 items-center justify-between border-b border-slate-800 ${sidebarExpanded ? 'px-2' : 'px-0.5'}`}
           >
             <Link
               aria-label={t('sidebar.home')}
               className="flex min-w-0 items-center gap-2.5"
-              to={workspaceBase ? `${workspaceBase}/data` : '/workspaces'}
+              to="/"
             >
               <img
                 alt=""
-                className={`shrink-0 ${expanded ? 'size-8' : 'size-7'}`}
-                height={expanded ? 32 : 28}
+                className={`shrink-0 ${sidebarExpanded ? 'size-8' : 'size-7'}`}
+                height={sidebarExpanded ? 32 : 28}
                 src="/engrove-mark.png"
-                width={expanded ? 32 : 28}
+                width={sidebarExpanded ? 32 : 28}
               />
-              {expanded && (
+              {sidebarExpanded && (
                 <span className="truncate text-sm font-semibold tracking-tight">Engrove</span>
               )}
             </Link>
             <button
               aria-expanded={expanded}
               aria-label={expanded ? t('sidebar.collapse') : t('sidebar.expand')}
-              className={`grid shrink-0 place-items-center rounded text-slate-500 hover:bg-slate-800 hover:text-sky-300 ${expanded ? 'size-7 text-sm' : 'size-5 text-xs'}`}
+              className={`hidden shrink-0 place-items-center rounded text-slate-500 hover:bg-slate-800 hover:text-sky-300 md:grid ${expanded ? 'size-7 text-sm' : 'size-5 text-xs'}`}
               onClick={() => setExpanded((value) => !value)}
               type="button"
             >
@@ -277,7 +332,7 @@ export function ServiceShell({
           </div>
 
           <div className="border-b border-slate-800 p-2">
-            {expanded ? (
+            {sidebarExpanded ? (
               <label className="block text-[10px] font-medium uppercase tracking-wider text-slate-500">
                 {t('common.workspace')}
                 <select
@@ -324,7 +379,7 @@ export function ServiceShell({
                   <span aria-hidden="true" className="grid w-5 place-items-center text-sm">
                     ▦
                   </span>
-                  {expanded && <span>{t('common.data')}</span>}
+                  {sidebarExpanded && <span>{t('common.data')}</span>}
                 </NavLink>
                 <NavLink
                   aria-label={t('common.projects')}
@@ -336,7 +391,7 @@ export function ServiceShell({
                   <span aria-hidden="true" className="grid w-5 place-items-center text-sm">
                     ◫
                   </span>
-                  {expanded && <span>{t('common.projects')}</span>}
+                  {sidebarExpanded && <span>{t('common.projects')}</span>}
                 </NavLink>
               </>
             ) : (
@@ -351,7 +406,7 @@ export function ServiceShell({
                   <span aria-hidden="true" className="grid w-5 place-items-center text-sm">
                     ▦
                   </span>
-                  {expanded && <span>{t('common.data')}</span>}
+                  {sidebarExpanded && <span>{t('common.data')}</span>}
                 </button>
                 <button
                   aria-label={t('common.projects')}
@@ -363,15 +418,15 @@ export function ServiceShell({
                   <span aria-hidden="true" className="grid w-5 place-items-center text-sm">
                     ◫
                   </span>
-                  {expanded && <span>{t('common.projects')}</span>}
+                  {sidebarExpanded && <span>{t('common.projects')}</span>}
                 </button>
               </>
             )}
           </nav>
 
           <div className="min-h-0 flex-1 overflow-y-auto border-t border-slate-800">
-            <div className={expanded ? undefined : 'hidden'} ref={setPortal} />
-            {expanded && inProjects && (
+            <div className={sidebarExpanded ? undefined : 'hidden'} ref={setPortal} />
+            {sidebarExpanded && inProjects && (
               <div className="p-2">
                 <p className="px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-slate-500">
                   {t('common.projects')}
@@ -420,7 +475,7 @@ export function ServiceShell({
           </div>
 
           <div className="shrink-0 space-y-1 border-t border-slate-800 p-2">
-            {expanded ? (
+            {sidebarExpanded ? (
               <>
                 <details>
                   <summary className="flex h-8 cursor-pointer list-none items-center gap-2 rounded-md px-2 text-xs text-slate-400 marker:content-none hover:bg-slate-800 hover:text-slate-200">
@@ -535,18 +590,30 @@ export function ServiceShell({
 
         <div className="flex min-w-0 flex-1 flex-col">
           <header className="sticky top-0 z-30 flex h-11 shrink-0 items-center gap-3 border-b border-slate-800/80 bg-slate-950/90 px-3 backdrop-blur-xl">
+            <button
+              aria-controls="service-navigation-drawer"
+              aria-expanded={mobileOpen}
+              aria-label={t('sidebar.openMenu')}
+              className="grid size-8 shrink-0 place-items-center rounded-md border border-slate-800 text-lg text-slate-400 hover:bg-slate-800 hover:text-sky-300 md:hidden"
+              onClick={() => setMobileOpen(true)}
+              ref={mobileMenuButtonRef}
+              type="button"
+            >
+              <span aria-hidden="true">☰</span>
+            </button>
             <p className="min-w-0 truncate text-xs text-slate-500">
               <span>{workspace?.name ?? t('sidebar.organization')}</span>
               <span className="mx-2 text-slate-700">/</span>
               <strong className="font-medium text-slate-300">{sectionLabel}</strong>
             </p>
             <button
-              aria-label="Open command palette"
+              aria-label={t('command.open')}
               className="ml-auto flex h-7 items-center gap-2 rounded-md border border-slate-800 bg-slate-900 px-2 text-[11px] text-slate-500 hover:border-slate-700 hover:text-sky-300"
               onClick={() => setCommandOpen(true)}
+              ref={commandButtonRef}
               type="button"
             >
-              <span>Search commands</span>
+              <span className="hidden sm:inline">{t('command.search')}</span>
               <kbd className="rounded border border-slate-700 px-1 font-mono text-[9px]">⌘K</kbd>
             </button>
           </header>
@@ -560,22 +627,25 @@ export function ServiceShell({
         {commandOpen && (
           <div className="fixed inset-0 z-[90] flex justify-center bg-slate-950/70 px-4 pt-[12vh] backdrop-blur-sm">
             <button
-              aria-label="Close command palette"
+              aria-label={t('command.close')}
               className="absolute inset-0 cursor-default"
+              data-modal-backdrop
               onClick={() => setCommandOpen(false)}
               type="button"
             />
             <section
-              aria-label="Command palette"
+              aria-label={t('command.label')}
               aria-modal="true"
               className="relative h-fit w-full max-w-xl overflow-hidden rounded-xl border border-slate-700 bg-slate-950 shadow-2xl"
               role="dialog"
+              ref={commandDialogRef}
+              tabIndex={-1}
             >
               <input
-                aria-label="Search commands"
-                autoFocus
+                aria-label={t('command.search')}
+                data-dialog-initial-focus
                 className="h-12 w-full border-b border-slate-800 bg-transparent px-4 text-sm text-slate-100 outline-none placeholder:text-slate-600"
-                placeholder="Go to a table, dashboard, member setting…"
+                placeholder={t('command.placeholder')}
                 type="search"
                 value={commandQuery}
                 onChange={(event) => setCommandQuery(event.target.value)}
@@ -597,7 +667,7 @@ export function ServiceShell({
                 ))}
                 {!visibleCommands.length && (
                   <p className="px-3 py-8 text-center text-xs text-slate-500">
-                    No matching command.
+                    {t('command.noMatch')}
                   </p>
                 )}
               </div>

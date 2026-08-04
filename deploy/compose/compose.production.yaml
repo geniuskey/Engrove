@@ -71,6 +71,7 @@ services:
       S3_BUCKET: engrove-production
       INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET:?set INTERNAL_SERVICE_SECRET}
       ENGROVE_SETUP_TOKEN: ${ENGROVE_SETUP_TOKEN:-}
+      ENGROVE_TRUST_PROXY: ${ENGROVE_TRUST_PROXY:?set ENGROVE_TRUST_PROXY to the reverse proxy IP or network CIDR}
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
 
   worker-node:
@@ -87,10 +88,13 @@ services:
 
   worker-python:
     <<: *runtime-hardening
-    tmpfs: ['/tmp:rw,noexec,nosuid,size=64m']
+    volumes:
+      - worker-python-scratch:/tmp
     environment:
       NODE_ENV: production
       INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET:?set INTERNAL_SERVICE_SECRET}
+      S3_ENDPOINT: http://minio:9000
+      MAX_DATASET_SOURCE_BYTES: 104857600
 
   web:
     <<: *runtime-hardening
@@ -107,3 +111,6 @@ services:
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?set S3_SECRET_ACCESS_KEY}
       S3_BUCKET: engrove-production
       BACKUP_RECIPIENT: ${BACKUP_RECIPIENT:-}
+
+volumes:
+  worker-python-scratch:

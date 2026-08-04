@@ -9,7 +9,7 @@ import {
   useState,
 } from 'react';
 import { Link, useParams } from 'react-router';
-import { allowed, api, ErrorText, inputClass, type User } from './App.js';
+import { allowed, api, inputClass, NoticeText, type User } from './App.js';
 import {
   ContextMenu,
   type ContextMenuItem,
@@ -17,6 +17,7 @@ import {
   menuFromKeyboard,
   menuFromPointer,
 } from './ContextMenu.js';
+import { useI18n } from './i18n.js';
 
 interface FileObject {
   id: string;
@@ -51,6 +52,7 @@ async function sha256(bytes: ArrayBuffer) {
 }
 
 export function FilesDatasetsPage({ user }: { user: User }) {
+  const { formatNumber, t } = useI18n();
   const { workspaceId, projectId } = useParams();
   const base = `/workspaces/${workspaceId}/projects/${projectId}`;
   const [files, setFiles] = useState<FileObject[]>([]);
@@ -58,6 +60,8 @@ export function FilesDatasetsPage({ user }: { user: User }) {
   const [sourceDatasetId, setSourceDatasetId] = useState('');
   const [preview, setPreview] = useState<unknown>();
   const [message, setMessage] = useState('');
+  const [messageTone, setMessageTone] = useState<'info' | 'success' | 'error'>('info');
+  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuModel>();
   const refresh = useCallback(async () => {
@@ -70,9 +74,12 @@ export function FilesDatasetsPage({ user }: { user: User }) {
       setDatasets(datasetResult.items);
       setMessage('');
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : 'Resources could not be loaded.');
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : t('files.loadError'));
+    } finally {
+      setLoading(false);
     }
-  }, [base]);
+  }, [base, t]);
   useEffect(() => void refresh(), [refresh]);
   const processingResourceCount =
     files.filter(
@@ -135,8 +142,11 @@ export function FilesDatasetsPage({ user }: { user: User }) {
       await api(`${base}/file-upload-sessions/${issued.uploadId}/complete`, { method: 'POST' });
       event.currentTarget.reset();
       await refresh();
+      setMessageTone('success');
+      setMessage(t('common.changesSaved'));
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : 'Upload failed.');
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : t('files.uploadError'));
     } finally {
       setBusy(false);
     }
@@ -186,8 +196,11 @@ export function FilesDatasetsPage({ user }: { user: User }) {
     try {
       await operation();
       await refresh();
+      setMessageTone('success');
+      setMessage(t('common.changesSaved'));
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : 'Operation failed.');
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : t('files.operationError'));
     } finally {
       setBusy(false);
     }
@@ -197,9 +210,11 @@ export function FilesDatasetsPage({ user }: { user: User }) {
     try {
       if (!navigator.clipboard) throw new Error('Clipboard is unavailable.');
       await navigator.clipboard.writeText(value);
-      setMessage(`${label} copied.`);
+      setMessageTone('success');
+      setMessage(t('common.copied', { label }));
     } catch {
-      setMessage('Clipboard access was denied by the browser.');
+      setMessageTone('error');
+      setMessage(t('common.copyDenied'));
     }
   }
 
@@ -234,27 +249,27 @@ export function FilesDatasetsPage({ user }: { user: User }) {
 
   function fileContextItems(file: FileObject): ContextMenuItem[] {
     return [
-      { label: 'Download file', icon: '↓', onSelect: () => void downloadFile(file) },
+      { label: t('files.downloadFile'), icon: '↓', onSelect: () => void downloadFile(file) },
       {
-        label: 'Copy file name',
+        label: t('files.copyName'),
         icon: '⧉',
         separatorBefore: true,
-        onSelect: () => void copyResourceValue('File name', file.original_name),
+        onSelect: () => void copyResourceValue(t('files.fileName'), file.original_name),
       },
       {
-        label: 'Copy file ID',
+        label: t('files.copyId'),
         icon: '#',
-        onSelect: () => void copyResourceValue('File ID', file.id),
+        onSelect: () => void copyResourceValue('ID', file.id),
       },
       {
-        label: 'Copy SHA-256',
+        label: t('files.copyChecksum'),
         icon: '◇',
         onSelect: () => void copyResourceValue('SHA-256', file.checksum),
       },
       ...(allowed(user, file.archived_at ? 'file.restore' : 'file.archive')
         ? [
             {
-              label: file.archived_at ? 'Restore file' : 'Archive file',
+              label: file.archived_at ? t('files.restoreFile') : t('files.archiveFile'),
               icon: file.archived_at ? '↺' : '×',
               tone: file.archived_at ? ('default' as const) : ('danger' as const),
               separatorBefore: true,
@@ -270,7 +285,7 @@ export function FilesDatasetsPage({ user }: { user: User }) {
       ...(dataset.status === 'ready'
         ? [
             {
-              label: 'Preview dataset',
+              label: t('files.previewDataset'),
               icon: '↗',
               onSelect: () =>
                 void mutate(async () =>
@@ -282,7 +297,7 @@ export function FilesDatasetsPage({ user }: { user: User }) {
       ...(dataset.status === 'failed' && allowed(user, 'job.retry')
         ? [
             {
-              label: 'Retry processing',
+              label: t('files.retryProcessing'),
               icon: '↺',
               onSelect: () =>
                 void mutate(() => api(`${base}/datasets/${dataset.id}/retry`, { method: 'POST' })),
@@ -290,20 +305,20 @@ export function FilesDatasetsPage({ user }: { user: User }) {
           ]
         : []),
       {
-        label: 'Copy dataset name',
+        label: t('files.copyDatasetName'),
         icon: '⧉',
         separatorBefore: true,
-        onSelect: () => void copyResourceValue('Dataset name', dataset.name),
+        onSelect: () => void copyResourceValue(t('files.datasetName'), dataset.name),
       },
       {
-        label: 'Copy dataset ID',
+        label: t('files.copyDatasetId'),
         icon: '#',
-        onSelect: () => void copyResourceValue('Dataset ID', dataset.id),
+        onSelect: () => void copyResourceValue('ID', dataset.id),
       },
       ...(allowed(user, dataset.archived_at ? 'dataset.restore' : 'dataset.archive')
         ? [
             {
-              label: dataset.archived_at ? 'Restore dataset' : 'Archive dataset',
+              label: dataset.archived_at ? t('files.restoreDataset') : t('files.archiveDataset'),
               icon: dataset.archived_at ? '↺' : '×',
               tone: dataset.archived_at ? ('default' as const) : ('danger' as const),
               separatorBefore: true,
@@ -331,22 +346,43 @@ export function FilesDatasetsPage({ user }: { user: User }) {
     if (menu) setContextMenu(menu);
   }
 
+  function statusLabel(status: string, archived: boolean) {
+    if (archived) return t('status.archived');
+    return status === 'pending_upload'
+      ? t('status.pendingUpload')
+      : status === 'verifying'
+        ? t('status.verifying')
+        : status === 'available'
+          ? t('status.available')
+          : status === 'pending'
+            ? t('status.pending')
+            : status === 'processing'
+              ? t('status.processing')
+              : status === 'ready'
+                ? t('status.ready')
+                : status === 'failed'
+                  ? t('status.failed')
+                  : status;
+  }
+
   return (
     <>
       <Link className="text-sm text-slate-400 hover:text-sky-300" to={base}>
-        ← Project
+        ← {t('common.projectBack')}
       </Link>
       <h1 className="mt-4 text-4xl font-semibold tracking-tight sm:text-5xl">
-        Files &amp; datasets
+        {t('files.heading')}
       </h1>
-      <p className="mt-3 text-slate-400">
-        Immutable file versions, processing lineage, and previews. Right-click a resource for quick
-        actions.
-      </p>
-      <ErrorText>{message}</ErrorText>
+      <p className="mt-3 text-slate-400">{t('files.description')}</p>
+      <NoticeText tone={messageTone}>{message}</NoticeText>
+      {loading && (
+        <p aria-live="polite" className="mt-4 text-sm text-slate-400" role="status">
+          {t('common.loading')}
+        </p>
+      )}
       {processingResourceCount > 0 && (
         <p aria-live="polite" className="mt-2 text-xs text-sky-300" role="status">
-          Processing {processingResourceCount} resource(s) · updates pause while this tab is hidden.
+          {t('files.processing', { count: processingResourceCount })}
         </p>
       )}
 
@@ -355,10 +391,21 @@ export function FilesDatasetsPage({ user }: { user: User }) {
           className="mt-8 grid gap-3 rounded-2xl border border-slate-800 bg-slate-900/45 p-5 shadow-xl shadow-slate-950/10 md:grid-cols-4"
           onSubmit={(event) => void upload(event)}
         >
-          <input className={inputClass} name="file" type="file" required />
-          <input className={inputClass} name="seriesName" placeholder="New series name" />
+          <input
+            aria-label={t('files.choose')}
+            className={inputClass}
+            name="file"
+            type="file"
+            required
+          />
+          <input
+            aria-label={t('files.seriesName')}
+            className={inputClass}
+            name="seriesName"
+            placeholder={t('files.seriesName')}
+          />
           <select className={inputClass} name="seriesId" defaultValue="">
-            <option value="">Create a new series</option>
+            <option value="">{t('files.newSeries')}</option>
             {[...new Map(files.map((file) => [file.file_series_id, file])).values()].map((file) => (
               <option key={file.file_series_id} value={file.file_series_id}>
                 {file.series_name}
@@ -366,22 +413,22 @@ export function FilesDatasetsPage({ user }: { user: User }) {
             ))}
           </select>
           <Button disabled={busy} type="submit">
-            {busy ? 'Working…' : 'Upload file'}
+            {busy ? t('common.working') : t('files.upload')}
           </Button>
         </form>
       )}
 
       <section className="mt-10">
-        <h2 className="text-2xl font-semibold">Exact file versions</h2>
+        <h2 className="text-2xl font-semibold">{t('files.versions')}</h2>
         <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/35 shadow-xl shadow-slate-950/10">
           <table className="w-full text-left text-sm">
             <thead className="bg-slate-900 text-slate-400">
               <tr>
-                <th className="p-3">Series / file</th>
-                <th>Version</th>
-                <th>Status</th>
+                <th className="p-3">{t('files.seriesFile')}</th>
+                <th>{t('files.version')}</th>
+                <th>{t('files.status')}</th>
                 <th>SHA-256</th>
-                <th>Actions</th>
+                <th>{t('files.actions')}</th>
               </tr>
             </thead>
             <tbody>
@@ -404,18 +451,18 @@ export function FilesDatasetsPage({ user }: { user: User }) {
                     </div>
                   </td>
                   <td>v{file.version_number}</td>
-                  <td>{file.archived_at ? 'archived' : file.status}</td>
+                  <td>{statusLabel(file.status, Boolean(file.archived_at))}</td>
                   <td className="font-mono text-xs">{file.checksum.slice(0, 12)}…</td>
                   <td className="space-x-2">
                     <button className="text-sky-400" onClick={() => void downloadFile(file)}>
-                      Download
+                      {t('common.download')}
                     </button>
                     {allowed(user, file.archived_at ? 'file.restore' : 'file.archive') && (
                       <button
                         className="text-sky-400"
                         onClick={() => void changeFileLifecycle(file)}
                       >
-                        {file.archived_at ? 'Restore' : 'Archive'}
+                        {file.archived_at ? t('common.restore') : t('common.archive')}
                       </button>
                     )}
                   </td>
@@ -432,10 +479,16 @@ export function FilesDatasetsPage({ user }: { user: User }) {
             className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-5 shadow-lg shadow-slate-950/10"
             onSubmit={(event) => void createTabular(event)}
           >
-            <h2 className="text-xl font-semibold">Parse CSV</h2>
-            <input className={inputClass} name="name" placeholder="Dataset name" required />
+            <h2 className="text-xl font-semibold">{t('files.parseCsv')}</h2>
+            <input
+              aria-label={t('files.datasetName')}
+              className={inputClass}
+              name="name"
+              placeholder={t('files.datasetName')}
+              required
+            />
             <select className={inputClass} name="fileId" required>
-              <option value="">Select available file…</option>
+              <option value="">{t('files.selectFile')}</option>
               {files
                 .filter((file) => file.status === 'available' && !file.archived_at)
                 .map((file) => (
@@ -446,28 +499,35 @@ export function FilesDatasetsPage({ user }: { user: User }) {
             </select>
             <input
               className={inputClass}
+              aria-label={t('files.delimiter')}
               name="delimiter"
               defaultValue=","
               maxLength={1}
               required
             />
             <Button disabled={busy} type="submit">
-              Create tabular dataset
+              {t('files.createTabular')}
             </Button>
           </form>
           <form
             className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-5 shadow-lg shadow-slate-950/10"
             onSubmit={(event) => void createXy(event)}
           >
-            <h2 className="text-xl font-semibold">Derive XY</h2>
-            <input className={inputClass} name="name" placeholder="XY dataset name" required />
+            <h2 className="text-xl font-semibold">{t('files.deriveXy')}</h2>
+            <input
+              aria-label={t('files.xyName')}
+              className={inputClass}
+              name="name"
+              placeholder={t('files.xyName')}
+              required
+            />
             <select
               className={inputClass}
               value={source?.id ?? ''}
               onChange={(event) => setSourceDatasetId(event.target.value)}
               required
             >
-              <option value="">Select tabular dataset…</option>
+              <option value="">{t('files.selectTabular')}</option>
               {tabular.map((dataset) => (
                 <option key={dataset.id} value={dataset.id}>
                   {dataset.name}
@@ -492,27 +552,27 @@ export function FilesDatasetsPage({ user }: { user: User }) {
               <input
                 className={inputClass}
                 name="xDimension"
-                placeholder="X dimension (e.g. time)"
+                placeholder={t('files.xDimension')}
                 required
               />
-              <input className={inputClass} name="xUnit" placeholder="X unit (e.g. s)" required />
+              <input className={inputClass} name="xUnit" placeholder={t('files.xUnit')} required />
               <input
                 className={inputClass}
                 name="yDimension"
-                placeholder="Y dimension (e.g. force)"
+                placeholder={t('files.yDimension')}
                 required
               />
-              <input className={inputClass} name="yUnit" placeholder="Y unit (e.g. N)" required />
+              <input className={inputClass} name="yUnit" placeholder={t('files.yUnit')} required />
             </div>
             <Button disabled={busy || !source} type="submit">
-              Create XY dataset
+              {t('files.createXy')}
             </Button>
           </form>
         </section>
       )}
 
       <section className="mt-10">
-        <h2 className="text-2xl font-semibold">Datasets</h2>
+        <h2 className="text-2xl font-semibold">{t('files.datasets')}</h2>
         <div className="mt-4 grid gap-3">
           {datasets.map((dataset) => (
             <article
@@ -533,8 +593,10 @@ export function FilesDatasetsPage({ user }: { user: User }) {
                     {dataset.dataset_type} · {dataset.id}
                   </p>
                   <p className="text-sm text-slate-400">
-                    {dataset.status}
-                    {dataset.row_count !== null ? ` · ${dataset.row_count} rows` : ''}
+                    {statusLabel(dataset.status, Boolean(dataset.archived_at))}
+                    {dataset.row_count !== null
+                      ? ` · ${t('files.rows', { count: formatNumber(dataset.row_count) })}`
+                      : ''}
                     {dataset.failure_code ? ` · ${dataset.failure_code}` : ''}
                   </p>
                 </div>
@@ -548,7 +610,7 @@ export function FilesDatasetsPage({ user }: { user: User }) {
                         )
                       }
                     >
-                      Preview
+                      {t('common.preview')}
                     </button>
                   )}
                   {dataset.status === 'failed' && allowed(user, 'job.retry') && (
@@ -560,7 +622,7 @@ export function FilesDatasetsPage({ user }: { user: User }) {
                         )
                       }
                     >
-                      Retry
+                      {t('common.retryAction')}
                     </button>
                   )}
                   {allowed(user, dataset.archived_at ? 'dataset.restore' : 'dataset.archive') && (
@@ -568,16 +630,15 @@ export function FilesDatasetsPage({ user }: { user: User }) {
                       className="text-sky-400"
                       onClick={() => void changeDatasetLifecycle(dataset)}
                     >
-                      {dataset.archived_at ? 'Restore' : 'Archive'}
+                      {dataset.archived_at ? t('common.restore') : t('common.archive')}
                     </button>
                   )}
                 </div>
               </div>
               <p className="mt-2 text-xs text-slate-500">
-                Lineage:{' '}
                 {dataset.source_dataset_id
-                  ? `dataset ${dataset.source_dataset_id}`
-                  : `file ${dataset.source_file_id}`}
+                  ? t('files.lineageDataset', { id: dataset.source_dataset_id })
+                  : t('files.lineageFile', { id: dataset.source_file_id ?? '—' })}
               </p>
             </article>
           ))}

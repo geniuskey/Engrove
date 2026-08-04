@@ -11,17 +11,13 @@ import type { Request, Response } from 'express';
 import pinoHttp from 'pino-http';
 import pino from 'pino';
 import { AppModule } from './app.module.js';
-import { installCommunityRuntime } from './community.controller.js';
 import { ApiErrorFilter } from './error.filter.js';
-import { installRuntime } from './health.controller.js';
 import { createRuntime } from './runtime.js';
-import { observeHttp } from './metrics.controller.js';
+import { httpRouteLabel, observeHttp } from './metrics.controller.js';
 
 export async function bootstrap() {
   const config = parseConfig(process.env);
   const runtime = createRuntime(config);
-  installRuntime(runtime);
-  installCommunityRuntime(runtime);
 
   const setup = await initializeInstallation(
     runtime.pool,
@@ -35,14 +31,18 @@ export async function bootstrap() {
     );
   }
 
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  const app = await NestFactory.create(AppModule.register(runtime), { bufferLogs: true });
+  app
+    .getHttpAdapter()
+    .getInstance()
+    .set('trust proxy', config.ENGROVE_TRUST_PROXY.length ? config.ENGROVE_TRUST_PROXY : false);
   app.use(cookieParser());
   app.use((request: Request, response: Response, next: () => void) => {
     const started = process.hrtime.bigint();
     response.once('finish', () =>
       observeHttp(
         request.method,
-        request.path,
+        httpRouteLabel(request.route),
         response.statusCode,
         Number(process.hrtime.bigint() - started) / 1_000_000_000,
       ),

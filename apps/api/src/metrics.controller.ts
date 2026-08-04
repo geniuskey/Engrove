@@ -1,5 +1,6 @@
-import { Controller, Get, Header } from '@nestjs/common';
-import { appRuntime } from './community.controller.js';
+import { Controller, Get, Header, Inject } from '@nestjs/common';
+import type { Runtime } from './runtime.js';
+import { RUNTIME } from './runtime.provider.js';
 
 interface HttpSample {
   count: number;
@@ -9,6 +10,12 @@ interface HttpSample {
 const httpSamples = new Map<string, HttpSample>();
 const errors = new Map<string, number>();
 const uuid = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
+
+export function httpRouteLabel(route: unknown): string {
+  if (!route || typeof route !== 'object' || !('path' in route)) return 'unmatched';
+  const path = route.path;
+  return typeof path === 'string' && path.startsWith('/') ? path : 'unmatched';
+}
 
 function label(value: string): string {
   return value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('\n', '\\n');
@@ -33,10 +40,12 @@ function metric(name: string, value: number | string, help: string, type = 'gaug
 
 @Controller()
 export class MetricsController {
+  constructor(@Inject(RUNTIME) private readonly runtime: Runtime) {}
+
   @Get('metrics')
   @Header('Content-Type', 'text/plain; version=0.0.4; charset=utf-8')
   async metrics(): Promise<string> {
-    const runtime = appRuntime();
+    const runtime = this.runtime;
     const result = await runtime.pool.query<Record<string, string>>(`
       select
         (select count(*) from background_jobs where status='running') active_jobs,

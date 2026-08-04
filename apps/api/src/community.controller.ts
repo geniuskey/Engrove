@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto';
+import { isIP, SocketAddress } from 'node:net';
 import {
   Body,
   Controller,
   Get,
   HttpException,
+  Inject,
   Param,
   Patch,
   Post,
@@ -53,20 +55,11 @@ import { hash, verify } from 'argon2';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { Runtime } from './runtime.js';
+import { RUNTIME } from './runtime.provider.js';
 
 const SESSION_COOKIE = 'engrove_session';
 const CSRF_COOKIE = 'engrove_csrf';
 const memberGroupColor = z.enum(['slate', 'sky', 'emerald', 'amber', 'rose', 'violet']);
-let runtime: Runtime | undefined;
-
-export function installCommunityRuntime(value: Runtime): void {
-  runtime = value;
-}
-
-export function appRuntime(): Runtime {
-  if (!runtime) throw new HttpException({ code: 'RUNTIME_NOT_INITIALIZED' }, 503);
-  return runtime;
-}
 
 export function requestId(request: Request): string {
   return String(request.headers['x-request-id'] ?? 'unknown');
@@ -77,18 +70,18 @@ function clientToken(request: Request): string | undefined {
 }
 
 export async function requireActor(
+  runtime: Runtime,
   request: Request,
   action?: Action,
   csrf = false,
 ): Promise<ActorSession> {
-  const current = appRuntime();
   const token = clientToken(request);
   const actor = token
-    ? await authenticateSession(current.pool, token, current.config.SESSION_IDLE_MINUTES)
+    ? await authenticateSession(runtime.pool, token, runtime.config.SESSION_IDLE_MINUTES)
     : undefined;
   if (!actor) throw new HttpException({ code: 'AUTHENTICATION_REQUIRED' }, 401);
   if (csrf) {
-    const maintenance = await current.pool.query(
+    const maintenance = await runtime.pool.query(
       'select 1 from maintenance_state where singleton=true and lease_expires_at>now()',
     );
     if (maintenance.rowCount)
@@ -113,18 +106,106 @@ export async function requireActor(
   return actor;
 }
 
-async function applyRateLimit(request: Request, bucket: string, limit: number): Promise<void> {
-  const current = appRuntime();
-  if (current.redis.status === 'wait') await current.redis.connect();
-  const identity = createHash('sha256').update(`${request.ip}:${bucket}`).digest('hex');
-  const key = `engrove:rate-limit:${bucket}:${identity}`;
-  const count = await current.redis.incr(key);
-  if (count === 1) await current.redis.expire(key, 60);
-  if (count > limit) throw new HttpException({ code: 'RATE_LIMITED' }, 429);
+export interface AuthenticationRateLimitProfile {
+  operation: string;
+  windowSeconds: number;
+  globalLimit: number;
+  clientIpLimit: number;
+  accountLimit: number;
 }
 
-function passwordOptions() {
-  const config = appRuntime().config;
+export const authenticationRateLimits = {
+  setup: {
+    operation: 'setup',
+    windowSeconds: 60,
+    globalLimit: 100,
+    clientIpLimit: 30,
+    accountLimit: 10,
+  },
+  signIn: {
+    operation: 'sign-in',
+    windowSeconds: 60,
+    globalLimit: 1_000,
+    clientIpLimit: 100,
+    accountLimit: 12,
+  },
+  passwordReset: {
+    operation: 'password-reset',
+    windowSeconds: 60,
+    globalLimit: 300,
+    clientIpLimit: 60,
+    accountLimit: 10,
+  },
+} satisfies Record<string, AuthenticationRateLimitProfile>;
+
+const rateLimitScript = `
+local counts = {}
+for index, key in ipairs(KEYS) do
+  local count = redis.call('INCR', key)
+  if count == 1 then redis.call('EXPIRE', key, ARGV[1]) end
+  counts[index] = count
+end
+return counts
+`;
+
+function hashedRateLimitIdentity(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+export function verifiedClientIp(request: Request): string {
+  for (const candidate of [request.ip, request.socket.remoteAddress]) {
+    if (!candidate) continue;
+    const ipv4Mapped = candidate.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i)?.[1];
+    const address = ipv4Mapped ?? candidate;
+    const family = isIP(address);
+    if (!family) continue;
+    return new SocketAddress({
+      address,
+      port: 0,
+      family: family === 4 ? 'ipv4' : 'ipv6',
+    }).address;
+  }
+  return 'unknown';
+}
+
+export function authenticationRateLimitKeys(
+  request: Request,
+  operation: string,
+  accountIdentifier: string,
+): string[] {
+  const prefix = `engrove:rate-limit:${operation}`;
+  return [
+    `${prefix}:global`,
+    `${prefix}:ip:${hashedRateLimitIdentity(verifiedClientIp(request))}`,
+    `${prefix}:account:${hashedRateLimitIdentity(accountIdentifier.trim())}`,
+  ];
+}
+
+export async function applyAuthenticationRateLimit(
+  runtime: Runtime,
+  request: Request,
+  accountIdentifier: string,
+  profile: AuthenticationRateLimitProfile,
+): Promise<void> {
+  if (runtime.redis.status === 'wait') await runtime.redis.connect();
+  const counts = z
+    .array(z.coerce.number().int().nonnegative())
+    .length(3)
+    .parse(
+      await runtime.redis.eval(
+        rateLimitScript,
+        3,
+        ...authenticationRateLimitKeys(request, profile.operation, accountIdentifier),
+        profile.windowSeconds,
+      ),
+    );
+  const limits = [profile.globalLimit, profile.clientIpLimit, profile.accountLimit];
+  if (counts.some((count, index) => count > limits[index]!))
+    throw new HttpException({ code: 'RATE_LIMITED' }, 429);
+}
+
+function passwordOptions(runtime: Runtime) {
+  const config = runtime.config;
   return {
     type: 2 as const,
     memoryCost: config.ARGON2_MEMORY_KIB,
@@ -133,8 +214,13 @@ function passwordOptions() {
   };
 }
 
-export function setSessionCookies(response: Response, token: string, csrfToken: string): void {
-  const config = appRuntime().config;
+export function setSessionCookies(
+  runtime: Runtime,
+  response: Response,
+  token: string,
+  csrfToken: string,
+): void {
+  const config = runtime.config;
   const common = {
     secure: config.NODE_ENV === 'production',
     sameSite: 'lax' as const,
@@ -145,8 +231,8 @@ export function setSessionCookies(response: Response, token: string, csrfToken: 
   response.cookie(CSRF_COOKIE, csrfToken, { ...common, httpOnly: false });
 }
 
-function clearSessionCookies(response: Response): void {
-  const secure = appRuntime().config.NODE_ENV === 'production';
+function clearSessionCookies(runtime: Runtime, response: Response): void {
+  const secure = runtime.config.NODE_ENV === 'production';
   response.clearCookie(SESSION_COOKIE, { secure, sameSite: 'lax', path: '/' });
   response.clearCookie(CSRF_COOKIE, { secure, sameSite: 'lax', path: '/' });
 }
@@ -157,14 +243,15 @@ const role = z.enum(['owner', 'admin', 'engineer', 'contributor', 'viewer']);
 
 @Controller('api/v1')
 export class CommunityController {
+  constructor(@Inject(RUNTIME) private readonly runtime: Runtime) {}
+
   @Get('setup/status')
   async setupStatus() {
-    return { available: await isSetupAvailable(appRuntime().pool) };
+    return { available: await isSetupAvailable(this.runtime.pool) };
   }
 
   @Post('setup')
   async setup(@Req() request: Request, @Body() unparsed: unknown) {
-    await applyRateLimit(request, 'setup', 10);
     const body = z
       .object({
         token: z.string().min(32),
@@ -173,9 +260,15 @@ export class CommunityController {
         password,
       })
       .parse(unparsed);
-    const result = await completeSetup(appRuntime().pool, {
+    await applyAuthenticationRateLimit(
+      this.runtime,
+      request,
+      body.email.toLowerCase(),
+      authenticationRateLimits.setup,
+    );
+    const result = await completeSetup(this.runtime.pool, {
       ...body,
-      passwordHash: await hash(body.password, passwordOptions()),
+      passwordHash: await hash(body.password, passwordOptions(this.runtime)),
       requestId: requestId(request),
     });
     return { userId: result.userId, organizationId: result.organizationId };
@@ -187,9 +280,14 @@ export class CommunityController {
     @Res({ passthrough: true }) response: Response,
     @Body() unparsed: unknown,
   ) {
-    await applyRateLimit(request, 'sign-in', 12);
     const body = z.object({ email, password: z.string().min(1).max(256) }).parse(unparsed);
-    const current = appRuntime();
+    await applyAuthenticationRateLimit(
+      this.runtime,
+      request,
+      body.email.toLowerCase(),
+      authenticationRateLimits.signIn,
+    );
+    const current = this.runtime;
     const user = await findPasswordUser(current.pool, body.email);
     const valid = user ? await verify(user.passwordHash, body.password) : false;
     if (!user || !valid) {
@@ -208,7 +306,7 @@ export class CommunityController {
       idleMinutes: current.config.SESSION_IDLE_MINUTES,
       absoluteHours: current.config.SESSION_ABSOLUTE_HOURS,
     });
-    setSessionCookies(response, session.token, session.csrfToken);
+    setSessionCookies(this.runtime, response, session.token, session.csrfToken);
     await recordAuthenticationEvent(current.pool, {
       organizationId: user.organizationId,
       actorId: user.id,
@@ -229,7 +327,7 @@ export class CommunityController {
 
   @Get('auth/me')
   async me(@Req() request: Request) {
-    const actor = await requireActor(request);
+    const actor = await requireActor(this.runtime, request);
     return {
       user: {
         id: actor.actorId,
@@ -243,17 +341,17 @@ export class CommunityController {
 
   @Post('auth/sign-out')
   async signOut(@Req() request: Request, @Res({ passthrough: true }) response: Response) {
-    const actor = await requireActor(request, undefined, true);
-    await revokeSession(appRuntime().pool, actor, actor.sessionId, 'sign_out', requestId(request));
-    clearSessionCookies(response);
+    const actor = await requireActor(this.runtime, request, undefined, true);
+    await revokeSession(this.runtime.pool, actor, actor.sessionId, 'sign_out', requestId(request));
+    clearSessionCookies(this.runtime, response);
     return { signedOut: true };
   }
 
   @Post('invitations')
   async invite(@Req() request: Request, @Body() unparsed: unknown) {
-    const actor = await requireActor(request, 'member.manage', true);
+    const actor = await requireActor(this.runtime, request, 'member.manage', true);
     const body = z.object({ email, role: role.exclude(['owner']) }).parse(unparsed);
-    const issued = await issueSecurityToken(appRuntime().pool, actor, {
+    const issued = await issueSecurityToken(this.runtime.pool, actor, {
       type: 'invitation',
       subjectEmail: body.email,
       role: body.role,
@@ -261,14 +359,13 @@ export class CommunityController {
     });
     return {
       tokenId: issued.id,
-      invitationUrl: `${appRuntime().config.ENGROVE_PUBLIC_URL.replace(/\/$/, '')}/accept-invitation?token=${encodeURIComponent(issued.token)}`,
+      invitationUrl: `${this.runtime.config.ENGROVE_PUBLIC_URL.replace(/\/$/, '')}/accept-invitation?token=${encodeURIComponent(issued.token)}`,
       expiresAt: issued.expiresAt,
     };
   }
 
   @Post('invitations/accept')
   async acceptInvite(@Req() request: Request, @Body() unparsed: unknown) {
-    await applyRateLimit(request, 'invitation', 10);
     const body = z
       .object({
         token: z.string().min(32),
@@ -276,10 +373,14 @@ export class CommunityController {
         password,
       })
       .parse(unparsed);
-    const result = await acceptInvitation(appRuntime().pool, {
+    await applyAuthenticationRateLimit(this.runtime, request, body.token, {
+      ...authenticationRateLimits.passwordReset,
+      operation: 'invitation',
+    });
+    const result = await acceptInvitation(this.runtime.pool, {
       token: body.token,
       displayName: body.displayName,
-      passwordHash: await hash(body.password, passwordOptions()),
+      passwordHash: await hash(body.password, passwordOptions(this.runtime)),
       requestId: requestId(request),
     });
     return result;
@@ -287,16 +388,16 @@ export class CommunityController {
 
   @Post('auth/password-reset-tokens')
   async createPasswordReset(@Req() request: Request, @Body() unparsed: unknown) {
-    const actor = await requireActor(request, 'member.manage', true);
+    const actor = await requireActor(this.runtime, request, 'member.manage', true);
     const body = z.object({ userId: z.string().uuid() }).parse(unparsed);
-    const issued = await issueSecurityToken(appRuntime().pool, actor, {
+    const issued = await issueSecurityToken(this.runtime.pool, actor, {
       type: 'password_reset',
       subjectUserId: body.userId,
       requestId: requestId(request),
     });
     return {
       tokenId: issued.id,
-      resetUrl: `${appRuntime().config.ENGROVE_PUBLIC_URL.replace(/\/$/, '')}/reset-password?token=${encodeURIComponent(issued.token)}`,
+      resetUrl: `${this.runtime.config.ENGROVE_PUBLIC_URL.replace(/\/$/, '')}/reset-password?token=${encodeURIComponent(issued.token)}`,
       expiresAt: issued.expiresAt,
     };
   }
@@ -307,10 +408,10 @@ export class CommunityController {
     @Param('tokenId') tokenId: string,
     @Body() unparsed: unknown,
   ) {
-    const actor = await requireActor(request, 'member.manage', true);
+    const actor = await requireActor(this.runtime, request, 'member.manage', true);
     const body = z.object({ reason: z.string().trim().min(1).max(500) }).parse(unparsed);
     await revokeSecurityToken(
-      appRuntime().pool,
+      this.runtime.pool,
       actor,
       z.string().uuid().parse(tokenId),
       body.reason,
@@ -321,11 +422,16 @@ export class CommunityController {
 
   @Post('auth/password-reset')
   async resetPassword(@Req() request: Request, @Body() unparsed: unknown) {
-    await applyRateLimit(request, 'password-reset', 10);
     const body = z.object({ token: z.string().min(32), password }).parse(unparsed);
-    await completePasswordReset(appRuntime().pool, {
+    await applyAuthenticationRateLimit(
+      this.runtime,
+      request,
+      body.token,
+      authenticationRateLimits.passwordReset,
+    );
+    await completePasswordReset(this.runtime.pool, {
       token: body.token,
-      passwordHash: await hash(body.password, passwordOptions()),
+      passwordHash: await hash(body.password, passwordOptions(this.runtime)),
       requestId: requestId(request),
     });
     return { reset: true };
@@ -333,13 +439,13 @@ export class CommunityController {
 
   @Get('workspaces')
   async workspaces(@Req() request: Request) {
-    const actor = await requireActor(request, 'workspace.read');
-    return { items: await listWorkspaces(appRuntime().pool, actor) };
+    const actor = await requireActor(this.runtime, request, 'workspace.read');
+    return { items: await listWorkspaces(this.runtime.pool, actor) };
   }
 
   @Post('workspaces')
   async newWorkspace(@Req() request: Request, @Body() unparsed: unknown) {
-    const actor = await requireActor(request, 'workspace.manage', true);
+    const actor = await requireActor(this.runtime, request, 'workspace.manage', true);
     const body = z
       .object({
         name: z.string().trim().min(1).max(120),
@@ -350,7 +456,7 @@ export class CommunityController {
         description: z.string().max(2000).optional(),
       })
       .parse(unparsed);
-    return createWorkspace(appRuntime().pool, actor, {
+    return createWorkspace(this.runtime.pool, actor, {
       name: body.name,
       slug: body.slug,
       description: body.description ?? '',
@@ -364,7 +470,7 @@ export class CommunityController {
     @Param('workspaceId') unparsedWorkspaceId: string,
     @Body() unparsed: unknown,
   ) {
-    const actor = await requireActor(request, 'workspace.manage', true);
+    const actor = await requireActor(this.runtime, request, 'workspace.manage', true);
     const body = z
       .object({
         name: z.string().trim().min(1).max(120),
@@ -375,8 +481,8 @@ export class CommunityController {
         description: z.string().max(2000),
       })
       .parse(unparsed);
-    return updateWorkspace(appRuntime().pool, actor, {
-      workspaceId: await resolveWorkspaceIdentifier(appRuntime().pool, unparsedWorkspaceId),
+    return updateWorkspace(this.runtime.pool, actor, {
+      workspaceId: await resolveWorkspaceIdentifier(this.runtime.pool, unparsedWorkspaceId),
       name: body.name,
       slug: body.key,
       description: body.description,
@@ -386,12 +492,12 @@ export class CommunityController {
 
   @Get('workspaces/:workspaceId/projects')
   async projects(@Req() request: Request, @Param('workspaceId') unparsedWorkspaceId: string) {
-    const actor = await requireActor(request, 'project.read');
+    const actor = await requireActor(this.runtime, request, 'project.read');
     return {
       items: await listProjects(
-        appRuntime().pool,
+        this.runtime.pool,
         actor,
-        await resolveWorkspaceIdentifier(appRuntime().pool, unparsedWorkspaceId),
+        await resolveWorkspaceIdentifier(this.runtime.pool, unparsedWorkspaceId),
       ),
     };
   }
@@ -401,19 +507,19 @@ export class CommunityController {
     @Req() request: Request,
     @Param('workspaceId') unparsedWorkspaceId: string,
   ) {
-    const actor = await requireActor(request, 'schema.read', true);
+    const actor = await requireActor(this.runtime, request, 'schema.read', true);
     const parsedWorkspaceId = await resolveWorkspaceIdentifier(
-      appRuntime().pool,
+      this.runtime.pool,
       unparsedWorkspaceId,
     );
     const project = await ensureWorkspaceDataProject(
-      appRuntime().pool,
+      this.runtime.pool,
       actor,
       parsedWorkspaceId,
       requestId(request),
     );
     const legacyProjects = await listLegacyConfigurableDataProjects(
-      appRuntime().pool,
+      this.runtime.pool,
       actor,
       parsedWorkspaceId,
     );
@@ -426,7 +532,7 @@ export class CommunityController {
     @Param('workspaceId') unparsedWorkspaceId: string,
     @Body() unparsed: unknown,
   ) {
-    const actor = await requireActor(request, 'project.create', true);
+    const actor = await requireActor(this.runtime, request, 'project.create', true);
     const body = z
       .object({
         name: z.string().trim().min(1).max(120),
@@ -437,8 +543,8 @@ export class CommunityController {
         description: z.string().max(2000).optional(),
       })
       .parse(unparsed);
-    return createProject(appRuntime().pool, actor, {
-      workspaceId: await resolveWorkspaceIdentifier(appRuntime().pool, unparsedWorkspaceId),
+    return createProject(this.runtime.pool, actor, {
+      workspaceId: await resolveWorkspaceIdentifier(this.runtime.pool, unparsedWorkspaceId),
       name: body.name,
       key: body.key,
       description: body.description ?? '',
@@ -453,7 +559,7 @@ export class CommunityController {
     @Param('projectId') unparsedProjectId: string,
     @Body() unparsed: unknown,
   ) {
-    const actor = await requireActor(request, 'project.update', true);
+    const actor = await requireActor(this.runtime, request, 'project.update', true);
     const body = z
       .object({
         name: z.string().trim().min(1).max(120),
@@ -462,9 +568,9 @@ export class CommunityController {
         rowVersion: z.number().int().positive(),
       })
       .parse(unparsed);
-    return updateProject(appRuntime().pool, actor, {
-      workspaceId: await resolveWorkspaceIdentifier(appRuntime().pool, unparsedWorkspaceId),
-      projectId: await resolveProjectIdentifier(appRuntime().pool, unparsedProjectId),
+    return updateProject(this.runtime.pool, actor, {
+      workspaceId: await resolveWorkspaceIdentifier(this.runtime.pool, unparsedWorkspaceId),
+      projectId: await resolveProjectIdentifier(this.runtime.pool, unparsedProjectId),
       ...body,
       requestId: requestId(request),
     });
@@ -477,11 +583,11 @@ export class CommunityController {
     @Param('projectId') unparsedProjectId: string,
     @Body() unparsed: unknown,
   ) {
-    const actor = await requireActor(request, 'project.archive', true);
+    const actor = await requireActor(this.runtime, request, 'project.archive', true);
     const body = z.object({ reason: z.string().trim().min(1).max(500) }).parse(unparsed);
-    return setProjectArchived(appRuntime().pool, actor, {
-      workspaceId: await resolveWorkspaceIdentifier(appRuntime().pool, unparsedWorkspaceId),
-      projectId: await resolveProjectIdentifier(appRuntime().pool, unparsedProjectId),
+    return setProjectArchived(this.runtime.pool, actor, {
+      workspaceId: await resolveWorkspaceIdentifier(this.runtime.pool, unparsedWorkspaceId),
+      projectId: await resolveProjectIdentifier(this.runtime.pool, unparsedProjectId),
       archived: true,
       reason: body.reason,
       requestId: requestId(request),
@@ -494,10 +600,10 @@ export class CommunityController {
     @Param('workspaceId') unparsedWorkspaceId: string,
     @Param('projectId') unparsedProjectId: string,
   ) {
-    const actor = await requireActor(request, 'project.restore', true);
-    return setProjectArchived(appRuntime().pool, actor, {
-      workspaceId: await resolveWorkspaceIdentifier(appRuntime().pool, unparsedWorkspaceId),
-      projectId: await resolveProjectIdentifier(appRuntime().pool, unparsedProjectId),
+    const actor = await requireActor(this.runtime, request, 'project.restore', true);
+    return setProjectArchived(this.runtime.pool, actor, {
+      workspaceId: await resolveWorkspaceIdentifier(this.runtime.pool, unparsedWorkspaceId),
+      projectId: await resolveProjectIdentifier(this.runtime.pool, unparsedProjectId),
       archived: false,
       requestId: requestId(request),
     });
@@ -505,8 +611,8 @@ export class CommunityController {
 
   @Get('members')
   async members(@Req() request: Request) {
-    const actor = await requireActor(request, 'member.manage');
-    return { items: await listMembers(appRuntime().pool, actor) };
+    const actor = await requireActor(this.runtime, request, 'member.manage');
+    return { items: await listMembers(this.runtime.pool, actor) };
   }
 
   @Patch('members/:userId/role')
@@ -515,10 +621,10 @@ export class CommunityController {
     @Param('userId') userId: string,
     @Body() unparsed: unknown,
   ) {
-    const actor = await requireActor(request, 'member.manage', true);
+    const actor = await requireActor(this.runtime, request, 'member.manage', true);
     const body = z.object({ role }).parse(unparsed);
     await updateMemberRole(
-      appRuntime().pool,
+      this.runtime.pool,
       actor,
       z.string().uuid().parse(userId),
       body.role,
@@ -529,13 +635,13 @@ export class CommunityController {
 
   @Patch('members/roles')
   async changeRoles(@Req() request: Request, @Body() unparsed: unknown) {
-    const actor = await requireActor(request, 'member.manage', true);
+    const actor = await requireActor(this.runtime, request, 'member.manage', true);
     const body = z
       .object({ memberIds: z.array(z.string().uuid()).min(1).max(500), role })
       .strict()
       .parse(unparsed);
     const updated = await updateMemberRoles(
-      appRuntime().pool,
+      this.runtime.pool,
       actor,
       body.memberIds,
       body.role,
@@ -546,13 +652,13 @@ export class CommunityController {
 
   @Get('member-groups')
   async memberGroups(@Req() request: Request) {
-    const actor = await requireActor(request, 'member.manage');
-    return { items: await listMemberGroups(appRuntime().pool, actor) };
+    const actor = await requireActor(this.runtime, request, 'member.manage');
+    return { items: await listMemberGroups(this.runtime.pool, actor) };
   }
 
   @Post('member-groups')
   async createMemberGroup(@Req() request: Request, @Body() unparsed: unknown) {
-    const actor = await requireActor(request, 'member.manage', true);
+    const actor = await requireActor(this.runtime, request, 'member.manage', true);
     const body = z
       .object({
         name: z.string().trim().min(1).max(80),
@@ -561,7 +667,7 @@ export class CommunityController {
       })
       .strict()
       .parse(unparsed);
-    return createMemberGroup(appRuntime().pool, actor, {
+    return createMemberGroup(this.runtime.pool, actor, {
       name: body.name,
       description: body.description ?? '',
       color: body.color ?? 'sky',
@@ -575,7 +681,7 @@ export class CommunityController {
     @Param('groupId') unparsedGroupId: string,
     @Body() unparsed: unknown,
   ) {
-    const actor = await requireActor(request, 'member.manage', true);
+    const actor = await requireActor(this.runtime, request, 'member.manage', true);
     const body = z
       .object({
         name: z.string().trim().min(1).max(80),
@@ -584,7 +690,7 @@ export class CommunityController {
       })
       .strict()
       .parse(unparsed);
-    await updateMemberGroup(appRuntime().pool, actor, {
+    await updateMemberGroup(this.runtime.pool, actor, {
       groupId: z.string().uuid().parse(unparsedGroupId),
       ...body,
       requestId: requestId(request),
@@ -598,12 +704,12 @@ export class CommunityController {
     @Param('groupId') unparsedGroupId: string,
     @Body() unparsed: unknown,
   ) {
-    const actor = await requireActor(request, 'member.manage', true);
+    const actor = await requireActor(this.runtime, request, 'member.manage', true);
     const body = z
       .object({ memberIds: z.array(z.string().uuid()).max(500) })
       .strict()
       .parse(unparsed);
-    await replaceMemberGroupMembers(appRuntime().pool, actor, {
+    await replaceMemberGroupMembers(this.runtime.pool, actor, {
       groupId: z.string().uuid().parse(unparsedGroupId),
       memberIds: body.memberIds,
       requestId: requestId(request),
@@ -613,9 +719,9 @@ export class CommunityController {
 
   @Post('member-groups/:groupId/archive')
   async archiveMemberGroup(@Req() request: Request, @Param('groupId') unparsedGroupId: string) {
-    const actor = await requireActor(request, 'member.manage', true);
+    const actor = await requireActor(this.runtime, request, 'member.manage', true);
     await archiveMemberGroup(
-      appRuntime().pool,
+      this.runtime.pool,
       actor,
       z.string().uuid().parse(unparsedGroupId),
       requestId(request),
@@ -629,10 +735,10 @@ export class CommunityController {
     @Param('userId') userId: string,
     @Body() unparsed: unknown,
   ) {
-    const actor = await requireActor(request, 'member.manage', true);
+    const actor = await requireActor(this.runtime, request, 'member.manage', true);
     const body = z.object({ reason: z.string().trim().min(1).max(500) }).parse(unparsed);
     await revokeAllUserSessions(
-      appRuntime().pool,
+      this.runtime.pool,
       actor,
       z.string().uuid().parse(userId),
       body.reason,
@@ -643,10 +749,10 @@ export class CommunityController {
 
   @Get('audit-events')
   async audit(@Req() request: Request, @Query('limit') unparsedLimit?: string) {
-    const actor = await requireActor(request, 'audit.read');
+    const actor = await requireActor(this.runtime, request, 'audit.read');
     const limit = unparsedLimit
       ? z.coerce.number().int().min(1).max(200).parse(unparsedLimit)
       : 100;
-    return { items: await listAuditEvents(appRuntime().pool, actor, limit) };
+    return { items: await listAuditEvents(this.runtime.pool, actor, limit) };
   }
 }

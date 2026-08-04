@@ -12,16 +12,30 @@ import {
   resolveWorkspaceIdentifier,
   ScopedFileDatasetRepository,
 } from '@engrove/database';
-import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Inject,
+  Logger,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Req,
+} from '@nestjs/common';
 import type { Request } from 'express';
 import { z } from 'zod';
 import { v7 as uuidv7 } from 'uuid';
-import { appRuntime, requestId, requireActor } from './community.controller.js';
+import { requestId, requireActor } from './community.controller.js';
+import type { Runtime } from './runtime.js';
+import { RUNTIME } from './runtime.provider.js';
 
 const id = z.string().uuid();
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/i);
 const MAX_FILE_BYTES = 100 * 1024 * 1024;
 async function repository(
+  runtime: Runtime,
   request: Request,
   workspaceId: string,
   projectId: string,
@@ -39,12 +53,12 @@ async function repository(
     | 'storage.cleanup',
   csrf = false,
 ) {
-  const actor = await requireActor(request, action, csrf);
+  const actor = await requireActor(runtime, request, action, csrf);
   return ScopedFileDatasetRepository.open(
-    appRuntime().pool,
+    runtime.pool,
     actor,
-    await resolveWorkspaceIdentifier(appRuntime().pool, workspaceId),
-    await resolveProjectIdentifier(appRuntime().pool, projectId),
+    await resolveWorkspaceIdentifier(runtime.pool, workspaceId),
+    await resolveProjectIdentifier(runtime.pool, projectId),
   );
 }
 const cleanName = (name: string) =>
@@ -61,12 +75,11 @@ async function bytes(body: unknown): Promise<Uint8Array> {
 }
 
 async function cleanup(
-  projectId: string,
+  runtime: Runtime,
   repo: ScopedFileDatasetRepository,
   graceSeconds: number,
   execute: boolean,
 ) {
-  const runtime = appRuntime();
   const protection = await repo.storageCleanupProtection(graceSeconds);
   const active = new Set(protection.activeStagingKeys);
   const eligible = new Set(protection.eligibleStagingKeys);
@@ -78,7 +91,13 @@ async function cleanup(
     reason: 'eligible-staging' | 'unreferenced-committed';
     lastModified: string;
   }> = [];
-  for (const prefix of [`staging/${projectId}/`, `committed/${projectId}/`]) {
+  const prefixes = new Set(
+    protection.storageProjectIds.flatMap((storageProjectId) => [
+      `staging/${storageProjectId}/`,
+      `committed/${storageProjectId}/`,
+    ]),
+  );
+  for (const prefix of prefixes) {
     let keyMarker: string | undefined;
     let versionIdMarker: string | undefined;
     do {
@@ -112,8 +131,17 @@ async function cleanup(
       versionIdMarker = page.IsTruncated ? page.NextVersionIdMarker : undefined;
     } while (keyMarker);
   }
+  let deleted = 0;
   if (execute)
-    for (const candidate of candidates)
+    for (const candidate of candidates) {
+      if (
+        !(await repo.storageCleanupCandidateDeletable(
+          candidate.key,
+          candidate.reason,
+          graceSeconds,
+        ))
+      )
+        continue;
       await runtime.s3.send(
         new DeleteObjectCommand({
           Bucket: runtime.config.S3_BUCKET,
@@ -121,16 +149,22 @@ async function cleanup(
           VersionId: candidate.versionId ?? undefined,
         }),
       );
+      deleted += 1;
+    }
   return {
     mode: execute ? 'execute' : 'dry-run',
     graceSeconds,
     candidates,
-    deleted: execute ? candidates.length : 0,
+    deleted,
   };
 }
 
 @Controller('api/v1/workspaces/:workspaceId/projects/:projectId')
 export class FilesDatasetsController {
+  constructor(@Inject(RUNTIME) private readonly runtime: Runtime) {}
+
+  private readonly logger = new Logger(FilesDatasetsController.name);
+
   @Post('file-upload-sessions')
   async issue(
     @Req() request: Request,
@@ -148,15 +182,21 @@ export class FilesDatasetsController {
         checksum: sha256,
       })
       .parse(raw);
-    const runtime = appRuntime();
+    const runtime = this.runtime;
+    const repo = await repository(
+      this.runtime,
+      request,
+      workspaceId,
+      projectId,
+      'file.upload',
+      true,
+    );
     const uploadId = uuidv7();
     const fileId = uuidv7();
-    const stagingObjectKey = `staging/${projectId}/${uploadId}/${randomUUID()}`;
-    const finalObjectKey = `committed/${projectId}/files/${fileId}/${randomUUID()}`;
+    const stagingObjectKey = `staging/${repo.canonicalProjectId}/${uploadId}/${randomUUID()}`;
+    const finalObjectKey = `committed/${repo.canonicalProjectId}/files/${fileId}/${randomUUID()}`;
     const expiresAt = new Date(Date.now() + 15 * 60_000);
-    const issued = await (
-      await repository(request, workspaceId, projectId, 'file.upload', true)
-    ).issueUpload({
+    const issued = await repo.issueUpload({
       ...body,
       fileId,
       uploadId,
@@ -190,10 +230,17 @@ export class FilesDatasetsController {
     @Param('projectId') projectId: string,
     @Param('uploadId') uploadId: string,
   ) {
-    const repo = await repository(request, workspaceId, projectId, 'file.upload', true);
+    const repo = await repository(
+      this.runtime,
+      request,
+      workspaceId,
+      projectId,
+      'file.upload',
+      true,
+    );
     const session = await repo.beginFinalization(id.parse(uploadId));
     if (session.idempotent) return repo.getAvailableFile(session.file_id);
-    const runtime = appRuntime();
+    const runtime = this.runtime;
     try {
       const staged = await runtime.s3.send(
         new GetObjectCommand({ Bucket: runtime.config.S3_BUCKET, Key: session.staging_object_key }),
@@ -228,12 +275,18 @@ export class FilesDatasetsController {
         stored.VersionId ?? null,
         requestId(request),
       );
-      await runtime.s3.send(
-        new DeleteObjectCommand({
-          Bucket: runtime.config.S3_BUCKET,
-          Key: session.staging_object_key,
-        }),
-      );
+      try {
+        await runtime.s3.send(
+          new DeleteObjectCommand({
+            Bucket: runtime.config.S3_BUCKET,
+            Key: session.staging_object_key,
+          }),
+        );
+      } catch (error) {
+        this.logger.warn(
+          `Staging object cleanup deferred after successful file finalization projectId=${projectId} uploadId=${uploadId}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
       return file;
     } catch (error) {
       const code =
@@ -257,7 +310,7 @@ export class FilesDatasetsController {
   ) {
     return {
       items: await (
-        await repository(request, workspaceId, projectId, 'file.read')
+        await repository(this.runtime, request, workspaceId, projectId, 'file.read')
       ).listFiles(includeArchived === 'true'),
     };
   }
@@ -268,9 +321,9 @@ export class FilesDatasetsController {
     @Param('fileId') fileId: string,
   ) {
     const file = await (
-      await repository(request, workspaceId, projectId, 'file.read')
+      await repository(this.runtime, request, workspaceId, projectId, 'file.read')
     ).getAvailableFile(id.parse(fileId));
-    const runtime = appRuntime();
+    const runtime = this.runtime;
     return {
       url: await getSignedUrl(
         runtime.s3Public,
@@ -294,7 +347,7 @@ export class FilesDatasetsController {
   ) {
     const body = z.object({ reason: z.string().trim().min(1).max(2000) }).parse(raw);
     return (
-      await repository(request, workspaceId, projectId, 'file.archive', true)
+      await repository(this.runtime, request, workspaceId, projectId, 'file.archive', true)
     ).setFileArchived(id.parse(fileId), true, body.reason, requestId(request));
   }
   @Post('files/:fileId/restore') async restoreFile(
@@ -304,7 +357,7 @@ export class FilesDatasetsController {
     @Param('fileId') fileId: string,
   ) {
     return (
-      await repository(request, workspaceId, projectId, 'file.restore', true)
+      await repository(this.runtime, request, workspaceId, projectId, 'file.restore', true)
     ).setFileArchived(id.parse(fileId), false, '', requestId(request));
   }
 
@@ -324,7 +377,7 @@ export class FilesDatasetsController {
       })
       .parse(raw);
     return (
-      await repository(request, workspaceId, projectId, 'dataset.upload', true)
+      await repository(this.runtime, request, workspaceId, projectId, 'dataset.upload', true)
     ).createDataset({ ...body, requestId: requestId(request) });
   }
   @Get('datasets') async datasets(
@@ -335,7 +388,7 @@ export class FilesDatasetsController {
   ) {
     return {
       items: await (
-        await repository(request, workspaceId, projectId, 'dataset.read')
+        await repository(this.runtime, request, workspaceId, projectId, 'dataset.read')
       ).listDatasets(includeArchived === 'true'),
     };
   }
@@ -345,9 +398,9 @@ export class FilesDatasetsController {
     @Param('projectId') projectId: string,
     @Param('datasetId') datasetId: string,
   ) {
-    return (await repository(request, workspaceId, projectId, 'dataset.read')).getDataset(
-      id.parse(datasetId),
-    );
+    return (
+      await repository(this.runtime, request, workspaceId, projectId, 'dataset.read')
+    ).getDataset(id.parse(datasetId));
   }
   @Get('datasets/:datasetId/preview') async preview(
     @Req() request: Request,
@@ -356,7 +409,7 @@ export class FilesDatasetsController {
     @Param('datasetId') datasetId: string,
   ) {
     const dataset = await (
-      await repository(request, workspaceId, projectId, 'dataset.read')
+      await repository(this.runtime, request, workspaceId, projectId, 'dataset.read')
     ).getDataset(id.parse(datasetId));
     if (dataset.status !== 'ready')
       throw new RepositoryError('DATASET_NOT_READY', 409, 'Dataset is not ready.');
@@ -365,7 +418,7 @@ export class FilesDatasetsController {
     );
     if (!artifact)
       throw new RepositoryError('DATASET_PREVIEW_NOT_FOUND', 404, 'Dataset preview was not found.');
-    const runtime = appRuntime();
+    const runtime = this.runtime;
     const object = await runtime.s3.send(
       new GetObjectCommand({
         Bucket: runtime.config.S3_BUCKET,
@@ -384,7 +437,7 @@ export class FilesDatasetsController {
   ) {
     const body = z.object({ reason: z.string().trim().min(1).max(2000) }).parse(raw);
     return (
-      await repository(request, workspaceId, projectId, 'dataset.archive', true)
+      await repository(this.runtime, request, workspaceId, projectId, 'dataset.archive', true)
     ).setDatasetArchived(id.parse(datasetId), true, body.reason, requestId(request));
   }
   @Post('datasets/:datasetId/restore') async restoreDataset(
@@ -394,7 +447,7 @@ export class FilesDatasetsController {
     @Param('datasetId') datasetId: string,
   ) {
     return (
-      await repository(request, workspaceId, projectId, 'dataset.restore', true)
+      await repository(this.runtime, request, workspaceId, projectId, 'dataset.restore', true)
     ).setDatasetArchived(id.parse(datasetId), false, '', requestId(request));
   }
   @Post('datasets/:datasetId/retry') async retryDataset(
@@ -403,10 +456,9 @@ export class FilesDatasetsController {
     @Param('projectId') projectId: string,
     @Param('datasetId') datasetId: string,
   ) {
-    return (await repository(request, workspaceId, projectId, 'job.retry', true)).retryDataset(
-      id.parse(datasetId),
-      requestId(request),
-    );
+    return (
+      await repository(this.runtime, request, workspaceId, projectId, 'job.retry', true)
+    ).retryDataset(id.parse(datasetId), requestId(request));
   }
 
   @Get('background-jobs') async jobs(
@@ -415,7 +467,9 @@ export class FilesDatasetsController {
     @Param('projectId') projectId: string,
   ) {
     return {
-      items: await (await repository(request, workspaceId, projectId, 'job.read')).listJobs(),
+      items: await (
+        await repository(this.runtime, request, workspaceId, projectId, 'job.read')
+      ).listJobs(),
     };
   }
 
@@ -432,8 +486,8 @@ export class FilesDatasetsController {
       .max(2_592_000)
       .default(86_400)
       .parse(rawGrace);
-    const repo = await repository(request, workspaceId, projectId, 'storage.cleanup');
-    const report = await cleanup(projectId, repo, graceSeconds, false);
+    const repo = await repository(this.runtime, request, workspaceId, projectId, 'storage.cleanup');
+    const report = await cleanup(this.runtime, repo, graceSeconds, false);
     await repo.auditStorageCleanup(requestId(request), 'dry-run', report.candidates.length, 0);
     return report;
   }
@@ -450,8 +504,15 @@ export class FilesDatasetsController {
         graceSeconds: z.number().int().min(0).max(2_592_000).default(86_400),
       })
       .parse(raw);
-    const repo = await repository(request, workspaceId, projectId, 'storage.cleanup', true);
-    const report = await cleanup(projectId, repo, body.graceSeconds, true);
+    const repo = await repository(
+      this.runtime,
+      request,
+      workspaceId,
+      projectId,
+      'storage.cleanup',
+      true,
+    );
+    const report = await cleanup(this.runtime, repo, body.graceSeconds, true);
     await repo.auditStorageCleanup(
       requestId(request),
       'execute',

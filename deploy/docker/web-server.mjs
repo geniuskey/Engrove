@@ -11,16 +11,23 @@ const types = {
   '.svg': 'image/svg+xml',
 };
 
-createServer(async (request, response) => {
+async function handleRequest(request, response) {
   if (request.url === '/health') {
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end('{"status":"ok"}');
     return;
   }
-  const requested = normalize(decodeURIComponent((request.url ?? '/').split('?')[0])).replace(
-    /^(\.\.[/\\])+/,
-    '',
-  );
+  let requested;
+  try {
+    requested = normalize(decodeURIComponent((request.url ?? '/').split('?')[0])).replace(
+      /^(\.\.[/\\])+/,
+      '',
+    );
+  } catch {
+    response.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
+    response.end('Malformed request path.');
+    return;
+  }
   let file = join(root, requested === '/' ? 'index.html' : requested);
   try {
     if (!(await stat(file)).isFile()) file = join(root, 'index.html');
@@ -31,5 +38,24 @@ createServer(async (request, response) => {
     'content-type': types[extname(file)] ?? 'application/octet-stream',
     'content-security-policy': "default-src 'self'; connect-src 'self' http://localhost:3000",
   });
-  createReadStream(file).pipe(response);
+  const stream = createReadStream(file);
+  stream.on('error', () => {
+    if (response.headersSent) response.destroy();
+    else {
+      response.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+      response.end('File could not be read.');
+    }
+  });
+  stream.pipe(response);
+}
+
+createServer((request, response) => {
+  void handleRequest(request, response).catch((error) => {
+    console.error('Unhandled web request error', error);
+    if (response.headersSent) response.destroy();
+    else {
+      response.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+      response.end('Internal server error.');
+    }
+  });
 }).listen(Number(process.env.PORT ?? 4173), '0.0.0.0');

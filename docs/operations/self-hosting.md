@@ -18,7 +18,7 @@ Open `http://localhost:4173`, complete first-run Owner setup, and confirm `http:
 The production overlay is intended for a new installation. It creates separate migration, API runtime, Node worker, and backup PostgreSQL roles only while initializing a fresh PostgreSQL volume. Do not attach it to a volume initialized with the development Compose configuration.
 
 1. Copy `deploy/compose/production.env.example` outside the repository to a mode `0600` file and fill every required blank with an independently generated secret. Use an age recipient whose private identity is stored separately.
-2. Set `ENGROVE_PUBLIC_URL`, `VITE_API_BASE_URL`, and `S3_PUBLIC_ENDPOINT` to public HTTPS URLs. If OIDC is enabled, all four core OIDC settings must be present and its issuer and redirect URI must use HTTPS.
+2. Set `ENGROVE_PUBLIC_URL`, `VITE_API_BASE_URL`, and `S3_PUBLIC_ENDPOINT` to public HTTPS URLs. Set `ENGROVE_TRUST_PROXY` to the explicit IP address or CIDR of the reverse proxy network that connects to `api:3000`; multiple entries are comma-separated. Never use a public catch-all such as `0.0.0.0/0`. If OIDC is enabled, all four core OIDC settings must be present and its issuer and redirect URI must use HTTPS.
 3. Create the backup and identity directories. The backup directory must be writable by the `postgres` user in the admin image; the identity directory is mounted read-only.
 4. Validate the merged deployment before creating resources:
 
@@ -36,9 +36,9 @@ docker compose --env-file /etc/engrove/production.env \
   -f deploy/compose/compose.production.yaml up --detach --build --wait
 ```
 
-The overlay publishes no container ports. Join an operator-managed TLS reverse proxy to the Compose network and route the public UI to `web:4173`, API and health paths to `api:3000`, and the object-storage hostname to `minio:9000`. Keep PostgreSQL, Redis, the MinIO console, `/metrics`, and both workers private. If object storage is external, replace the MinIO services and preserve bucket versioning plus exact-version reads.
+The overlay publishes no container ports. Join an operator-managed TLS reverse proxy to the Compose network and route the public UI to `web:4173`, API and health paths to `api:3000`, and the object-storage hostname to `minio:9000`. Configure the edge to replace, rather than append untrusted values to, `X-Forwarded-For`; Engrove only accepts forwarded addresses from `ENGROVE_TRUST_PROXY`. Keep PostgreSQL, Redis, the MinIO console, `/metrics`, and both workers private. If object storage is external, replace the MinIO services and preserve bucket versioning plus exact-version reads.
 
-The first migration applies reviewed SQL and grants least-privilege access to the runtime roles. The Python worker receives no database or object-storage credentials. Runtime containers are non-root, read-only, capability-free, and use `no-new-privileges` in the production overlay.
+The first migration applies reviewed SQL and grants least-privilege access to the runtime roles. The Python worker receives no database or object-storage credentials: the Node worker supplies short-lived, exact-object download and upload URLs. Dataset input is limited to 100 MiB and is streamed through the disk-backed `worker-python-scratch` volume instead of being copied through memory as base64 JSON. Monitor that volume's free space; stale per-job directories are removed when the worker starts. Runtime containers are non-root, read-only, capability-free, and use `no-new-privileges` in the production overlay.
 
 ## Upgrades
 

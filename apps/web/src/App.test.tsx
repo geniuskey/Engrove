@@ -120,6 +120,9 @@ describe('App', () => {
     expect(screen.getByRole('button', { name: /Open Engineering records/ })).toBeInTheDocument();
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: 'Command palette' })).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Open command palette' })).toHaveFocus(),
+    );
 
     await waitFor(() =>
       expect(screen.getByRole('combobox', { name: 'Workspace selector' })).toHaveValue(
@@ -153,6 +156,10 @@ describe('App', () => {
     });
     expect(await screen.findByRole('link', { name: '데이터' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '프로젝트' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '명령 팔레트 열기' }));
+    expect(screen.getByRole('dialog', { name: '명령 팔레트' })).toBeInTheDocument();
+    expect(screen.getByRole('searchbox', { name: '명령 검색' })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: 'Escape' });
     expect(document.documentElement).toHaveAttribute('lang', 'ko');
     expect(window.localStorage.getItem('engrove-locale')).toBe('ko');
   });

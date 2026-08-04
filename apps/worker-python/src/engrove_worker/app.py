@@ -1,9 +1,12 @@
 import logging
 import platform
+import shutil
+import tempfile
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -27,6 +30,9 @@ accepting_requests = True
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     global accepting_requests
+    for stale_directory in Path(tempfile.gettempdir()).glob("engrove-dataset-*"):
+        if stale_directory.is_dir():
+            shutil.rmtree(stale_directory, ignore_errors=True)
     accepting_requests = True
     logger.info("python worker ready", extra={"request_id": "startup"})
     yield
@@ -84,7 +90,7 @@ async def capabilities(
 
 
 @app.post("/internal/v1/process-dataset")
-async def process_dataset_request(
+def process_dataset_request(
     request: Request,
     payload: DatasetRequest,
     x_engrove_internal_secret: str | None = Header(default=None),
@@ -93,7 +99,12 @@ async def process_dataset_request(
     if x_engrove_internal_secret != expected:
         raise HTTPException(status_code=401, detail={"code": "INTERNAL_AUTH_REQUIRED"})
     try:
-        return process_dataset(payload)
+        settings = get_settings()
+        return process_dataset(
+            payload,
+            allowed_storage_endpoint=str(settings.s3_endpoint),
+            max_source_bytes=settings.max_dataset_source_bytes,
+        )
     except (ValueError, pa.ArrowException) as error:
         raise HTTPException(
             status_code=422,

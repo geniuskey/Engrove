@@ -13,11 +13,13 @@ import {
   type OnboardingStep,
 } from '@engrove/database';
 import { assertPermission } from '@engrove/permissions';
-import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Get, Inject, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import type { Request } from 'express';
 import { z } from 'zod';
 import { v7 as uuidv7 } from 'uuid';
-import { appRuntime, requestId, requireActor } from './community.controller.js';
+import { requestId, requireActor } from './community.controller.js';
+import type { Runtime } from './runtime.js';
+import { RUNTIME } from './runtime.provider.js';
 
 const id = z.string().uuid();
 const onboardingStep = z.enum(onboardingSteps);
@@ -31,15 +33,17 @@ async function objectBytes(body: unknown): Promise<Uint8Array> {
 
 @Controller('api/v1')
 export class PilotController {
+  constructor(@Inject(RUNTIME) private readonly runtime: Runtime) {}
+
   @Get('onboarding')
   async onboarding(@Req() request: Request) {
-    const actor = await requireActor(request);
-    return new PilotRepository(appRuntime().pool, actor).onboarding();
+    const actor = await requireActor(this.runtime, request);
+    return new PilotRepository(this.runtime.pool, actor).onboarding();
   }
 
   @Patch('onboarding')
   async updateOnboarding(@Req() request: Request, @Body() raw: unknown) {
-    const actor = await requireActor(request, undefined, true);
+    const actor = await requireActor(this.runtime, request, undefined, true);
     const body = z
       .object({
         completedSteps: z.array(onboardingStep).max(onboardingSteps.length),
@@ -47,7 +51,7 @@ export class PilotController {
       })
       .strict()
       .parse(raw);
-    return new PilotRepository(appRuntime().pool, actor).updateOnboarding({
+    return new PilotRepository(this.runtime.pool, actor).updateOnboarding({
       completedSteps: body.completedSteps as OnboardingStep[],
       dismissed: body.dismissed,
       requestId: requestId(request),
@@ -56,7 +60,7 @@ export class PilotController {
 
   @Post('pilot-feedback')
   async feedback(@Req() request: Request, @Body() raw: unknown) {
-    const actor = await requireActor(request, undefined, true);
+    const actor = await requireActor(this.runtime, request, undefined, true);
     const body = z
       .object({
         projectId: id.optional(),
@@ -70,7 +74,7 @@ export class PilotController {
       })
       .strict()
       .parse(raw);
-    return new PilotRepository(appRuntime().pool, actor).captureFeedback({
+    return new PilotRepository(this.runtime.pool, actor).captureFeedback({
       ...body,
       requestId: requestId(request),
     });
@@ -78,15 +82,15 @@ export class PilotController {
 
   @Get('pilot/summary')
   async pilotSummary(@Req() request: Request) {
-    const actor = await requireActor(request, 'pilot.manage');
-    return new PilotRepository(appRuntime().pool, actor).summary();
+    const actor = await requireActor(this.runtime, request, 'pilot.manage');
+    return new PilotRepository(this.runtime.pool, actor).summary();
   }
 
   @Get('pilot/feedback')
   async pilotFeedback(@Req() request: Request, @Query('limit') rawLimit?: string) {
-    const actor = await requireActor(request, 'pilot.manage');
+    const actor = await requireActor(this.runtime, request, 'pilot.manage');
     const limit = z.coerce.number().int().min(1).max(500).default(100).parse(rawLimit);
-    return { items: await new PilotRepository(appRuntime().pool, actor).feedbackItems(limit) };
+    return { items: await new PilotRepository(this.runtime.pool, actor).feedbackItems(limit) };
   }
 
   @Get('workspaces/:workspaceId/projects/:projectId/demo')
@@ -95,15 +99,15 @@ export class PilotController {
     @Param('workspaceId') workspaceId: string,
     @Param('projectId') projectId: string,
   ) {
-    const actor = await requireActor(request, 'record.read');
-    const resolvedProjectId = await resolveProjectIdentifier(appRuntime().pool, projectId);
+    const actor = await requireActor(this.runtime, request, 'record.read');
+    const resolvedProjectId = await resolveProjectIdentifier(this.runtime.pool, projectId);
     await ScopedProjectRepository.open(
-      appRuntime().pool,
+      this.runtime.pool,
       actor,
-      await resolveWorkspaceIdentifier(appRuntime().pool, workspaceId),
+      await resolveWorkspaceIdentifier(this.runtime.pool, workspaceId),
       resolvedProjectId,
     );
-    const result = await appRuntime().pool.query(
+    const result = await this.runtime.pool.query(
       `select i.*,d.status dataset_status,d.row_count,c.name chart_name,r.display_name test_run_name
        from project_demo_installations i
        join datasets d on d.id=i.dataset_id and d.project_id=i.project_id
@@ -121,7 +125,7 @@ export class PilotController {
     @Param('workspaceId') workspaceId: string,
     @Param('projectId') projectId: string,
   ) {
-    const actor = await requireActor(request, 'schema.manage', true);
+    const actor = await requireActor(this.runtime, request, 'schema.manage', true);
     for (const action of [
       'record.create',
       'file.upload',
@@ -133,7 +137,7 @@ export class PilotController {
         { actorId: actor.actorId, organizationId: actor.organizationId, role: actor.role },
         action,
       );
-    const runtime = appRuntime();
+    const runtime = this.runtime;
     const wid = await resolveWorkspaceIdentifier(runtime.pool, workspaceId);
     const pid = await resolveProjectIdentifier(runtime.pool, projectId);
     const data = await ScopedProjectRepository.open(runtime.pool, actor, wid, pid);

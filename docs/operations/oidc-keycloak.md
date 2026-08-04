@@ -1,6 +1,6 @@
 # OIDC and Keycloak
 
-Engrove uses Authorization Code flow with PKCE S256, state, nonce, issuer discovery, client authentication, and an HttpOnly short-lived signed state cookie. Successful OIDC authentication creates the same opaque PostgreSQL-backed Engrove session as local sign-in; provider tokens are not placed in browser storage.
+Engrove uses Authorization Code flow with PKCE S256, state, nonce, issuer discovery, client authentication, and an HttpOnly short-lived signed state cookie. Successful OIDC authentication creates the same opaque PostgreSQL-backed Engrove session as local sign-in; provider tokens are not placed in browser storage. Every login requires the provider's standard `email_verified` claim to be the boolean `true`. The first verified login links the member by email, after which the immutable issuer and subject pair is used so an email-address change cannot silently relink the account.
 
 Configuration supports issuer, client ID/secret, redirect URI, scopes, email/name claim mapping, allowed email domains, auto-provisioning, and the default provisioned role. Settings are all-or-none. Production requires HTTPS, and `OIDC_AUTO_PROVISION=false` is the recommended initial policy.
 

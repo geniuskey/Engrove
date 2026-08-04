@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { rm, writeFile } from 'node:fs/promises';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { parseConfig } from '@engrove/config';
 import {
   checkDatabase,
@@ -38,12 +39,22 @@ let heartbeat: NodeJS.Timeout | undefined;
 let reconciliation: NodeJS.Timeout | undefined;
 let stopping = false;
 
-async function objectBytes(key: string, versionId?: string | null) {
+async function objectDigest(key: string, versionId?: string | null) {
   const object = await s3.send(
     new GetObjectCommand({ Bucket: config.S3_BUCKET, Key: key, VersionId: versionId ?? undefined }),
   );
   if (!object.Body) throw new Error('SOURCE_OBJECT_MISSING');
-  return object.Body.transformToByteArray();
+  const digest = createHash('sha256');
+  let sizeBytes = 0;
+  for await (const chunk of object.Body as AsyncIterable<Uint8Array>) {
+    sizeBytes += chunk.byteLength;
+    digest.update(chunk);
+  }
+  return {
+    checksum: digest.digest('hex'),
+    sizeBytes,
+    storageVersionId: object.VersionId ?? versionId ?? null,
+  };
 }
 
 interface ArtifactPlan {
@@ -56,11 +67,18 @@ interface ArtifactPlan {
   checksum: string;
 }
 
-async function checkpointArtifacts(attemptId: string, artifacts: ArtifactPlan[]) {
-  await pool.query(
-    "update background_job_attempts set result_checkpoint=$2::jsonb,heartbeat_at=now() where id=$1 and status='running'",
-    [attemptId, JSON.stringify({ artifacts })],
+async function checkpointArtifacts(jobId: string, attemptId: string, artifacts: ArtifactPlan[]) {
+  const checkpointed = await pool.query(
+    `update background_job_attempts a
+     set result_checkpoint=$4::jsonb,heartbeat_at=now()
+     from background_jobs j
+     where a.id=$1 and a.job_id=$2 and a.job_id=j.id
+       and a.status='running' and a.worker_identity=$3
+       and j.status='running' and j.lease_owner=$3 and j.lease_expires_at>now()
+     returning a.id`,
+    [attemptId, jobId, workerId, JSON.stringify({ artifacts })],
   );
+  if (!checkpointed.rowCount) throw new Error('JOB_LEASE_LOST');
 }
 
 async function processNextDataset(): Promise<void> {
@@ -109,14 +127,74 @@ async function processNextDataset(): Promise<void> {
   leaseHeartbeat.unref();
   try {
     const datasetResult = await pool.query(
-      `select d.*,f.final_object_key file_key,f.storage_version_id file_version,a.object_key dataset_key,a.storage_version_id dataset_version,source.schema source_schema from datasets d left join file_objects f on f.id=d.source_file_id and f.project_id=d.project_id left join datasets source on source.id=d.source_dataset_id and source.project_id=d.project_id left join dataset_artifacts a on a.dataset_id=source.id and a.project_id=source.project_id and a.artifact_kind='parquet' where d.id=$1 and d.project_id=$2`,
+      `select d.*,f.final_object_key file_key,f.storage_version_id file_version,
+        f.size_bytes file_size,f.checksum file_checksum,a.object_key dataset_key,
+        a.storage_version_id dataset_version,a.size_bytes dataset_size,a.checksum dataset_checksum,
+        source.schema source_schema
+       from datasets d
+       left join file_objects f on f.id=d.source_file_id and f.project_id=d.project_id
+       left join datasets source on source.id=d.source_dataset_id and source.project_id=d.project_id
+       left join dataset_artifacts a on a.dataset_id=source.id and a.project_id=source.project_id
+        and a.artifact_kind='parquet'
+       where d.id=$1 and d.project_id=$2`,
       [job.entity_id, job.project_id],
     );
     const dataset = datasetResult.rows[0];
     if (!dataset) throw new Error('DATASET_NOT_FOUND');
-    const source = await objectBytes(
-      dataset.file_key ?? dataset.dataset_key,
-      dataset.file_version ?? dataset.dataset_version,
+    const sourceKey = dataset.file_key ?? dataset.dataset_key;
+    const sourceVersion = dataset.file_version ?? dataset.dataset_version;
+    const sourceSize = Number(dataset.file_size ?? dataset.dataset_size);
+    const sourceChecksum = String(dataset.file_checksum ?? dataset.dataset_checksum ?? '');
+    if (!sourceKey || !sourceVersion || !sourceSize || !/^[a-f0-9]{64}$/.test(sourceChecksum))
+      throw new Error('DATASET_SOURCE_INVALID');
+    const artifacts: ArtifactPlan[] = (
+      [
+        ['parquet', 'application/vnd.apache.parquet'],
+        ['preview', 'application/json'],
+      ] as const
+    ).map(([kind, contentType]) => {
+      // Every attempt gets distinct keys. A timed-out worker can finish an in-flight
+      // upload after its lease is lost, so sharing keys across attempts would allow
+      // it to overwrite the active attempt's output even though database fencing works.
+      const artifactId = uuidv7();
+      return {
+        id: artifactId,
+        kind,
+        objectKey: `committed/${job.project_id}/datasets/${job.entity_id}/${artifactId}/${kind}`,
+        storageVersionId: null,
+        contentType,
+        sizeBytes: 0,
+        checksum: '',
+      };
+    });
+    await checkpointArtifacts(job.id, job.attemptId, artifacts);
+    const sourceUrl = await getSignedUrl(
+      s3,
+      new GetObjectCommand({
+        Bucket: config.S3_BUCKET,
+        Key: sourceKey,
+        VersionId: sourceVersion,
+      }),
+      { expiresIn: 15 * 60 },
+    );
+    const artifactUploads = Object.fromEntries(
+      await Promise.all(
+        artifacts.map(async (artifact) => [
+          artifact.kind,
+          {
+            url: await getSignedUrl(
+              s3,
+              new PutObjectCommand({
+                Bucket: config.S3_BUCKET,
+                Key: artifact.objectKey,
+                ContentType: artifact.contentType,
+              }),
+              { expiresIn: 15 * 60 },
+            ),
+            content_type: artifact.contentType,
+          },
+        ]),
+      ),
     );
     if (processingAbort.signal.aborted) throw processingAbort.signal.reason;
     const response = await fetch(`${config.PYTHON_WORKER_BASE_URL}/internal/v1/process-dataset`, {
@@ -128,7 +206,10 @@ async function processNextDataset(): Promise<void> {
       },
       body: JSON.stringify({
         dataset_type: dataset.dataset_type,
-        source_base64: Buffer.from(source).toString('base64'),
+        source_url: sourceUrl,
+        source_size_bytes: sourceSize,
+        source_checksum: sourceChecksum,
+        artifact_uploads: artifactUploads,
         parameters: dataset.parameters,
         source_schema: dataset.source_schema,
       }),
@@ -147,81 +228,28 @@ async function processNextDataset(): Promise<void> {
       schema: unknown;
       statistics: unknown;
       rowCount: number;
-      previewJson: string;
-      parquetBase64: string;
-      parquetChecksum: string;
+      artifacts: Array<{
+        kind: 'parquet' | 'preview';
+        checksum: string;
+        sizeBytes: number;
+      }>;
     };
     if (processingAbort.signal.aborted) throw processingAbort.signal.reason;
-    const parquetBytes = Buffer.from(result.parquetBase64, 'base64');
-    const previewBytes = Buffer.from(result.previewJson);
-    const previousCheckpoint = await pool.query<{
-      result_checkpoint: { artifacts?: ArtifactPlan[] };
-    }>(
-      `select result_checkpoint from background_job_attempts
-       where job_id=$1 and id<>$2 and result_checkpoint ? 'artifacts'
-       order by attempt_number desc limit 1`,
-      [job.id, job.attemptId],
-    );
-    const previousArtifacts = previousCheckpoint.rows[0]?.result_checkpoint.artifacts ?? [];
-    const artifacts: ArtifactPlan[] = [];
-    for (const [kind, content, contentType, expected] of [
-      ['parquet', parquetBytes, 'application/vnd.apache.parquet', result.parquetChecksum],
-      [
-        'preview',
-        previewBytes,
-        'application/json',
-        createHash('sha256').update(previewBytes).digest('hex'),
-      ],
-    ] as const) {
+    for (const artifact of artifacts) {
       if (processingAbort.signal.aborted) throw processingAbort.signal.reason;
-      const prior = previousArtifacts.find(
-        (artifact) => artifact.kind === kind && artifact.checksum === expected,
-      );
-      const artifactId = prior?.id ?? uuidv7();
-      const artifact: ArtifactPlan = {
-        id: artifactId,
-        kind,
-        objectKey:
-          prior?.objectKey ??
-          `committed/${job.project_id}/datasets/${job.entity_id}/${artifactId}/${kind}`,
-        storageVersionId: prior?.storageVersionId ?? null,
-        contentType,
-        sizeBytes: content.byteLength,
-        checksum: expected,
-      };
-      artifacts.push(artifact);
-      await checkpointArtifacts(job.attemptId, artifacts);
-      let verified: Uint8Array | undefined;
-      try {
-        verified = await objectBytes(artifact.objectKey, artifact.storageVersionId);
-      } catch {
-        // The checkpoint is durable before the write; a missing object is safe to create once.
+      const reported = result.artifacts.find((item) => item.kind === artifact.kind);
+      if (!reported || !/^[a-f0-9]{64}$/.test(reported.checksum))
+        throw new Error('ARTIFACT_RESULT_INVALID');
+      const verified = await objectDigest(artifact.objectKey);
+      if (verified.checksum !== reported.checksum || verified.sizeBytes !== reported.sizeBytes) {
+        const conflict = new Error('ARTIFACT_CHECKSUM_CONFLICT');
+        Object.assign(conflict, { retryable: false });
+        throw conflict;
       }
-      if (verified) {
-        if (createHash('sha256').update(verified).digest('hex') !== expected) {
-          const conflict = new Error('ARTIFACT_CHECKSUM_CONFLICT');
-          Object.assign(conflict, { retryable: false });
-          throw conflict;
-        }
-      } else {
-        const stored = await s3.send(
-          new PutObjectCommand({
-            Bucket: config.S3_BUCKET,
-            Key: artifact.objectKey,
-            Body: content,
-            ContentType: contentType,
-            Metadata: { sha256: expected },
-          }),
-        );
-        artifact.storageVersionId = stored.VersionId ?? null;
-        verified = await objectBytes(artifact.objectKey, artifact.storageVersionId);
-        if (createHash('sha256').update(verified).digest('hex') !== expected) {
-          const conflict = new Error('ARTIFACT_CHECKSUM_CONFLICT');
-          Object.assign(conflict, { retryable: false });
-          throw conflict;
-        }
-        await checkpointArtifacts(job.attemptId, artifacts);
-      }
+      artifact.storageVersionId = verified.storageVersionId;
+      artifact.sizeBytes = verified.sizeBytes;
+      artifact.checksum = verified.checksum;
+      await checkpointArtifacts(job.id, job.attemptId, artifacts);
     }
     clearInterval(leaseHeartbeat);
     await activeLeaseRenewal;
@@ -229,6 +257,7 @@ async function processNextDataset(): Promise<void> {
     await completeDatasetJob(pool, {
       jobId: job.id,
       attemptId: job.attemptId,
+      workerId,
       datasetId: job.entity_id,
       projectId: job.project_id,
       artifacts,
@@ -261,6 +290,7 @@ async function processNextDataset(): Promise<void> {
     await failDatasetJob(pool, {
       jobId: job.id,
       attemptId: job.attemptId,
+      workerId,
       datasetId: job.entity_id,
       attemptNumber: job.attemptNumber,
       maxAttempts: Number(job.max_attempts),
@@ -304,7 +334,7 @@ async function reconcile(): Promise<void> {
     client.release();
   }
   const queued = await pool.query<{ id: string }>(
-    "select id from background_jobs where status='queued' and scheduled_at<=now() order by scheduled_at limit 100",
+    "select id from background_jobs where job_type='dataset.process' and entity_type='dataset' and status='queued' and scheduled_at<=now() order by scheduled_at limit 100",
   );
   for (const job of queued.rows)
     await queue

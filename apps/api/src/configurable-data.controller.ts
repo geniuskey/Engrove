@@ -1,4 +1,15 @@
-import { Body, Controller, Get, Headers, Param, Patch, Post, Req, Res } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Inject,
+  Param,
+  Patch,
+  Post,
+  Req,
+  Res,
+} from '@nestjs/common';
 import {
   configurableFieldTypes,
   resolveObjectTypeIdentifier,
@@ -13,7 +24,9 @@ import {
 } from '@engrove/database';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import { appRuntime, requestId, requireActor } from './community.controller.js';
+import { requestId, requireActor } from './community.controller.js';
+import type { Runtime } from './runtime.js';
+import { RUNTIME } from './runtime.provider.js';
 
 const id = z.string().uuid();
 const key = z
@@ -73,6 +86,7 @@ const recordViewConfig = z
   .strict();
 
 async function repository(
+  runtime: Runtime,
   request: Request,
   workspaceId: string,
   projectId: string,
@@ -87,17 +101,19 @@ async function repository(
     | 'export.execute',
   csrf = false,
 ): Promise<ScopedProjectRepository> {
-  const actor = await requireActor(request, action, csrf);
+  const actor = await requireActor(runtime, request, action, csrf);
   return ScopedProjectRepository.open(
-    appRuntime().pool,
+    runtime.pool,
     actor,
-    await resolveWorkspaceIdentifier(appRuntime().pool, workspaceId),
-    await resolveProjectIdentifier(appRuntime().pool, projectId),
+    await resolveWorkspaceIdentifier(runtime.pool, workspaceId),
+    await resolveProjectIdentifier(runtime.pool, projectId),
   );
 }
 
 @Controller('api/v1/workspaces/:workspaceId/projects/:projectId')
 export class ConfigurableDataController {
+  constructor(@Inject(RUNTIME) private readonly runtime: Runtime) {}
+
   @Get('object-types')
   async objectTypes(
     @Req() request: Request,
@@ -106,7 +122,7 @@ export class ConfigurableDataController {
   ) {
     return {
       items: await (
-        await repository(request, workspaceId, projectId, 'schema.read')
+        await repository(this.runtime, request, workspaceId, projectId, 'schema.read')
       ).listObjectTypes(),
     };
   }
@@ -128,7 +144,7 @@ export class ConfigurableDataController {
       })
       .parse(unparsed);
     return (
-      await repository(request, workspaceId, projectId, 'schema.manage', true)
+      await repository(this.runtime, request, workspaceId, projectId, 'schema.manage', true)
     ).createObjectType({
       name: body.name,
       pluralName: body.pluralName,
@@ -156,9 +172,9 @@ export class ConfigurableDataController {
       })
       .parse(unparsed);
     return (
-      await repository(request, workspaceId, projectId, 'schema.manage', true)
+      await repository(this.runtime, request, workspaceId, projectId, 'schema.manage', true)
     ).updateObjectType({
-      objectTypeId: await resolveObjectTypeIdentifier(appRuntime().pool, objectTypeId),
+      objectTypeId: await resolveObjectTypeIdentifier(this.runtime.pool, objectTypeId),
       name: body.name,
       pluralName: body.pluralName,
       key: body.key,
@@ -176,8 +192,8 @@ export class ConfigurableDataController {
   ) {
     return {
       items: await (
-        await repository(request, workspaceId, projectId, 'schema.read')
-      ).listFields(await resolveObjectTypeIdentifier(appRuntime().pool, objectTypeId)),
+        await repository(this.runtime, request, workspaceId, projectId, 'schema.read')
+      ).listFields(await resolveObjectTypeIdentifier(this.runtime.pool, objectTypeId)),
     };
   }
 
@@ -202,8 +218,10 @@ export class ConfigurableDataController {
         defaultValue: z.unknown().optional(),
       })
       .parse(unparsed);
-    return (await repository(request, workspaceId, projectId, 'schema.manage', true)).createField({
-      objectTypeId: await resolveObjectTypeIdentifier(appRuntime().pool, objectTypeId),
+    return (
+      await repository(this.runtime, request, workspaceId, projectId, 'schema.manage', true)
+    ).createField({
+      objectTypeId: await resolveObjectTypeIdentifier(this.runtime.pool, objectTypeId),
       name: body.name,
       key: body.key,
       description: body.description ?? '',
@@ -231,9 +249,9 @@ export class ConfigurableDataController {
       .parse(unparsed);
     return {
       items: await (
-        await repository(request, workspaceId, projectId, 'schema.manage', true)
+        await repository(this.runtime, request, workspaceId, projectId, 'schema.manage', true)
       ).reorderFields({
-        objectTypeId: await resolveObjectTypeIdentifier(appRuntime().pool, objectTypeId),
+        objectTypeId: await resolveObjectTypeIdentifier(this.runtime.pool, objectTypeId),
         fieldIds: body.fieldIds,
         requestId: requestId(request),
       }),
@@ -259,8 +277,10 @@ export class ConfigurableDataController {
         config: jsonObject,
       })
       .parse(unparsed);
-    return (await repository(request, workspaceId, projectId, 'schema.manage', true)).updateField({
-      objectTypeId: await resolveObjectTypeIdentifier(appRuntime().pool, objectTypeId),
+    return (
+      await repository(this.runtime, request, workspaceId, projectId, 'schema.manage', true)
+    ).updateField({
+      objectTypeId: await resolveObjectTypeIdentifier(this.runtime.pool, objectTypeId),
       fieldId: id.parse(fieldId),
       ...body,
       config: body.config as Record<string, JsonValue>,
@@ -275,7 +295,7 @@ export class ConfigurableDataController {
     @Param('projectId') projectId: string,
   ) {
     return (
-      await repository(request, workspaceId, projectId, 'schema.manage', true)
+      await repository(this.runtime, request, workspaceId, projectId, 'schema.manage', true)
     ).installTestCharacterizationTemplate(requestId(request));
   }
 
@@ -288,8 +308,8 @@ export class ConfigurableDataController {
   ) {
     return {
       items: await (
-        await repository(request, workspaceId, projectId, 'schema.read')
-      ).listRecordViews(await resolveObjectTypeIdentifier(appRuntime().pool, objectTypeId)),
+        await repository(this.runtime, request, workspaceId, projectId, 'schema.read')
+      ).listRecordViews(await resolveObjectTypeIdentifier(this.runtime.pool, objectTypeId)),
     };
   }
 
@@ -309,9 +329,9 @@ export class ConfigurableDataController {
       })
       .parse(unparsed);
     return (
-      await repository(request, workspaceId, projectId, 'schema.manage', true)
+      await repository(this.runtime, request, workspaceId, projectId, 'schema.manage', true)
     ).createRecordView({
-      objectTypeId: await resolveObjectTypeIdentifier(appRuntime().pool, objectTypeId),
+      objectTypeId: await resolveObjectTypeIdentifier(this.runtime.pool, objectTypeId),
       name: body.name,
       viewType: body.viewType as RecordViewType,
       config: body.config as RecordViewConfig,
@@ -337,10 +357,10 @@ export class ConfigurableDataController {
       })
       .parse(unparsed);
     return (
-      await repository(request, workspaceId, projectId, 'schema.manage', true)
+      await repository(this.runtime, request, workspaceId, projectId, 'schema.manage', true)
     ).updateRecordView({
-      objectTypeId: await resolveObjectTypeIdentifier(appRuntime().pool, objectTypeId),
-      viewId: await resolveRecordViewIdentifier(appRuntime().pool, viewId),
+      objectTypeId: await resolveObjectTypeIdentifier(this.runtime.pool, objectTypeId),
+      viewId: await resolveRecordViewIdentifier(this.runtime.pool, viewId),
       name: body.name,
       viewType: body.viewType as RecordViewType,
       config: body.config as RecordViewConfig,
@@ -365,10 +385,10 @@ export class ConfigurableDataController {
       })
       .parse(unparsed);
     return (
-      await repository(request, workspaceId, projectId, 'schema.manage', true)
+      await repository(this.runtime, request, workspaceId, projectId, 'schema.manage', true)
     ).setRecordViewArchived({
-      objectTypeId: await resolveObjectTypeIdentifier(appRuntime().pool, objectTypeId),
-      viewId: await resolveRecordViewIdentifier(appRuntime().pool, viewId),
+      objectTypeId: await resolveObjectTypeIdentifier(this.runtime.pool, objectTypeId),
+      viewId: await resolveRecordViewIdentifier(this.runtime.pool, viewId),
       archived: true,
       rowVersion: body.rowVersion,
       reason: body.reason,
@@ -396,8 +416,10 @@ export class ConfigurableDataController {
         includeArchived: z.boolean().optional(),
       })
       .parse(unparsed);
-    return (await repository(request, workspaceId, projectId, 'record.read')).queryRecords(
-      await resolveObjectTypeIdentifier(appRuntime().pool, objectTypeId),
+    return (
+      await repository(this.runtime, request, workspaceId, projectId, 'record.read')
+    ).queryRecords(
+      await resolveObjectTypeIdentifier(this.runtime.pool, objectTypeId),
       body as RecordQuery,
     );
   }
@@ -410,8 +432,10 @@ export class ConfigurableDataController {
     @Param('objectTypeId') objectTypeId: string,
     @Param('recordId') recordId: string,
   ) {
-    return (await repository(request, workspaceId, projectId, 'record.read')).getRecord(
-      await resolveObjectTypeIdentifier(appRuntime().pool, objectTypeId),
+    return (
+      await repository(this.runtime, request, workspaceId, projectId, 'record.read')
+    ).getRecord(
+      await resolveObjectTypeIdentifier(this.runtime.pool, objectTypeId),
       id.parse(recordId),
     );
   }
@@ -426,9 +450,9 @@ export class ConfigurableDataController {
   ) {
     return {
       items: await (
-        await repository(request, workspaceId, projectId, 'record.read')
+        await repository(this.runtime, request, workspaceId, projectId, 'record.read')
       ).listRecordHistory(
-        await resolveObjectTypeIdentifier(appRuntime().pool, objectTypeId),
+        await resolveObjectTypeIdentifier(this.runtime.pool, objectTypeId),
         id.parse(recordId),
       ),
     };
@@ -446,9 +470,9 @@ export class ConfigurableDataController {
   ) {
     const body = z.object({ rowVersion: z.number().int().positive() }).parse(unparsed);
     return (
-      await repository(request, workspaceId, projectId, 'record.update', true)
+      await repository(this.runtime, request, workspaceId, projectId, 'record.update', true)
     ).undoRecordChange({
-      objectTypeId: await resolveObjectTypeIdentifier(appRuntime().pool, objectTypeId),
+      objectTypeId: await resolveObjectTypeIdentifier(this.runtime.pool, objectTypeId),
       recordId: id.parse(recordId),
       eventId: id.parse(eventId),
       rowVersion: body.rowVersion,
@@ -474,8 +498,10 @@ export class ConfigurableDataController {
         datasetReferences: relationMap.optional(),
       })
       .parse(unparsed);
-    return (await repository(request, workspaceId, projectId, 'record.create', true)).createRecord({
-      objectTypeId: await resolveObjectTypeIdentifier(appRuntime().pool, objectTypeId),
+    return (
+      await repository(this.runtime, request, workspaceId, projectId, 'record.create', true)
+    ).createRecord({
+      objectTypeId: await resolveObjectTypeIdentifier(this.runtime.pool, objectTypeId),
       ...(body.contextProjectId !== undefined ? { contextProjectId: body.contextProjectId } : {}),
       displayName: body.displayName,
       values: body.values as Record<string, JsonValue>,
@@ -506,8 +532,10 @@ export class ConfigurableDataController {
         rowVersion: z.number().int().positive(),
       })
       .parse(unparsed);
-    return (await repository(request, workspaceId, projectId, 'record.update', true)).updateRecord({
-      objectTypeId: await resolveObjectTypeIdentifier(appRuntime().pool, objectTypeId),
+    return (
+      await repository(this.runtime, request, workspaceId, projectId, 'record.update', true)
+    ).updateRecord({
+      objectTypeId: await resolveObjectTypeIdentifier(this.runtime.pool, objectTypeId),
       recordId: id.parse(recordId),
       ...(body.contextProjectId !== undefined ? { contextProjectId: body.contextProjectId } : {}),
       displayName: body.displayName,
@@ -531,9 +559,9 @@ export class ConfigurableDataController {
   ) {
     const body = z.object({ reason: z.string().trim().min(1).max(500) }).parse(unparsed);
     return (
-      await repository(request, workspaceId, projectId, 'record.archive', true)
+      await repository(this.runtime, request, workspaceId, projectId, 'record.archive', true)
     ).setRecordArchived({
-      objectTypeId: await resolveObjectTypeIdentifier(appRuntime().pool, objectTypeId),
+      objectTypeId: await resolveObjectTypeIdentifier(this.runtime.pool, objectTypeId),
       recordId: id.parse(recordId),
       archived: true,
       reason: body.reason,
@@ -550,9 +578,9 @@ export class ConfigurableDataController {
     @Param('recordId') recordId: string,
   ) {
     return (
-      await repository(request, workspaceId, projectId, 'record.restore', true)
+      await repository(this.runtime, request, workspaceId, projectId, 'record.restore', true)
     ).setRecordArchived({
-      objectTypeId: await resolveObjectTypeIdentifier(appRuntime().pool, objectTypeId),
+      objectTypeId: await resolveObjectTypeIdentifier(this.runtime.pool, objectTypeId),
       recordId: id.parse(recordId),
       archived: false,
       requestId: requestId(request),
@@ -570,9 +598,9 @@ export class ConfigurableDataController {
   ) {
     const body = z.object({ csv: z.string().min(1) }).parse(unparsed);
     return (
-      await repository(request, workspaceId, projectId, 'record.create', true)
+      await repository(this.runtime, request, workspaceId, projectId, 'record.create', true)
     ).importRecordsCsv({
-      objectTypeId: await resolveObjectTypeIdentifier(appRuntime().pool, objectTypeId),
+      objectTypeId: await resolveObjectTypeIdentifier(this.runtime.pool, objectTypeId),
       csv: body.csv,
       idempotencyKey: z.string().min(8).max(200).parse(idempotencyKey),
       requestId: requestId(request),
@@ -588,9 +616,9 @@ export class ConfigurableDataController {
     @Param('objectTypeId') objectTypeId: string,
   ) {
     const csv = await (
-      await repository(request, workspaceId, projectId, 'export.execute')
+      await repository(this.runtime, request, workspaceId, projectId, 'export.execute')
     ).exportRecordsCsv(
-      await resolveObjectTypeIdentifier(appRuntime().pool, objectTypeId),
+      await resolveObjectTypeIdentifier(this.runtime.pool, objectTypeId),
       requestId(request),
     );
     response

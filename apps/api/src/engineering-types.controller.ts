@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Get, Inject, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import {
   resolveProjectIdentifier,
   resolveWorkspaceIdentifier,
@@ -7,7 +7,9 @@ import {
 import { UNIT_REGISTRY, REGISTRY_DIGEST } from '@engrove/units';
 import type { Request } from 'express';
 import { z } from 'zod';
-import { appRuntime, requestId, requireActor } from './community.controller.js';
+import { requestId, requireActor } from './community.controller.js';
+import type { Runtime } from './runtime.js';
+import { RUNTIME } from './runtime.provider.js';
 
 const id = z.string().uuid();
 const decimal = z.string().regex(/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/);
@@ -19,6 +21,7 @@ const limits = z.object({
   warningUpperLimit: decimal.nullable().optional(),
 });
 async function repository(
+  runtime: Runtime,
   request: Request,
   workspaceId: string,
   projectId: string,
@@ -30,17 +33,19 @@ async function repository(
     | 'specification.manage',
   csrf = false,
 ) {
-  const actor = await requireActor(request, action, csrf);
+  const actor = await requireActor(runtime, request, action, csrf);
   return ScopedEngineeringRepository.open(
-    appRuntime().pool,
+    runtime.pool,
     actor,
-    await resolveWorkspaceIdentifier(appRuntime().pool, workspaceId),
-    await resolveProjectIdentifier(appRuntime().pool, projectId),
+    await resolveWorkspaceIdentifier(runtime.pool, workspaceId),
+    await resolveProjectIdentifier(runtime.pool, projectId),
   );
 }
 
 @Controller('api/v1')
 export class EngineeringTypesController {
+  constructor(@Inject(RUNTIME) private readonly runtime: Runtime) {}
+
   @Get('units') units() {
     return { digest: REGISTRY_DIGEST, ...UNIT_REGISTRY };
   }
@@ -73,6 +78,7 @@ export class EngineeringTypesController {
       .parse(raw);
     return (
       await repository(
+        this.runtime,
         request,
         workspaceId,
         projectId,
@@ -92,7 +98,7 @@ export class EngineeringTypesController {
   ) {
     return {
       items: await (
-        await repository(request, workspaceId, projectId, 'measurement.read')
+        await repository(this.runtime, request, workspaceId, projectId, 'measurement.read')
       ).listMeasurements(id.parse(recordId), fieldId ? id.parse(fieldId) : undefined),
     };
   }
@@ -106,7 +112,7 @@ export class EngineeringTypesController {
   ) {
     return {
       items: await (
-        await repository(request, workspaceId, projectId, 'specification.read')
+        await repository(this.runtime, request, workspaceId, projectId, 'specification.read')
       ).listSpecifications(includeArchived === 'true'),
     };
   }
@@ -127,7 +133,7 @@ export class EngineeringTypesController {
       })
       .parse(raw);
     return (
-      await repository(request, workspaceId, projectId, 'specification.manage', true)
+      await repository(this.runtime, request, workspaceId, projectId, 'specification.manage', true)
     ).createSpecification({ ...body, requestId: requestId(request) });
   }
 
@@ -141,7 +147,7 @@ export class EngineeringTypesController {
   ) {
     const body = z.object({ limits, changeNote: z.string().trim().min(1).max(2000) }).parse(raw);
     return (
-      await repository(request, workspaceId, projectId, 'specification.manage', true)
+      await repository(this.runtime, request, workspaceId, projectId, 'specification.manage', true)
     ).reviseSpecification(id.parse(specificationId), { ...body, requestId: requestId(request) });
   }
 
@@ -155,7 +161,7 @@ export class EngineeringTypesController {
   ) {
     const body = z.object({ reason: z.string().trim().min(1).max(2000) }).parse(raw);
     return (
-      await repository(request, workspaceId, projectId, 'specification.manage', true)
+      await repository(this.runtime, request, workspaceId, projectId, 'specification.manage', true)
     ).setSpecificationArchived(id.parse(specificationId), true, body.reason, requestId(request));
   }
 
@@ -167,7 +173,7 @@ export class EngineeringTypesController {
     @Param('specificationId') specificationId: string,
   ) {
     return (
-      await repository(request, workspaceId, projectId, 'specification.manage', true)
+      await repository(this.runtime, request, workspaceId, projectId, 'specification.manage', true)
     ).setSpecificationArchived(id.parse(specificationId), false, '', requestId(request));
   }
 
@@ -180,7 +186,7 @@ export class EngineeringTypesController {
   ) {
     return {
       items: await (
-        await repository(request, workspaceId, projectId, 'specification.read')
+        await repository(this.runtime, request, workspaceId, projectId, 'specification.read')
       ).listEvaluations(recordId ? id.parse(recordId) : undefined),
     };
   }
@@ -196,7 +202,7 @@ export class EngineeringTypesController {
       .object({ specificationRevisionId: id, recordId: id, measurementResultId: id.optional() })
       .parse(raw);
     return (
-      await repository(request, workspaceId, projectId, 'specification.manage', true)
+      await repository(this.runtime, request, workspaceId, projectId, 'specification.manage', true)
     ).retryEvaluation({ ...body, requestId: requestId(request) });
   }
 }

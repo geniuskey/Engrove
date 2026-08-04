@@ -22,7 +22,7 @@ import {
   useState,
 } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
-import { allowed, api, ErrorText, HelpTip, inputClass, type User } from './App.js';
+import { allowed, api, HelpTip, inputClass, NoticeText, type User } from './App.js';
 import {
   ContextMenu,
   type ContextMenuItem,
@@ -30,6 +30,7 @@ import {
   menuFromKeyboard,
   menuFromPointer,
 } from './ContextMenu.js';
+import { useI18n } from './i18n.js';
 
 echarts.use([
   BarChart,
@@ -322,9 +323,10 @@ function ChartView({
   revisionId: string;
   fallback?: Chart;
 }) {
+  const { t } = useI18n();
   const [option, setOption] = useState<EChartsOption>();
   const [error, setError] = useState('');
-  const [ariaLabel, setAriaLabel] = useState('Pinned data chart');
+  const [ariaLabel, setAriaLabel] = useState(() => t('visualizations.pinnedChart'));
   useEffect(
     () =>
       void (async () => {
@@ -336,7 +338,7 @@ function ChartView({
           const sources: ChartSource[] = revision.sources ?? [];
           if (!sources.length) {
             setOption(undefined);
-            setError('No compatible dataset has been pinned yet.');
+            setError(t('visualizations.noPinnedDataset'));
             return;
           }
           const loaded = new Map<string, { dataset: Dataset; rows: Record<string, unknown>[] }>();
@@ -443,17 +445,17 @@ function ChartView({
           setOption(common as EChartsOption);
           setError('');
         } catch (cause) {
-          setError(cause instanceof Error ? cause.message : 'Chart data is invalid.');
+          setError(cause instanceof Error ? cause.message : t('visualizations.invalidChart'));
           setOption(undefined);
         }
       })(),
-    [base, revisionId, fallback],
+    [base, revisionId, fallback, t],
   );
   return option ? (
     <EChart ariaLabel={ariaLabel} option={option} />
   ) : (
     <div className="flex h-48 items-center justify-center rounded-lg border border-dashed border-slate-700 text-sm text-amber-300">
-      {error || 'Missing chart data'}
+      {error || t('visualizations.missingChart')}
     </div>
   );
 }
@@ -476,6 +478,7 @@ function RecordCardView({
   refreshKey: number;
   globalSearch: string;
 }) {
+  const { formatNumber, t } = useI18n();
   const config = card.config as RecordKpiConfig | RecordChartConfig | RecordListConfig;
   const [result, setResult] = useState<RecordQueryResult>();
   const [error, setError] = useState('');
@@ -508,7 +511,7 @@ function RecordCardView({
       })
       .catch((cause: unknown) => {
         if (!active) return;
-        setError(cause instanceof Error ? cause.message : 'Card data could not be loaded.');
+        setError(cause instanceof Error ? cause.message : t('visualizations.cardLoadError'));
         setResult(undefined);
       })
       .finally(() => {
@@ -517,7 +520,7 @@ function RecordCardView({
     return () => {
       active = false;
     };
-  }, [base, card.card_type, config, globalSearch, refreshKey]);
+  }, [base, card.card_type, config, globalSearch, refreshKey, t]);
   useEffect(() => {
     if (!drilldown || card.card_type !== 'record_chart') {
       setDrilldownItems([]);
@@ -566,7 +569,7 @@ function RecordCardView({
     return (
       <div className="mt-3">
         <p className="text-4xl font-semibold tracking-tight text-sky-300">
-          {result?.total.toLocaleString() ?? '—'}
+          {result ? formatNumber(result.total) : '—'}
         </p>
         <p className="mt-1 text-xs text-slate-500">
           {(config as RecordKpiConfig).source.tableName}
@@ -580,7 +583,10 @@ function RecordCardView({
     const chart = config as RecordChartConfig;
     const groups = result?.groups ?? [];
     const data = groups.map((group) => ({
-      name: group.value === null ? 'Empty' : (chart.groupLabels[group.value] ?? group.value),
+      name:
+        group.value === null
+          ? t('visualizations.empty')
+          : (chart.groupLabels[group.value] ?? group.value),
       value: group.count,
     }));
     const option: EChartsOption =
@@ -615,7 +621,7 @@ function RecordCardView({
           ariaLabel={`${chart.title}. ${chart.chartType} chart grouped by ${chart.groupByLabel}. ${data.map((item) => `${item.name}: ${item.value}`).join(', ')}.`}
           option={option}
         />
-        <div className="mt-1 flex flex-wrap gap-1.5" aria-label="Chart drill-down options">
+        <div className="mt-1 flex flex-wrap gap-1.5" aria-label={t('visualizations.drillOptions')}>
           {groups.map((group, index) => (
             <button
               className={`rounded-md px-2 py-1 text-[10px] ${drilldown?.value === group.value ? 'bg-sky-400/15 text-sky-200' : 'bg-slate-800 text-slate-400 hover:text-sky-300'}`}
@@ -630,13 +636,15 @@ function RecordCardView({
         {drilldown && (
           <div className="mt-2 rounded-lg border border-sky-400/15 bg-slate-950/50 p-2">
             <div className="flex items-center justify-between gap-2">
-              <p className="text-[11px] font-medium text-sky-200">{drilldown.label} records</p>
+              <p className="text-[11px] font-medium text-sky-200">
+                {t('visualizations.recordsFor', { label: drilldown.label })}
+              </p>
               <button
                 className="text-[10px] text-slate-500 hover:text-slate-200"
                 onClick={() => setDrilldown(undefined)}
                 type="button"
               >
-                Close
+                {t('visualizations.close')}
               </button>
             </div>
             <ul className="mt-1 grid gap-1">
@@ -655,7 +663,7 @@ function RecordCardView({
         )}
       </>
     ) : (
-      <p className="mt-4 text-sm text-slate-500">No grouped records match this card.</p>
+      <p className="mt-4 text-sm text-slate-500">{t('visualizations.noGrouped')}</p>
     );
   }
   const list = config as RecordListConfig;
@@ -664,7 +672,9 @@ function RecordCardView({
       <table className="w-full text-left text-xs">
         <thead className="text-slate-500">
           <tr>
-            <th className="border-b border-slate-800 px-2 py-2 font-medium">Name</th>
+            <th className="border-b border-slate-800 px-2 py-2 font-medium">
+              {t('visualizations.name')}
+            </th>
             {list.columns.map((column) => (
               <th className="border-b border-slate-800 px-2 py-2 font-medium" key={column.fieldId}>
                 {column.label}
@@ -695,10 +705,15 @@ function RecordCardView({
           ))}
         </tbody>
       </table>
-      {!result?.items.length && <p className="p-3 text-sm text-slate-500">No records found.</p>}
+      {!result?.items.length && (
+        <p className="p-3 text-sm text-slate-500">{t('visualizations.noRecords')}</p>
+      )}
       {(result?.total ?? 0) > list.limit && (
         <p className="mt-2 text-right text-[11px] text-slate-500">
-          Showing {list.limit} of {result?.total.toLocaleString()}
+          {t('visualizations.showing', {
+            shown: formatNumber(list.limit),
+            total: formatNumber(result?.total ?? 0),
+          })}
         </p>
       )}
     </div>
@@ -736,6 +751,7 @@ function nextCardPlacement(cards: DashboardCard[], width: number, height: number
 }
 
 export function VisualizationsPage({ user }: { user: User }) {
+  const { formatNumber, formatTime, t } = useI18n();
   const { workspaceId, projectId } = useParams();
   const navigate = useNavigate();
   const base = `/workspaces/${workspaceId}/projects/${projectId}`;
@@ -745,6 +761,9 @@ export function VisualizationsPage({ user }: { user: User }) {
   const [metrics, setMetrics] = useState<Metrics>(),
     [message, setMessage] = useState(''),
     [selectedDashboard, setSelectedDashboard] = useState('');
+  const [messageTone, setMessageTone] = useState<'info' | 'success' | 'error'>('info');
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
   const [recordTables, setRecordTables] = useState<ObjectType[]>([]);
   const [recordFields, setRecordFields] = useState<RecordField[]>([]);
   const [recordViews, setRecordViews] = useState<RecordView[]>([]);
@@ -783,9 +802,12 @@ export function VisualizationsPage({ user }: { user: User }) {
       setMetrics(m);
       setMessage('');
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : 'Visualizations could not be loaded.');
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : t('visualizations.loadError'));
+    } finally {
+      setLoading(false);
     }
-  }, [base]);
+  }, [base, t]);
   useEffect(() => void refresh(), [refresh]);
   useEffect(() => {
     let active = true;
@@ -796,13 +818,13 @@ export function VisualizationsPage({ user }: { user: User }) {
         setRecordSourceId((current) => current || response.items[0]?.id || '');
       })
       .catch((cause: unknown) => {
-        if (active)
-          setMessage(cause instanceof Error ? cause.message : 'Record tables could not be loaded.');
+        if (active) setMessageTone('error');
+        setMessage(cause instanceof Error ? cause.message : t('visualizations.tablesError'));
       });
     return () => {
       active = false;
     };
-  }, [base]);
+  }, [base, t]);
   useEffect(() => {
     if (!recordSourceId) {
       setRecordFields([]);
@@ -835,12 +857,13 @@ export function VisualizationsPage({ user }: { user: User }) {
       })
       .catch((cause: unknown) => {
         if (!active) return;
-        setMessage(cause instanceof Error ? cause.message : 'Table fields could not be loaded.');
+        setMessageTone('error');
+        setMessage(cause instanceof Error ? cause.message : t('visualizations.fieldsError'));
       });
     return () => {
       active = false;
     };
-  }, [base, recordSourceId]);
+  }, [base, recordSourceId, t]);
   const xy = useMemo(
     () => datasets.filter((dataset) => dataset.status === 'ready' && dataset.dataset_type === 'xy'),
     [datasets],
@@ -933,11 +956,17 @@ export function VisualizationsPage({ user }: { user: User }) {
     window.addEventListener('pointerup', up, { once: true });
   }
   async function mutate(operation: () => Promise<unknown>) {
+    setBusy(true);
     try {
       await operation();
       await refresh();
+      setMessageTone('success');
+      setMessage(t('common.changesSaved'));
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : 'Operation failed.');
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : t('files.operationError'));
+    } finally {
+      setBusy(false);
     }
   }
   async function createChart(event: FormEvent<HTMLFormElement>) {
@@ -945,7 +974,8 @@ export function VisualizationsPage({ user }: { user: User }) {
     const form = new FormData(event.currentTarget);
     const selected = form.getAll('datasets').map(String);
     if (!selected.length) {
-      setMessage('Select at least one ready XY dataset.');
+      setMessageTone('error');
+      setMessage(t('visualizations.selectXy'));
       return;
     }
     const sources = selected.map((datasetId, index) => ({
@@ -1011,7 +1041,8 @@ export function VisualizationsPage({ user }: { user: User }) {
       /(int|float|double|decimal)/i.test(candidate.dataType),
     );
     if (!dataset || !column) {
-      setMessage('Select a ready dataset with a numeric column.');
+      setMessageTone('error');
+      setMessage(t('visualizations.selectNumericError'));
       return;
     }
     const chartType = String(form.get('chartType')) as 'histogram' | 'box_plot';
@@ -1119,7 +1150,8 @@ export function VisualizationsPage({ user }: { user: User }) {
     event.preventDefault();
     const formElement = event.currentTarget;
     if (!dashboard || !selectedRecordTable) {
-      setMessage('Create a dashboard and select a source table first.');
+      setMessageTone('error');
+      setMessage(t('visualizations.selectDashboardSource'));
       return;
     }
     const form = new FormData(formElement);
@@ -1148,7 +1180,8 @@ export function VisualizationsPage({ user }: { user: User }) {
     } else if (recordCardType === 'record_chart') {
       const groupField = recordFields.find((field) => field.id === recordGroupFieldId);
       if (!groupField) {
-        setMessage('Select a field to group the chart by.');
+        setMessageTone('error');
+        setMessage(t('visualizations.selectGroup'));
         return;
       }
       config = {
@@ -1232,9 +1265,11 @@ export function VisualizationsPage({ user }: { user: User }) {
     try {
       if (!navigator.clipboard) throw new Error('Clipboard is unavailable.');
       await navigator.clipboard.writeText(value);
-      setMessage(`${label} copied.`);
+      setMessageTone('success');
+      setMessage(t('common.copied', { label }));
     } catch {
-      setMessage('Clipboard access was denied by the browser.');
+      setMessageTone('error');
+      setMessage(t('common.copyDenied'));
     }
   }
   function dashboardCardContextItems(card: DashboardCard): ContextMenuItem[] {
@@ -1245,7 +1280,7 @@ export function VisualizationsPage({ user }: { user: User }) {
       ...(recordConfig
         ? [
             {
-              label: 'Open source table',
+              label: t('visualizations.openSource'),
               icon: '↗',
               onSelect: () =>
                 void navigate(`${base}/data?type=${recordConfig.source.objectTypeId}`),
@@ -1253,15 +1288,18 @@ export function VisualizationsPage({ user }: { user: User }) {
           ]
         : []),
       {
-        label: 'Copy card title',
+        label: t('visualizations.copyCardTitle'),
         icon: '⧉',
         onSelect: () =>
-          void copyDashboardValue('Card title', card.config.title ?? 'Dashboard card'),
+          void copyDashboardValue(
+            t('visualizations.cardTitle'),
+            card.config.title ?? t('visualizations.dashboardCard'),
+          ),
       },
       ...(recordConfig
         ? [
             {
-              label: 'Copy source name',
+              label: t('visualizations.copySource'),
               icon: '#',
               onSelect: () => void copyDashboardValue('Source name', recordConfig.source.tableName),
             } satisfies ContextMenuItem,
@@ -1270,13 +1308,13 @@ export function VisualizationsPage({ user }: { user: User }) {
       ...(allowed(user, 'dashboard.manage')
         ? [
             {
-              label: 'Duplicate card',
+              label: t('visualizations.duplicateCard'),
               icon: '＋',
               separatorBefore: true,
               onSelect: () => void duplicateDashboardCard(card),
             },
             {
-              label: 'Remove card',
+              label: t('visualizations.removeCardAction'),
               icon: '×',
               tone: 'danger' as const,
               onSelect: () => void removeDashboardCard(card.id),
@@ -1289,7 +1327,7 @@ export function VisualizationsPage({ user }: { user: User }) {
     setContextMenu(
       menuFromPointer(
         event,
-        card.config.title ?? 'Dashboard card',
+        card.config.title ?? t('visualizations.dashboardCard'),
         dashboardCardContextItems(card),
       ),
     );
@@ -1300,7 +1338,7 @@ export function VisualizationsPage({ user }: { user: User }) {
   ) {
     const menu = menuFromKeyboard(
       event,
-      card.config.title ?? 'Dashboard card',
+      card.config.title ?? t('visualizations.dashboardCard'),
       dashboardCardContextItems(card),
     );
     if (menu) setContextMenu(menu);
@@ -1316,26 +1354,33 @@ export function VisualizationsPage({ user }: { user: User }) {
   return (
     <>
       <Link className="text-sm text-slate-400 hover:text-sky-300" to={base}>
-        ← Project
+        ← {t('common.projectBack')}
       </Link>
       <div className="mt-4 flex items-center gap-3">
         <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
-          Charts &amp; dashboards
+          {t('visualizations.heading')}
         </h1>
-        <HelpTip label="Charts and dashboards help">
-          Chart sources and dashboard cards are pinned to immutable revisions. Right-click a card
-          for source and layout actions.
-        </HelpTip>
+        <HelpTip label={t('visualizations.help')}>{t('visualizations.helpBody')}</HelpTip>
       </div>
-      <ErrorText>{message}</ErrorText>
+      <NoticeText tone={messageTone}>{message}</NoticeText>
+      {loading && (
+        <p aria-live="polite" className="mt-4 text-sm text-slate-400" role="status">
+          {t('common.loading')}
+        </p>
+      )}
       {allowed(user, 'dashboard.manage') && (
         <div className="mt-8 grid gap-5 xl:grid-cols-3">
           <form className={creatorFormClass} onSubmit={(event) => void createChart(event)}>
-            <h2 className={creatorHeadingClass}>Overlay XY datasets</h2>
-            <input className={inputClass} name="name" placeholder="Chart name" required />
+            <h2 className={creatorHeadingClass}>{t('visualizations.xyHeading')}</h2>
+            <input
+              className={inputClass}
+              name="name"
+              placeholder={t('visualizations.chartName')}
+              required
+            />
             <select className={inputClass} name="chartType">
-              <option value="line">Line</option>
-              <option value="scatter">Scatter</option>
+              <option value="line">{t('visualizations.line')}</option>
+              <option value="scatter">{t('visualizations.scatter')}</option>
             </select>
             <div className="max-h-40 space-y-2 overflow-auto">
               {xy.map((dataset) => (
@@ -1345,47 +1390,66 @@ export function VisualizationsPage({ user }: { user: User }) {
                 </label>
               ))}
             </div>
-            <Button type="submit">Save chart</Button>
+            <Button disabled={busy} type="submit">
+              {t('visualizations.saveChart')}
+            </Button>
           </form>
           <form
             className={creatorFormClass}
             onSubmit={(event) => void createStatisticalChart(event)}
           >
-            <h2 className={creatorHeadingClass}>Statistical chart</h2>
-            <input className={inputClass} name="name" placeholder="Chart name" required />
+            <h2 className={creatorHeadingClass}>{t('visualizations.statisticalHeading')}</h2>
+            <input
+              className={inputClass}
+              name="name"
+              placeholder={t('visualizations.chartName')}
+              required
+            />
             <select className={inputClass} name="chartType">
-              <option value="histogram">Histogram</option>
-              <option value="box_plot">Box plot</option>
+              <option value="histogram">{t('visualizations.histogram')}</option>
+              <option value="box_plot">{t('visualizations.boxPlot')}</option>
             </select>
             <select className={inputClass} name="datasetId" required>
-              <option value="">Select a numeric dataset</option>
+              <option value="">{t('visualizations.selectNumeric')}</option>
               {statisticalDatasets.map((dataset) => (
                 <option key={dataset.id} value={dataset.id}>
                   {dataset.name}
                 </option>
               ))}
             </select>
-            <Button type="submit">Save statistical chart</Button>
+            <Button disabled={busy} type="submit">
+              {t('visualizations.saveStatistical')}
+            </Button>
           </form>
           <form className={creatorFormClass} onSubmit={(event) => void createDashboard(event)}>
-            <h2 className={creatorHeadingClass}>New dashboard</h2>
-            <input className={inputClass} name="name" placeholder="Dashboard name" required />
+            <h2 className={creatorHeadingClass}>{t('visualizations.dashboardNew')}</h2>
+            <input
+              className={inputClass}
+              name="name"
+              placeholder={t('visualizations.dashboardName')}
+              required
+            />
             <select className={inputClass} name="chartRevisionId">
-              <option value="">Empty dashboard</option>
+              <option value="">{t('visualizations.emptyDashboard')}</option>
               {charts
                 .filter((chart) => !chart.archived_at)
                 .map((chart) => (
                   <option key={chart.current_revision_id} value={chart.current_revision_id}>
-                    {chart.name} · revision {chart.revision_number}
+                    {t('visualizations.dashboardOption', {
+                      name: chart.name,
+                      revision: chart.revision_number,
+                    })}
                   </option>
                 ))}
             </select>
-            <Button type="submit">Publish dashboard</Button>
+            <Button disabled={busy} type="submit">
+              {t('visualizations.publishDashboard')}
+            </Button>
           </form>
         </div>
       )}
       <section className="mt-10">
-        <h2 className="text-2xl font-semibold">Saved charts</h2>
+        <h2 className="text-2xl font-semibold">{t('visualizations.savedCharts')}</h2>
         <div className="mt-4 grid gap-5 xl:grid-cols-2">
           {charts.map((chart) => (
             <article
@@ -1396,8 +1460,11 @@ export function VisualizationsPage({ user }: { user: User }) {
                 <div>
                   <h3 className="font-semibold">{chart.name}</h3>
                   <p className="text-xs text-slate-500">
-                    Revision {chart.revision_number} · {chart.chart_type} · {chart.sources.length}{' '}
-                    exact source(s)
+                    {t('visualizations.revisionSummary', {
+                      revision: chart.revision_number,
+                      type: chart.chart_type,
+                      count: formatNumber(chart.sources.length),
+                    })}
                   </p>
                 </div>
                 {allowed(user, 'dashboard.manage') && (
@@ -1425,7 +1492,7 @@ export function VisualizationsPage({ user }: { user: User }) {
                       )
                     }
                   >
-                    Publish revision
+                    {t('visualizations.publishRevision')}
                   </button>
                 )}
               </div>
@@ -1437,7 +1504,7 @@ export function VisualizationsPage({ user }: { user: User }) {
                     key={source.source_key}
                     to={`${base}/files-datasets`}
                   >
-                    Source {source.source_key}: {source.dataset_id}
+                    {t('visualizations.source', { key: source.source_key, id: source.dataset_id })}
                   </Link>
                 ))}
               </div>
@@ -1448,10 +1515,9 @@ export function VisualizationsPage({ user }: { user: User }) {
       <section className="mt-12">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <h2 className="text-2xl font-semibold">Dashboards</h2>
-            <HelpTip label="Dashboard composition help">
-              Combine KPI, chart, and record-list cards from different tables. Each published layout
-              becomes a traceable revision.
+            <h2 className="text-2xl font-semibold">{t('visualizations.dashboards')}</h2>
+            <HelpTip label={t('visualizations.dashboardHelp')}>
+              {t('visualizations.dashboardHelpBody')}
             </HelpTip>
           </div>
           <select
@@ -1461,17 +1527,19 @@ export function VisualizationsPage({ user }: { user: User }) {
           >
             {dashboards.map((item) => (
               <option key={item.id} value={item.id}>
-                {item.name} · revision {item.revision_number}
+                {t('visualizations.dashboardOption', {
+                  name: item.name,
+                  revision: item.revision_number,
+                })}
               </option>
             ))}
           </select>
           {liveCardCount > 0 && (
             <div className="flex items-center gap-2 text-xs text-slate-500">
               <span aria-live="polite">
-                {liveCardCount} live · updated{' '}
-                {lastRecordRefreshAt.toLocaleTimeString([], {
-                  hour: '2-digit',
-                  minute: '2-digit',
+                {t('visualizations.liveUpdated', {
+                  count: formatNumber(liveCardCount),
+                  time: formatTime(lastRecordRefreshAt),
                 })}
               </span>
               <button
@@ -1479,7 +1547,7 @@ export function VisualizationsPage({ user }: { user: User }) {
                 onClick={refreshLiveCards}
                 type="button"
               >
-                Refresh live data
+                {t('visualizations.refresh')}
               </button>
             </div>
           )}
@@ -1491,7 +1559,7 @@ export function VisualizationsPage({ user }: { user: User }) {
                   onClick={() => setLayoutDraft({})}
                   type="button"
                 >
-                  Reset layout
+                  {t('visualizations.resetLayout')}
                 </button>
               )}
               <button
@@ -1499,7 +1567,7 @@ export function VisualizationsPage({ user }: { user: User }) {
                 onClick={() => void publishDashboardRevision()}
                 type="button"
               >
-                Publish layout revision
+                {t('visualizations.publishLayout')}
               </button>
             </div>
           )}
@@ -1507,19 +1575,18 @@ export function VisualizationsPage({ user }: { user: User }) {
         {dashboard && liveCardCount > 0 && (
           <div className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/45 p-3">
             <label className="min-w-64 flex-1 text-xs text-slate-400">
-              Global dashboard filter
+              {t('visualizations.globalFilter')}
               <input
-                aria-label="Search across dashboard record sources"
+                aria-label={t('visualizations.searchSources')}
                 className={`${inputClass} mt-1`}
-                placeholder="Search every record-backed card…"
+                placeholder={t('visualizations.searchPlaceholder')}
                 type="search"
                 value={dashboardSearch}
                 onChange={(event) => setDashboardSearch(event.target.value)}
               />
             </label>
             <p className="max-w-md text-[11px] leading-relaxed text-slate-500">
-              One search is applied to every table-backed KPI, chart, and list. Select a chart group
-              to drill into its matching records.
+              {t('visualizations.searchHelp')}
             </p>
           </div>
         )}
@@ -1530,18 +1597,22 @@ export function VisualizationsPage({ user }: { user: User }) {
           >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="flex items-center gap-2">
-                <h3 className="font-semibold">Compose from record tables</h3>
-                <HelpTip label="Record table card help">
-                  Mix cards from different tables. Saved-view filters and sorts are pinned into the
-                  next dashboard revision.
+                <h3 className="font-semibold">{t('visualizations.compose')}</h3>
+                <HelpTip label={t('visualizations.recordHelp')}>
+                  {t('visualizations.recordHelpBody')}
                 </HelpTip>
               </div>
-              <Button disabled={!recordTables.length} type="submit">
-                Add card
+              <Button disabled={!recordTables.length || busy} type="submit">
+                {t('visualizations.addCard')}
               </Button>
             </div>
             <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-              <input className={inputClass} name="title" placeholder="Card title" required />
+              <input
+                className={inputClass}
+                name="title"
+                placeholder={t('visualizations.cardTitle')}
+                required
+              />
               <select
                 className={inputClass}
                 value={recordCardType}
@@ -1551,9 +1622,9 @@ export function VisualizationsPage({ user }: { user: User }) {
                   )
                 }
               >
-                <option value="record_kpi">Record count KPI</option>
-                <option value="record_chart">Grouped chart</option>
-                <option value="record_list">Record list</option>
+                <option value="record_kpi">{t('visualizations.recordKpi')}</option>
+                <option value="record_chart">{t('visualizations.groupedChart')}</option>
+                <option value="record_list">{t('visualizations.recordList')}</option>
               </select>
               <select
                 className={inputClass}
@@ -1561,7 +1632,7 @@ export function VisualizationsPage({ user }: { user: User }) {
                 onChange={(event) => setRecordSourceId(event.target.value)}
                 required
               >
-                <option value="">Select a source table</option>
+                <option value="">{t('visualizations.selectTable')}</option>
                 {recordTables.map((table) => (
                   <option key={table.id} value={table.id}>
                     {table.pluralName}
@@ -1583,7 +1654,7 @@ export function VisualizationsPage({ user }: { user: User }) {
                   }
                 }}
               >
-                <option value="">All records (no saved view)</option>
+                <option value="">{t('visualizations.allRecords')}</option>
                 {recordViews.map((view) => (
                   <option key={view.id} value={view.id}>
                     {view.name} · {view.viewType}
@@ -1598,8 +1669,8 @@ export function VisualizationsPage({ user }: { user: User }) {
                   value={recordChartType}
                   onChange={(event) => setRecordChartType(event.target.value as 'bar' | 'donut')}
                 >
-                  <option value="bar">Bar chart</option>
-                  <option value="donut">Donut chart</option>
+                  <option value="bar">{t('visualizations.barChart')}</option>
+                  <option value="donut">{t('visualizations.donutChart')}</option>
                 </select>
                 <select
                   className={inputClass}
@@ -1607,7 +1678,7 @@ export function VisualizationsPage({ user }: { user: User }) {
                   onChange={(event) => setRecordGroupFieldId(event.target.value)}
                   required
                 >
-                  <option value="">Group by field</option>
+                  <option value="">{t('visualizations.groupBy')}</option>
                   {recordGroupFields.map((field) => (
                     <option key={field.id} value={field.id}>
                       {field.name}
@@ -1619,7 +1690,7 @@ export function VisualizationsPage({ user }: { user: User }) {
             {recordCardType === 'record_list' && (
               <fieldset className="mt-3">
                 <legend className="text-xs font-medium text-slate-400">
-                  Visible columns · up to 6
+                  {t('visualizations.visibleColumns')}
                 </legend>
                 <div className="mt-2 flex max-h-28 flex-wrap gap-x-4 gap-y-2 overflow-auto">
                   {recordFields.map((field) => {
@@ -1669,10 +1740,12 @@ export function VisualizationsPage({ user }: { user: User }) {
                   <div className="flex min-w-0 items-center gap-2">
                     {allowed(user, 'dashboard.manage') && (
                       <button
-                        aria-label={`Move ${card.config.title ?? 'card'}`}
+                        aria-label={t('visualizations.moveCard', {
+                          title: card.config.title ?? 'card',
+                        })}
                         className="cursor-grab rounded px-1 text-slate-600 hover:bg-slate-800 hover:text-sky-300 active:cursor-grabbing"
                         onPointerDown={(event) => beginLayoutChange(event, card, 'move')}
-                        title="Drag to move"
+                        title={t('visualizations.dragMove')}
                         type="button"
                       >
                         ⠿
@@ -1684,12 +1757,14 @@ export function VisualizationsPage({ user }: { user: User }) {
                   </div>
                   {allowed(user, 'dashboard.manage') && (
                     <button
-                      aria-label={`Remove ${card.config.title ?? 'card'}`}
+                      aria-label={t('visualizations.removeCard', {
+                        title: card.config.title ?? 'card',
+                      })}
                       className="text-xs text-slate-500 hover:text-rose-300"
                       onClick={() => void removeDashboardCard(card.id)}
                       type="button"
                     >
-                      Remove
+                      {t('visualizations.remove')}
                     </button>
                   )}
                 </div>
@@ -1723,10 +1798,12 @@ export function VisualizationsPage({ user }: { user: User }) {
                 )}
                 {allowed(user, 'dashboard.manage') && (
                   <button
-                    aria-label={`Resize ${card.config.title ?? 'card'}`}
+                    aria-label={t('visualizations.resizeCard', {
+                      title: card.config.title ?? 'card',
+                    })}
                     className="absolute bottom-1 right-1 cursor-nwse-resize px-1 text-slate-700 hover:text-sky-300"
                     onPointerDown={(event) => beginLayoutChange(event, card, 'resize')}
-                    title="Drag to resize"
+                    title={t('visualizations.dragResize')}
                     type="button"
                   >
                     ◢
@@ -1736,7 +1813,7 @@ export function VisualizationsPage({ user }: { user: User }) {
             ))}
           </div>
         ) : (
-          <p className="mt-5 text-slate-500">No dashboard has been published.</p>
+          <p className="mt-5 text-slate-500">{t('visualizations.noDashboard')}</p>
         )}
       </section>
       <ContextMenu menu={contextMenu} onClose={() => setContextMenu(undefined)} />
