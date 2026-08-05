@@ -291,15 +291,50 @@ a {
 
 .workspace-hero {
   background:
-    linear-gradient(120deg, rgb(14 116 144 / 0.13), transparent 52%),
-    linear-gradient(300deg, rgb(217 154 43 / 0.09), transparent 45%),
+    linear-gradient(120deg, rgb(14 116 144 / 0.16), transparent 54%),
+    linear-gradient(300deg, rgb(217 154 43 / 0.1), transparent 46%),
     color-mix(in srgb, var(--color-slate-900) 94%, transparent);
   box-shadow:
     0 1px 2px rgb(15 23 42 / 0.05),
     0 18px 45px rgb(15 23 42 / 0.07);
 }
 
+.workspace-hero::after {
+  position: absolute;
+  z-index: -1;
+  top: -9rem;
+  right: -7rem;
+  width: 24rem;
+  height: 24rem;
+  border-radius: 999px;
+  background: rgb(56 189 248 / 0.1);
+  content: '';
+  filter: blur(48px);
+}
+
+.workspace-trace-panel {
+  background:
+    linear-gradient(145deg, rgb(14 116 144 / 0.1), transparent 48%),
+    color-mix(in srgb, var(--color-slate-950) 74%, transparent);
+  backdrop-filter: blur(16px);
+}
+
+.workspace-trace-step {
+  transition:
+    border-color 180ms ease,
+    transform 180ms ease,
+    background-color 180ms ease;
+}
+
+.workspace-trace-step:hover {
+  border-color: rgb(56 189 248 / 0.35);
+  background-color: color-mix(in srgb, var(--color-slate-900) 88%, var(--color-sky-400));
+  transform: translateY(-2px);
+}
+
 .workspace-card {
+  --workspace-accent: var(--color-sky-400);
+
   overflow: hidden;
   transition:
     transform 180ms ease,
@@ -307,13 +342,31 @@ a {
     box-shadow 180ms ease;
 }
 
+.workspace-card[data-accent='teal'] {
+  --workspace-accent: #14b8a6;
+}
+
+.workspace-card[data-accent='amber'] {
+  --workspace-accent: #d99a2b;
+}
+
 .workspace-card::before {
   position: absolute;
   inset: 0 auto 0 0;
   width: 3px;
-  background: linear-gradient(to bottom, var(--color-sky-400), rgb(217 154 43 / 0.85));
+  background: linear-gradient(to bottom, var(--workspace-accent), transparent 92%);
   content: '';
-  opacity: 0.75;
+  opacity: 0.9;
+}
+
+.workspace-card-icon {
+  border-color: color-mix(in srgb, var(--workspace-accent) 28%, transparent);
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--workspace-accent) 18%, transparent),
+    var(--color-slate-900)
+  );
+  color: var(--workspace-accent);
 }
 
 .workspace-card:hover {

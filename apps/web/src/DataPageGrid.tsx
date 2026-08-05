@@ -4,6 +4,7 @@ import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   useEffect,
+  useId,
   useRef,
   useState,
 } from 'react';
@@ -21,6 +22,7 @@ import type {
   RecordViewConfig,
 } from './DataPageTypes.js';
 import { displayFieldValue, displayValue } from './DataPageViews.js';
+import { IconAction } from './IconAction.js';
 import { useI18n } from './i18n.js';
 
 const calculatedFieldTypeSet = new Set<FieldType>(['formula', 'lookup', 'rollup']);
@@ -315,6 +317,7 @@ export function GridCell({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const committing = useRef(false);
+  const editTooltipId = useId();
 
   useEffect(() => {
     if (!editing) setDraft(gridEditorDraft(field, value));
@@ -368,8 +371,9 @@ export function GridCell({
   if (!editing) {
     return (
       <button
+        aria-describedby={editTooltipId}
         aria-label={t('data.editCell', { label, record: recordName })}
-        className={`group flex w-full items-center justify-between gap-2 px-2.5 text-left text-xs outline-none hover:bg-sky-500/10 focus:bg-sky-500/10 focus:ring-1 focus:ring-inset focus:ring-sky-400 ${comfortable ? 'min-h-11 py-2' : 'min-h-8 py-1'}`}
+        className={`group relative flex w-full items-center justify-between gap-2 px-2.5 text-left text-xs outline-none hover:bg-sky-500/10 focus:bg-sky-500/10 focus:ring-1 focus:ring-inset focus:ring-sky-400 ${comfortable ? 'min-h-11 py-2' : 'min-h-8 py-1'}`}
         onDoubleClick={beginEditing}
         onKeyDown={(event) => {
           if (event.key === 'Enter' || event.key === 'F2') {
@@ -377,7 +381,7 @@ export function GridCell({
             beginEditing();
           }
         }}
-        title={t('data.doubleClickEdit')}
+        title={t('data.editCell', { label, record: recordName })}
         type="button"
       >
         {field ? (
@@ -385,8 +389,18 @@ export function GridCell({
         ) : (
           <span className="block max-w-64 truncate text-slate-300">{displayValue(value)}</span>
         )}
-        <span className="invisible text-xs text-sky-400 group-hover:visible group-focus:visible">
-          {t('data.edit')}
+        <span
+          aria-hidden="true"
+          className="invisible grid size-6 shrink-0 place-items-center rounded text-sm text-sky-400 group-hover:visible group-focus:visible"
+        >
+          ✎
+        </span>
+        <span
+          className="pointer-events-none absolute bottom-[calc(100%+0.35rem)] right-1 z-[80] whitespace-nowrap rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-[10px] font-medium leading-none text-slate-200 opacity-0 shadow-xl transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+          id={editTooltipId}
+          role="tooltip"
+        >
+          {t('data.editCell', { label, record: recordName })}
         </span>
       </button>
     );
@@ -494,26 +508,21 @@ export function GridCell({
             {t('data.pasteStructured')}
           </span>
         )}
-        <button
-          aria-label={t('data.saveField', { label })}
-          className="rounded px-2 py-1 text-xs text-emerald-300 hover:bg-emerald-500/10"
+        <IconAction
           disabled={saving}
+          icon={saving ? '…' : '✓'}
+          label={t('data.saveField', { label })}
           onMouseDown={(event) => event.preventDefault()}
           onClick={() => void commit()}
-          type="button"
-        >
-          {saving ? t('data.saving') : t('common.save')}
-        </button>
-        <button
-          aria-label={t('data.cancelField', { label })}
-          className="rounded px-2 py-1 text-xs text-slate-400 hover:bg-slate-800"
+          tone="success"
+        />
+        <IconAction
           disabled={saving}
+          icon="×"
+          label={t('data.cancelField', { label })}
           onMouseDown={(event) => event.preventDefault()}
           onClick={cancelEditing}
-          type="button"
-        >
-          {t('common.cancel')}
-        </button>
+        />
       </div>
       {error && (
         <p aria-live="polite" className="px-1 pt-1 text-xs text-rose-300">
@@ -793,26 +802,19 @@ export function InlineRecordRow({
         </td>
         <td className="border-b border-sky-500/30 px-1">
           <div className="flex items-center justify-center gap-0.5">
-            <button
-              aria-label={t('data.saveInlineRecord')}
-              className="rounded px-2 py-1 text-base text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50"
+            <IconAction
               disabled={saving}
+              icon={saving ? '…' : '✓'}
+              label={t('data.saveInlineRecord')}
               onClick={() => void save()}
-              title={t('data.saveRow')}
-              type="button"
-            >
-              {saving ? '…' : '✓'}
-            </button>
-            <button
-              aria-label={t('data.cancelInlineRecord')}
-              className="rounded px-2 py-1 text-base text-slate-500 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-50"
+              tone="success"
+            />
+            <IconAction
               disabled={saving}
+              icon="×"
+              label={t('data.cancelInlineRecord')}
               onClick={onCancel}
-              title={t('data.cancelEscape')}
-              type="button"
-            >
-              ×
-            </button>
+            />
           </div>
         </td>
       </tr>

@@ -9,6 +9,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -25,6 +26,7 @@ import type { WorkspaceDataContext } from './DataPageTypes.js';
 import { BrandMark } from './BrandMark.js';
 import { I18nProvider, useI18n } from './i18n.js';
 import { ServiceShell } from './ServiceSidebar.js';
+import { useModalDialog } from './useModalDialog.js';
 
 const DataPage = lazy(() =>
   import('./DataPage.js').then((module) => ({ default: module.DataPage })),
@@ -37,6 +39,9 @@ const FilesDatasetsPage = lazy(() =>
 );
 const TasksPage = lazy(() =>
   import('./TasksPage.js').then((module) => ({ default: module.TasksPage })),
+);
+const MilestonesPage = lazy(() =>
+  import('./MilestonesPage.js').then((module) => ({ default: module.MilestonesPage })),
 );
 
 const VisualizationsPage = lazy(() =>
@@ -613,8 +618,21 @@ function WorkspacesPage({ user }: { user: User }) {
   const [editError, setEditError] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
   const [showCreateWorkspace, setShowCreateWorkspace] = useState(false);
+  const [workspaceSearch, setWorkspaceSearch] = useState('');
+  const createWorkspaceDialogRef = useModalDialog<HTMLDivElement>(showCreateWorkspace, () => {
+    if (!creating) setShowCreateWorkspace(false);
+  });
   const openWorkspaceLabel = locale === 'ko' ? '워크스페이스 열기' : 'Open workspace';
   const editingWorkspace = items.find((workspace) => workspace.id === editingWorkspaceId);
+  const filteredItems = useMemo(() => {
+    const query = workspaceSearch.trim().toLocaleLowerCase(locale);
+    if (!query) return items;
+    return items.filter((workspace) =>
+      [workspace.name, workspace.slug, workspace.description].some((value) =>
+        (value ?? '').toLocaleLowerCase(locale).includes(query),
+      ),
+    );
+  }, [items, locale, workspaceSearch]);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (creating) return;
@@ -665,97 +683,154 @@ function WorkspacesPage({ user }: { user: User }) {
   }
   return (
     <>
-      <section className="workspace-hero relative isolate overflow-hidden rounded-3xl border border-slate-800/80 p-6 sm:p-8">
-        <div aria-hidden="true" className="product-grid absolute inset-0 -z-10 opacity-50" />
-        <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-          <div className="max-w-2xl">
-            <p className="font-mono text-xs font-semibold uppercase tracking-[0.2em] text-sky-400">
-              {t('sidebar.organization')}
-            </p>
-            <div className="mt-2 flex items-center gap-3">
-              <h1 className="text-4xl font-semibold tracking-[-0.035em] sm:text-5xl">
-                {t('common.workspaces')}
-              </h1>
-              <HelpTip label={t('workspaces.about')}>{t('workspaces.description')}</HelpTip>
+      <section className="workspace-hero relative isolate overflow-hidden rounded-xl border border-slate-800/80 p-4 sm:p-5">
+        <div aria-hidden="true" className="product-grid absolute inset-0 -z-10 opacity-55" />
+        <div className="grid items-center gap-4 lg:grid-cols-[minmax(0,1fr)_auto]">
+          <div>
+            <div>
+              <div className="flex items-center gap-3">
+                <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-sky-400">
+                  {t('workspaces.homeEyebrow')}
+                </p>
+                <span className="h-px w-8 bg-gradient-to-r from-sky-400/70 to-transparent" />
+              </div>
+              <div className="mt-1.5 flex items-center gap-2">
+                <h1 className="max-w-2xl text-2xl font-semibold tracking-[-0.03em]">
+                  {t('workspaces.welcome', { name: user.displayName })}
+                </h1>
+                <HelpTip label={t('workspaces.about')}>{t('workspaces.description')}</HelpTip>
+              </div>
+              <p className="mt-1.5 max-w-2xl text-xs leading-5 text-slate-400 sm:text-sm">
+                {t('workspaces.homeIntro')}
+              </p>
             </div>
-            <p className="mt-3 max-w-xl text-sm leading-relaxed text-slate-400">
-              {t('workspaces.description')}
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="rounded-xl border border-slate-800/80 bg-slate-900/75 px-4 py-2.5 shadow-sm">
-              <span className="block text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                {t('common.workspaces')}
-              </span>
-              <strong className="mt-0.5 block text-lg text-slate-100">{items.length}</strong>
-            </div>
-            {allowed(user, 'workspace.manage') && (
-              <Button onClick={() => setShowCreateWorkspace(true)} type="button">
-                <span aria-hidden="true" className="mr-1 text-base leading-none">
-                  +
-                </span>
-                {t('workspaces.create')}
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {allowed(user, 'workspace.manage') && (
+                <Button onClick={() => setShowCreateWorkspace(true)} type="button">
+                  <span aria-hidden="true" className="mr-1 text-base leading-none">
+                    +
+                  </span>
+                  {t('workspaces.create')}
+                </Button>
+              )}
+              <Button asChild variant="quiet">
+                <Link to="/get-started">{t('workspaces.guidedSetup')} →</Link>
               </Button>
-            )}
+              <span className="inline-flex items-center gap-2 rounded-full border border-slate-800/80 bg-slate-950/35 px-2.5 py-1 text-[11px] text-slate-400">
+                <span className="status-dot size-1.5 rounded-full bg-emerald-400" />
+                {t('workspaces.activeCount', { count: items.length })}
+              </span>
+            </div>
           </div>
-        </div>
-        <div className="mt-7 flex flex-wrap items-center gap-2 text-xs text-slate-400">
-          <span className="rounded-full border border-slate-800/80 bg-slate-900/65 px-3 py-1.5">
-            ◆ {t('workspaces.traceable')}
-          </span>
-          <span className="rounded-full border border-slate-800/80 bg-slate-900/65 px-3 py-1.5">
-            ◇ {t('workspaces.engineeringReady')}
-          </span>
-          <span className="rounded-full border border-slate-800/80 bg-slate-900/65 px-3 py-1.5">
-            ⌂ {t('workspaces.selfHosted')}
-          </span>
+
+          <aside
+            aria-label={t('workspaces.traceFlow')}
+            className="workspace-trace-panel rounded-xl border border-slate-700/70 bg-slate-950/45 p-3 lg:w-[30rem]"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-xs font-semibold text-slate-200">{t('workspaces.traceFlow')}</h2>
+              <span className="rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-emerald-300">
+                {t('workspaces.traceReady')}
+              </span>
+            </div>
+            <div className="workspace-trace-flow mt-2 grid grid-cols-4 gap-1.5">
+              {[
+                ['01', t('workspaces.traceEvidence')],
+                ['02', t('workspaces.traceData')],
+                ['03', t('workspaces.traceDecision')],
+                ['04', t('workspaces.traceAction')],
+              ].map(([step, label]) => (
+                <div
+                  className="workspace-trace-step relative rounded-lg border border-slate-800/85 bg-slate-900/70 px-2 py-1.5"
+                  key={step}
+                >
+                  <span className="font-mono text-[8px] text-sky-400">{step}</span>
+                  <strong className="mt-0.5 block truncate text-[10px] font-medium text-slate-300">
+                    {label}
+                  </strong>
+                </div>
+              ))}
+            </div>
+          </aside>
         </div>
       </section>
       <ErrorText>{error}</ErrorText>
-      <div className="mt-6 flex items-center justify-between gap-4">
-        <h2 className="text-lg font-semibold text-slate-200">
-          {t('workspaces.count', { count: items.length })}
-        </h2>
+      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-sky-400">
+            {t('workspaces.portfolio')}
+          </p>
+          <h2 className="mt-0.5 text-lg font-semibold tracking-tight text-slate-100">
+            {t('workspaces.yourWorkspaces')}
+          </h2>
+          <p aria-live="polite" className="text-[11px] text-slate-500">
+            {workspaceSearch
+              ? t('workspaces.results', { count: filteredItems.length, total: items.length })
+              : t('workspaces.count', { count: items.length })}
+          </p>
+        </div>
+        <div className="relative w-full sm:max-w-xs">
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-500"
+          >
+            ⌕
+          </span>
+          <input
+            aria-label={t('workspaces.searchLabel')}
+            className={`${inputClass} h-9 pl-9 pr-9`}
+            onChange={(event) => setWorkspaceSearch(event.target.value)}
+            placeholder={t('workspaces.searchPlaceholder')}
+            type="search"
+            value={workspaceSearch}
+          />
+          {workspaceSearch && (
+            <button
+              aria-label={t('workspaces.clearSearch')}
+              className="absolute right-1.5 top-1/2 grid size-7 -translate-y-1/2 place-items-center rounded-md text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+              onClick={() => setWorkspaceSearch('')}
+              type="button"
+            >
+              ×
+            </button>
+          )}
+        </div>
       </div>
-      <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      <div className="mt-3 grid gap-3 md:grid-cols-2 min-[1180px]:grid-cols-3">
         {loading &&
           Array.from({ length: 3 }, (_, index) => (
             <div
               aria-hidden="true"
-              className="min-h-64 animate-pulse rounded-2xl border border-slate-800 bg-slate-900/55 p-6"
+              className="min-h-44 animate-pulse rounded-xl border border-slate-800 bg-slate-900/55 p-4"
               key={index}
             >
               <div className="size-11 rounded-xl bg-slate-800" />
-              <div className="mt-6 h-6 w-2/3 rounded bg-slate-800" />
-              <div className="mt-3 h-3 w-1/2 rounded bg-slate-800/80" />
-              <div className="mt-7 h-10 rounded bg-slate-800/60" />
+              <div className="mt-4 h-5 w-2/3 rounded bg-slate-800" />
+              <div className="mt-2 h-3 w-1/2 rounded bg-slate-800/80" />
+              <div className="mt-4 h-8 rounded bg-slate-800/60" />
             </div>
           ))}
-        {items.map((workspace) => (
+        {filteredItems.map((workspace, index) => (
           <article
-            className="workspace-card group relative rounded-2xl border border-slate-800/90 bg-slate-900/85 shadow-lg shadow-slate-950/10 hover:border-sky-500/55"
+            className="workspace-card group relative rounded-xl border border-slate-800/90 bg-slate-900/85 shadow-lg shadow-slate-950/10 hover:border-sky-500/55"
+            data-accent={['sky', 'teal', 'amber'][index % 3]}
             key={workspace.id}
           >
-            <Link
-              className="block p-5 sm:p-6"
-              to={`/workspaces/${workspace.publicId ?? workspace.id}`}
-            >
+            <Link className="block p-4" to={`/workspaces/${workspace.publicId ?? workspace.id}`}>
               <div className="flex items-start justify-between gap-4">
-                <span className="grid size-11 place-items-center rounded-xl border border-sky-500/20 bg-gradient-to-br from-sky-400/20 to-slate-800 font-mono text-sm font-semibold text-sky-300 shadow-inner">
+                <span className="workspace-card-icon grid size-9 place-items-center rounded-lg border font-mono text-xs font-semibold shadow-inner">
                   {workspace.name.slice(0, 1).toUpperCase()}
                 </span>
                 <span className="grid size-8 place-items-center rounded-full border border-slate-800 bg-slate-950/45 text-slate-500 transition group-hover:translate-x-1 group-hover:border-sky-500/30 group-hover:text-sky-300">
                   →
                 </span>
               </div>
-              <h3 className="mt-5 text-xl font-semibold tracking-[-0.02em]">{workspace.name}</h3>
-              <p className="mt-1 font-mono text-[11px] text-slate-500">
-                {workspace.slug} · {workspace.publicId ?? workspace.id}
-              </p>
-              <p className="mt-4 line-clamp-2 min-h-10 text-sm leading-relaxed text-slate-400">
+              <h3 className="mt-3 text-base font-semibold tracking-[-0.01em]">{workspace.name}</h3>
+              <p className="mt-1 font-mono text-[11px] text-slate-500">/{workspace.slug}</p>
+              <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-400">
                 {workspace.description || t('workspaces.open')}
               </p>
-              <div className="mt-5 flex items-center gap-2 border-t border-slate-800/80 pt-4 text-[11px] font-medium text-slate-500">
+              <div className="mt-3 flex items-center gap-2 border-t border-slate-800/80 pt-3 text-[10px] font-medium text-slate-500">
                 <span className="status-dot size-1.5 rounded-full bg-emerald-400" />
                 {openWorkspaceLabel}
               </div>
@@ -763,7 +838,7 @@ function WorkspacesPage({ user }: { user: User }) {
             {allowed(user, 'workspace.manage') && (
               <button
                 aria-label={`${t('workspaces.edit')} ${workspace.name}`}
-                className="absolute right-14 top-5 grid size-8 place-items-center rounded-full text-base text-slate-500 hover:bg-slate-800 hover:text-sky-300 sm:opacity-0 sm:group-hover:opacity-100 sm:focus:opacity-100"
+                className="absolute right-12 top-4 grid size-8 place-items-center rounded-full text-base text-slate-500 hover:bg-slate-800 hover:text-sky-300 sm:opacity-0 sm:group-hover:opacity-100 sm:focus:opacity-100"
                 onClick={() => {
                   setEditingWorkspaceId(workspace.id);
                   setEditError('');
@@ -775,26 +850,48 @@ function WorkspacesPage({ user }: { user: User }) {
             )}
           </article>
         ))}
-        {!loading && allowed(user, 'workspace.manage') && !showCreateWorkspace && (
-          <button
-            aria-label={t('workspaces.create')}
-            className="group min-h-56 rounded-2xl border border-dashed border-slate-700 bg-slate-900/30 p-6 text-left transition hover:border-sky-500/50 hover:bg-sky-500/5"
-            onClick={() => setShowCreateWorkspace(true)}
-            type="button"
-          >
-            <span className="grid size-11 place-items-center rounded-xl border border-slate-700 bg-slate-900 text-xl text-sky-300 transition group-hover:scale-105 group-hover:border-sky-500/40">
-              +
-            </span>
-            <strong className="mt-5 block text-lg text-slate-200">{t('workspaces.create')}</strong>
-            <span className="mt-2 block max-w-xs text-sm leading-relaxed text-slate-500">
-              {t('workspaces.stableSlug')}
-            </span>
-          </button>
-        )}
+        {!loading &&
+          allowed(user, 'workspace.manage') &&
+          !showCreateWorkspace &&
+          !workspaceSearch && (
+            <button
+              aria-label={t('workspaces.create')}
+              className="group min-h-44 rounded-xl border border-dashed border-slate-700 bg-slate-900/30 p-4 text-left transition hover:border-sky-500/50 hover:bg-sky-500/5"
+              onClick={() => setShowCreateWorkspace(true)}
+              type="button"
+            >
+              <span className="grid size-9 place-items-center rounded-lg border border-slate-700 bg-slate-900 text-lg text-sky-300 transition group-hover:scale-105 group-hover:border-sky-500/40">
+                +
+              </span>
+              <strong className="mt-3 block text-base text-slate-200">
+                {t('workspaces.create')}
+              </strong>
+              <span className="mt-1 block max-w-xs text-xs leading-5 text-slate-500">
+                {t('workspaces.stableSlug')}
+              </span>
+            </button>
+          )}
         {!loading && items.length === 0 && !error && (
           <p className="rounded-2xl border border-dashed border-slate-700 p-8 text-slate-400">
             {t('workspaces.empty')}
           </p>
+        )}
+        {!loading && items.length > 0 && filteredItems.length === 0 && (
+          <div className="col-span-full rounded-2xl border border-dashed border-slate-700 bg-slate-900/35 px-6 py-12 text-center">
+            <span
+              aria-hidden="true"
+              className="mx-auto grid size-11 place-items-center rounded-xl border border-slate-700 bg-slate-900 text-lg text-slate-500"
+            >
+              ⌕
+            </span>
+            <h3 className="mt-4 text-lg font-semibold text-slate-200">
+              {t('workspaces.noSearchResults')}
+            </h3>
+            <p className="mt-1 text-sm text-slate-500">{t('workspaces.noSearchResultsBody')}</p>
+            <Button className="mt-5" onClick={() => setWorkspaceSearch('')} variant="quiet">
+              {t('workspaces.showAll')}
+            </Button>
+          </div>
         )}
       </div>
       {editingWorkspace && allowed(user, 'workspace.manage') && (
@@ -860,59 +957,104 @@ function WorkspacesPage({ user }: { user: User }) {
         </form>
       )}
       {allowed(user, 'workspace.manage') && showCreateWorkspace && (
-        <form
-          className="mt-8 max-w-3xl rounded-2xl border border-sky-700/35 bg-slate-900/85 p-5 shadow-xl shadow-slate-950/10 sm:p-7"
-          onSubmit={(event) => void submit(event)}
+        <div
+          className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-6"
+          role="presentation"
         >
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex items-center gap-2">
-              <h2 className="text-xl font-semibold">{t('workspaces.create')}</h2>
-              <HelpTip label={t('workspaces.addressHelp')}>{t('workspaces.stableSlug')}</HelpTip>
-            </div>
-            <button
-              aria-label={t('workspaces.closeCreator')}
-              className="grid size-8 place-items-center rounded-full text-lg text-slate-500 hover:bg-slate-800 hover:text-slate-200"
-              onClick={() => setShowCreateWorkspace(false)}
-              type="button"
+          <button
+            aria-label={t('workspaces.closeCreator')}
+            className="absolute inset-0 cursor-default bg-slate-950/70 backdrop-blur-sm"
+            data-modal-backdrop
+            disabled={creating}
+            onClick={() => setShowCreateWorkspace(false)}
+            type="button"
+          />
+          <div
+            aria-labelledby="workspace-creator-title"
+            aria-modal="true"
+            className="relative max-h-[min(720px,calc(100vh-2rem))] w-full max-w-2xl overflow-y-auto rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl shadow-black/50"
+            ref={createWorkspaceDialogRef}
+            role="dialog"
+            tabIndex={-1}
+          >
+            <header className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-slate-800 bg-slate-950/90 px-5 py-4 backdrop-blur-xl sm:px-6">
+              <div>
+                <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-sky-400">
+                  {t('sidebar.organization')}
+                </p>
+                <div className="mt-1 flex items-center gap-2">
+                  <h2 className="text-2xl font-semibold" id="workspace-creator-title">
+                    {t('workspaces.create')}
+                  </h2>
+                  <HelpTip align="right" label={t('workspaces.addressHelp')}>
+                    {t('workspaces.stableSlug')}
+                  </HelpTip>
+                </div>
+              </div>
+              <button
+                aria-label={t('workspaces.closeCreator')}
+                className="grid size-9 place-items-center rounded-lg border border-slate-700 text-xl text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+                disabled={creating}
+                onClick={() => setShowCreateWorkspace(false)}
+                type="button"
+              >
+                ×
+              </button>
+            </header>
+            <form
+              className="grid gap-4 p-5 sm:grid-cols-2 sm:p-6"
+              onSubmit={(event) => void submit(event)}
             >
-              ×
-            </button>
+              <label className={formLabelClass}>
+                {t('workspaces.name')}
+                <input
+                  className={inputClass}
+                  data-dialog-initial-focus
+                  name="name"
+                  placeholder={t('workspaces.nameExample')}
+                  required
+                />
+              </label>
+              <label className={formLabelClass}>
+                {t('workspaces.key')}
+                <input
+                  className={inputClass}
+                  name="slug"
+                  pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
+                  placeholder={t('workspaces.keyExample')}
+                  required
+                  title={t('workspaces.slugHint')}
+                />
+              </label>
+              <label className={`${formLabelClass} sm:col-span-2`}>
+                {t('workspaces.descriptionLabel')}
+                <textarea
+                  className={`${inputClass} min-h-24 resize-y`}
+                  name="description"
+                  placeholder={t('workspaces.descriptionPlaceholder')}
+                />
+              </label>
+              {formError && (
+                <div className="sm:col-span-2">
+                  <ErrorText>{formError}</ErrorText>
+                </div>
+              )}
+              <div className="flex justify-end gap-2 border-t border-slate-800 pt-4 sm:col-span-2">
+                <Button
+                  disabled={creating}
+                  onClick={() => setShowCreateWorkspace(false)}
+                  type="button"
+                  variant="quiet"
+                >
+                  {t('common.cancel')}
+                </Button>
+                <Button disabled={creating} type="submit">
+                  {creating ? t('common.working') : t('workspaces.create')}
+                </Button>
+              </div>
+            </form>
           </div>
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <label className={formLabelClass}>
-              {t('workspaces.name')}
-              <input
-                className={inputClass}
-                name="name"
-                placeholder={t('workspaces.nameExample')}
-                required
-              />
-            </label>
-            <label className={formLabelClass}>
-              {t('workspaces.key')}
-              <input
-                className={inputClass}
-                name="slug"
-                pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
-                placeholder={t('workspaces.keyExample')}
-                required
-                title={t('workspaces.slugHint')}
-              />
-            </label>
-          </div>
-          <label className="mt-4 block text-sm text-slate-300">
-            {t('workspaces.descriptionLabel')}
-            <textarea
-              className={`${inputClass} min-h-20 resize-y`}
-              name="description"
-              placeholder={t('workspaces.descriptionPlaceholder')}
-            />
-          </label>
-          <Button className="mt-5" disabled={creating} type="submit">
-            {creating ? t('common.working') : t('workspaces.create')}
-          </Button>
-          <ErrorText>{formError}</ErrorText>
-        </form>
+        </div>
       )}
     </>
   );
@@ -1586,7 +1728,7 @@ function ProjectPage({ user }: { user: User }) {
         </div>
         <nav
           aria-label={t('projects.quickLinks')}
-          className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4"
+          className="mt-4 grid gap-4 sm:grid-cols-2 min-[1280px]:grid-cols-5"
         >
           {allowed(user, 'record.read') && (
             <Link
@@ -1668,6 +1810,21 @@ function ProjectPage({ user }: { user: User }) {
               </span>
             </Link>
           )}
+          <Link
+            className="group rounded-2xl border border-slate-800 bg-slate-900/45 p-5 transition hover:-translate-y-0.5 hover:border-cyan-500/50 hover:bg-cyan-500/5"
+            to={`${basePath}/milestones`}
+          >
+            <span className="grid size-10 place-items-center rounded-xl bg-cyan-500/10 text-lg text-cyan-300">
+              ◆
+            </span>
+            <span className="mt-5 flex items-center justify-between font-semibold">
+              <span>{t('milestones.nav')}</span>
+              <span className="text-cyan-400 transition group-hover:translate-x-1">→</span>
+            </span>
+            <span className="mt-2 block text-sm text-slate-500">
+              {t('projects.milestoneSummary')}
+            </span>
+          </Link>
         </nav>
       </section>
 
@@ -2775,6 +2932,16 @@ function AppContent() {
             user && (
               <PageLoader label="tasks">
                 <TasksPage user={user} />
+              </PageLoader>
+            ),
+          )}
+        />
+        <Route
+          path="/workspaces/:workspaceId/projects/:projectId/milestones"
+          element={protectedElement(
+            user && (
+              <PageLoader label="milestones">
+                <MilestonesPage user={user} />
               </PageLoader>
             ),
           )}

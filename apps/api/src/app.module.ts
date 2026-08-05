@@ -6,6 +6,7 @@ import { EngineeringTypesController } from './engineering-types.controller.js';
 import { FilesDatasetsController } from './files-datasets.controller.js';
 import { VisualizationsController } from './visualizations.controller.js';
 import { TasksController } from './tasks.controller.js';
+import { MilestonesController } from './milestones.controller.js';
 import { OidcController } from './oidc.controller.js';
 import { MetricsController } from './metrics.controller.js';
 import { PilotController } from './pilot.controller.js';
@@ -21,6 +22,7 @@ import { RUNTIME } from './runtime.provider.js';
     FilesDatasetsController,
     VisualizationsController,
     TasksController,
+    MilestonesController,
     OidcController,
     MetricsController,
     PilotController,

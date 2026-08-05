@@ -118,10 +118,12 @@ export function ServiceShell({
   const [commandOpen, setCommandOpen] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
   const [commandIndex, setCommandIndex] = useState(0);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const mobileMenuButtonRef = useRef<HTMLButtonElement>(null);
   const commandButtonRef = useRef<HTMLButtonElement>(null);
+  const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
   const closeCommands = useCallback(() => {
     setCommandOpen(false);
@@ -137,6 +139,11 @@ export function ServiceShell({
     commandOpen,
     closeCommands,
     commandButtonRef,
+  );
+  const settingsDialogRef = useModalDialog<HTMLElement>(
+    settingsOpen,
+    () => setSettingsOpen(false),
+    settingsButtonRef,
   );
 
   const loadWorkspaces = useCallback(async () => {
@@ -260,6 +267,13 @@ export function ServiceShell({
           visible: can(user, 'dataset.read'),
         },
         {
+          to: `${projectBase}/milestones`,
+          label: t('milestones.nav'),
+          icon: '◆',
+          end: false,
+          visible: true,
+        },
+        {
           to: `${projectBase}/tasks`,
           label: t('common.tasks'),
           icon: '✓',
@@ -329,6 +343,10 @@ export function ServiceShell({
   function runCommand(command: (typeof commands)[number]) {
     closeCommands();
     void command.run();
+  }
+  function openSettings() {
+    setSettingsOpen(true);
+    if (isMobile) setMobileOpen(false);
   }
   const sidebarExpanded = expanded || isMobile;
 
@@ -563,93 +581,37 @@ export function ServiceShell({
                     </Link>
                   </div>
                 </details>
-                {(can(user, 'member.manage') || can(user, 'audit.read')) && (
-                  <details>
-                    <summary className="flex h-9 cursor-pointer list-none items-center gap-2.5 rounded-lg px-2.5 text-xs text-slate-400 marker:content-none hover:bg-slate-800 hover:text-slate-200">
-                      <ServiceIcon name="settings" /> {t('sidebar.settings')}
-                    </summary>
-                    <div className="ml-5 grid gap-0.5 border-l border-slate-800 pl-2">
-                      {can(user, 'member.manage') && (
-                        <Link
-                          className="rounded px-2 py-1 text-xs text-slate-500 hover:text-sky-300"
-                          to="/members"
-                        >
-                          {t('common.members')}
-                        </Link>
-                      )}
-                      {can(user, 'audit.read') && (
-                        <Link
-                          className="rounded px-2 py-1 text-xs text-slate-500 hover:text-sky-300"
-                          to="/audit"
-                        >
-                          {t('common.auditLog')}
-                        </Link>
-                      )}
-                    </div>
-                  </details>
-                )}
-                <details>
-                  <summary
-                    aria-label={t('sidebar.openUserMenu')}
-                    className="flex min-h-9 cursor-pointer list-none items-center gap-2 rounded-md px-2 marker:content-none hover:bg-slate-800"
-                    role="button"
-                  >
-                    <span className="grid size-7 shrink-0 place-items-center rounded-full border border-slate-700 bg-slate-800 text-xs font-semibold text-sky-300">
-                      {user.displayName.slice(0, 1).toUpperCase()}
+                <button
+                  aria-haspopup="dialog"
+                  className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                  onClick={openSettings}
+                  ref={settingsButtonRef}
+                  type="button"
+                >
+                  <ServiceIcon name="settings" /> {t('sidebar.settings')}
+                </button>
+                <div className="flex min-h-9 items-center gap-2 border-t border-slate-800/80 px-2 pt-2">
+                  <span className="grid size-7 shrink-0 place-items-center rounded-full border border-slate-700 bg-slate-800 text-xs font-semibold text-sky-300">
+                    {user.displayName.slice(0, 1).toUpperCase()}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-xs font-medium text-slate-200">
+                      {user.displayName}
                     </span>
-                    <span className="min-w-0">
-                      <span className="block truncate text-xs font-medium text-slate-200">
-                        {user.displayName}
-                      </span>
-                      <span className="block text-[10px] uppercase tracking-wider text-slate-500">
-                        {user.role}
-                      </span>
-                    </span>
-                  </summary>
-                  <div className="mt-1 grid gap-0.5 rounded-md border border-slate-800 bg-slate-900 p-1">
-                    <label className="px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-slate-500">
-                      {t('language.label')}
-                      <select
-                        aria-label={t('language.label')}
-                        className="sidebar-utility-action mt-1 min-h-7 w-full rounded border border-slate-700 bg-slate-950 px-2 normal-case tracking-normal text-slate-300"
-                        value={locale}
-                        onChange={(event) => setLocale(event.target.value as 'en' | 'ko')}
-                      >
-                        <option value="en">{t('language.english')}</option>
-                        <option value="ko">{t('language.korean')}</option>
-                      </select>
-                    </label>
-                    <button
-                      aria-label={t('sidebar.switchTheme', {
-                        theme: t(theme === 'dark' ? 'theme.light' : 'theme.dark'),
-                      })}
-                      className="sidebar-utility-action min-h-7 rounded px-2 py-1 text-left text-slate-400 hover:bg-slate-800 hover:text-slate-200"
-                      onClick={onToggleTheme}
-                      type="button"
-                    >
-                      {theme === 'dark' ? t('sidebar.useLightTheme') : t('sidebar.useDarkTheme')}
-                    </button>
-                    <button
-                      aria-label={t('sidebar.signOut')}
-                      className="sidebar-utility-action min-h-7 rounded px-2 py-1 text-left text-rose-300 hover:bg-rose-500/10"
-                      onClick={() => void signOut()}
-                      type="button"
-                    >
-                      {t('sidebar.signOut')}
-                    </button>
-                  </div>
-                </details>
+                    <span className="block truncate text-[10px] text-slate-500">{user.email}</span>
+                  </span>
+                </div>
               </>
             ) : (
               <button
-                aria-label={t('sidebar.expandUserMenu')}
+                aria-label={t('sidebar.settings')}
+                aria-haspopup="dialog"
                 className="grid size-9 w-full place-items-center rounded-md hover:bg-slate-800"
-                onClick={() => setExpanded(true)}
+                onClick={openSettings}
+                ref={settingsButtonRef}
                 type="button"
               >
-                <span className="grid size-7 place-items-center rounded-full border border-slate-700 bg-slate-800 text-xs font-semibold text-sky-300">
-                  {user.displayName.slice(0, 1).toUpperCase()}
-                </span>
+                <ServiceIcon name="settings" />
               </button>
             )}
           </div>
@@ -685,7 +647,7 @@ export function ServiceShell({
             </button>
           </header>
           <main
-            className={`compact-page mx-auto w-full min-w-0 flex-1 ${dataWorkspace ? 'max-w-none px-3 py-3' : 'max-w-[1500px] px-5 py-7 lg:px-8'}`}
+            className={`compact-page mx-auto w-full min-w-0 flex-1 ${dataWorkspace ? 'max-w-none px-3 py-3' : 'max-w-[1500px] px-4 py-4 lg:px-5'}`}
             id="main-content"
           >
             <p aria-live="polite" className="sr-only">
@@ -694,6 +656,139 @@ export function ServiceShell({
             {children}
           </main>
         </div>
+        {settingsOpen && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6">
+            <button
+              aria-label={t('settings.close')}
+              className="absolute inset-0 cursor-default bg-slate-950/70 backdrop-blur-sm"
+              data-modal-backdrop
+              onClick={() => setSettingsOpen(false)}
+              type="button"
+            />
+            <section
+              aria-labelledby="service-settings-title"
+              aria-modal="true"
+              className="relative w-full max-w-md overflow-hidden rounded-xl border border-slate-700 bg-slate-950 shadow-2xl shadow-black/40"
+              ref={settingsDialogRef}
+              role="dialog"
+              tabIndex={-1}
+            >
+              <header className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
+                <div>
+                  <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-sky-400">
+                    {t('settings.preferences')}
+                  </p>
+                  <h2 className="mt-1 text-lg font-semibold" id="service-settings-title">
+                    {t('sidebar.settings')}
+                  </h2>
+                </div>
+                <button
+                  aria-label={t('settings.close')}
+                  className="grid size-8 place-items-center rounded-lg text-lg text-slate-500 hover:bg-slate-800 hover:text-slate-100"
+                  onClick={() => setSettingsOpen(false)}
+                  type="button"
+                >
+                  ×
+                </button>
+              </header>
+
+              <div className="grid gap-5 p-5">
+                <div className="grid grid-cols-[minmax(0,1fr)_9rem] items-center gap-4">
+                  <div>
+                    <label
+                      className="text-sm font-medium text-slate-200"
+                      htmlFor="settings-language"
+                    >
+                      {t('language.label')}
+                    </label>
+                    <p className="mt-0.5 text-xs text-slate-500">{t('settings.languageHelp')}</p>
+                  </div>
+                  <select
+                    className="min-h-9 rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm text-slate-200 outline-none focus:border-sky-400"
+                    data-dialog-initial-focus
+                    id="settings-language"
+                    value={locale}
+                    onChange={(event) => setLocale(event.target.value as 'en' | 'ko')}
+                  >
+                    <option value="en">{t('language.english')}</option>
+                    <option value="ko">{t('language.korean')}</option>
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-[minmax(0,1fr)_9rem] items-center gap-4 border-t border-slate-800 pt-5">
+                  <div>
+                    <span className="text-sm font-medium text-slate-200">
+                      {t('settings.theme')}
+                    </span>
+                    <p className="mt-0.5 text-xs text-slate-500">{t('settings.themeHelp')}</p>
+                  </div>
+                  <div className="grid grid-cols-2 rounded-lg border border-slate-700 bg-slate-900 p-1">
+                    {(['light', 'dark'] as const).map((option) => (
+                      <button
+                        aria-pressed={theme === option}
+                        className={`rounded-md px-2 py-1.5 text-xs font-medium ${theme === option ? 'bg-sky-400/15 text-sky-300' : 'text-slate-500 hover:text-slate-200'}`}
+                        key={option}
+                        onClick={() => {
+                          if (theme !== option) onToggleTheme();
+                        }}
+                        type="button"
+                      >
+                        {t(`theme.${option}`)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {(can(user, 'member.manage') || can(user, 'audit.read')) && (
+                  <div className="border-t border-slate-800 pt-5">
+                    <p className="text-sm font-medium text-slate-200">
+                      {t('settings.organization')}
+                    </p>
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      {can(user, 'member.manage') && (
+                        <Link
+                          className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-xs text-slate-400 hover:border-slate-700 hover:text-sky-300"
+                          onClick={() => setSettingsOpen(false)}
+                          to="/members"
+                        >
+                          {t('common.members')} →
+                        </Link>
+                      )}
+                      {can(user, 'audit.read') && (
+                        <Link
+                          className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-xs text-slate-400 hover:border-slate-700 hover:text-sky-300"
+                          onClick={() => setSettingsOpen(false)}
+                          to="/audit"
+                        >
+                          {t('common.auditLog')} →
+                        </Link>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex items-center gap-3 border-t border-slate-800 pt-5">
+                  <span className="grid size-9 shrink-0 place-items-center rounded-full border border-slate-700 bg-slate-800 text-sm font-semibold text-sky-300">
+                    {user.displayName.slice(0, 1).toUpperCase()}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <strong className="block truncate text-sm font-medium text-slate-200">
+                      {user.displayName}
+                    </strong>
+                    <span className="block truncate text-xs text-slate-500">{user.email}</span>
+                  </span>
+                  <button
+                    className="rounded-lg px-3 py-2 text-xs font-medium text-rose-300 hover:bg-rose-500/10"
+                    onClick={() => void signOut()}
+                    type="button"
+                  >
+                    {t('sidebar.signOut')}
+                  </button>
+                </div>
+              </div>
+            </section>
+          </div>
+        )}
         {commandOpen && (
           <div className="fixed inset-0 z-[90] flex justify-center bg-slate-950/70 px-4 pt-[12vh] backdrop-blur-sm">
             <button

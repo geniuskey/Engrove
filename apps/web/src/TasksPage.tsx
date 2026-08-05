@@ -7,6 +7,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import { Link, useParams } from 'react-router';
@@ -40,6 +41,16 @@ interface Task {
   archived_at: string | null;
   links: TaskLink[];
 }
+interface TaskStatusHistory {
+  id: string;
+  from_status: Status | null;
+  to_status: Status;
+  changed_at: string;
+  changed_by_name: string;
+}
+interface TaskDetail extends Task {
+  status_history: TaskStatusHistory[];
+}
 
 const columnAccent: Record<Status, string> = {
   todo: 'border-t-slate-500',
@@ -72,7 +83,15 @@ export function TasksPage({ user }: { user: User }) {
   const [dragOverStatus, setDragOverStatus] = useState<Status>();
   const [pendingTaskIds, setPendingTaskIds] = useState<Set<string>>(() => new Set());
   const [boardAnnouncement, setBoardAnnouncement] = useState('');
+  const [selectedTaskId, setSelectedTaskId] = useState('');
+  const [taskDetail, setTaskDetail] = useState<TaskDetail>();
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailSaving, setDetailSaving] = useState(false);
+  const detailRequestId = useRef(0);
   const creatorDialogRef = useModalDialog<HTMLDivElement>(creatorOpen, () => setCreatorOpen(false));
+  const taskDetailDialogRef = useModalDialog<HTMLElement>(Boolean(selectedTaskId), () =>
+    setSelectedTaskId(''),
+  );
   const columns: Array<{ status: Status; label: string }> = [
     { status: 'todo', label: t('tasks.todo') },
     { status: 'in_progress', label: t('tasks.inProgress') },
@@ -102,6 +121,30 @@ export function TasksPage({ user }: { user: User }) {
     }
   }, [base, t]);
   useEffect(() => void refresh(), [refresh]);
+  useEffect(() => {
+    if (!selectedTaskId) {
+      setTaskDetail(undefined);
+      setDetailLoading(false);
+      return;
+    }
+    const request = ++detailRequestId.current;
+    setDetailLoading(true);
+    void api<TaskDetail>(`${base}/tasks/${selectedTaskId}`)
+      .then(
+        (detail) => {
+          if (request === detailRequestId.current) setTaskDetail(detail);
+        },
+        (cause: unknown) => {
+          if (request !== detailRequestId.current) return;
+          setMessageTone('error');
+          setMessage(cause instanceof Error ? cause.message : t('tasks.operationError'));
+          setSelectedTaskId('');
+        },
+      )
+      .finally(() => {
+        if (request === detailRequestId.current) setDetailLoading(false);
+      });
+  }, [base, selectedTaskId, t]);
 
   async function mutate(operation: () => Promise<unknown>): Promise<boolean> {
     setBusy(true);
@@ -193,6 +236,42 @@ export function TasksPage({ user }: { user: User }) {
     }
   }
 
+  async function saveTaskDetail(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!taskDetail || detailSaving) return;
+    const data = new FormData(event.currentTarget);
+    setDetailSaving(true);
+    try {
+      const updated = await api<TaskDetail>(`${base}/tasks/${taskDetail.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          title: data.get('title'),
+          description: data.get('description'),
+          status: data.get('status'),
+          priority: data.get('priority'),
+          assigneeId: taskDetail.assignee_id ?? undefined,
+          dueDate: String(data.get('dueDate') ?? '') || undefined,
+          rowVersion: taskDetail.row_version,
+        }),
+      });
+      setTaskDetail(updated);
+      setTasks((current) =>
+        current.map((task) => (task.id === updated.id ? { ...task, ...updated } : task)),
+      );
+      setMessageTone('success');
+      setMessage(t('tasks.detailSaved'));
+    } catch (cause) {
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : t('tasks.operationError'));
+    } finally {
+      setDetailSaving(false);
+    }
+  }
+
+  function openTaskDetail(task: Task) {
+    setSelectedTaskId(task.id);
+  }
+
   function clearDragState() {
     setDraggingTaskId('');
     setDragOverStatus(undefined);
@@ -229,6 +308,15 @@ export function TasksPage({ user }: { user: User }) {
   }
 
   function handleTaskKeyDown(event: ReactKeyboardEvent<HTMLElement>, task: Task) {
+    if (
+      (event.key === 'Enter' || event.key === ' ') &&
+      event.currentTarget === event.target &&
+      !event.altKey
+    ) {
+      event.preventDefault();
+      openTaskDetail(task);
+      return;
+    }
     if (
       event.altKey &&
       allowed(user, 'task.update') &&
@@ -306,19 +394,6 @@ export function TasksPage({ user }: { user: User }) {
     setContextMenu(menuFromPointer(event, task.title, taskContextItems(task)));
   }
 
-  function openTaskMenuFromButton(event: ReactMouseEvent<HTMLButtonElement>, task: Task) {
-    event.preventDefault();
-    event.stopPropagation();
-    const bounds = event.currentTarget.getBoundingClientRect();
-    setContextMenu({
-      label: task.title,
-      x: bounds.right,
-      y: bounds.bottom,
-      items: taskContextItems(task),
-      returnFocus: event.currentTarget,
-    });
-  }
-
   function openTaskMenuFromKeyboard(event: ReactKeyboardEvent<HTMLElement>, task: Task) {
     const menu = menuFromKeyboard(event, task.title, taskContextItems(task));
     if (menu) setContextMenu(menu);
@@ -342,7 +417,7 @@ export function TasksPage({ user }: { user: User }) {
           <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
             {t('tasks.heading')}
           </h1>
-          <p className="mt-3 text-slate-400">{t('tasks.description')}</p>
+          <p className="mt-3 text-slate-400">{t('tasks.detailHelp')}</p>
           {allowed(user, 'task.update') && (
             <p className="mt-2 text-xs text-slate-500">{t('tasks.dragHint')}</p>
           )}
@@ -436,6 +511,10 @@ export function TasksPage({ user }: { user: User }) {
                           draggable={allowed(user, 'task.update') && !taskPending}
                           key={task.id}
                           onContextMenu={(event) => openTaskMenu(event, task)}
+                          onClick={(event) => {
+                            event.currentTarget.focus();
+                            openTaskDetail(task);
+                          }}
                           onDragEnd={clearDragState}
                           onDragStart={(event) => startTaskDrag(event, task)}
                           onKeyDown={(event) => handleTaskKeyDown(event, task)}
@@ -472,34 +551,6 @@ export function TasksPage({ user }: { user: User }) {
                                 t('tasks.linkCount', { count: task.links.length })}
                             </p>
                           )}
-                          <div className="mt-2 flex items-center gap-1.5">
-                            {allowed(user, 'task.update') && (
-                              <select
-                                aria-label={t('tasks.statusFor', { title: task.title })}
-                                className="h-8 min-w-0 flex-1 rounded-md border border-slate-800 bg-slate-900 px-2 text-xs text-slate-300 outline-none hover:border-slate-700 focus:border-sky-400"
-                                disabled={taskPending}
-                                value={task.status}
-                                onChange={(event) =>
-                                  void changeStatus(task, event.target.value as Status)
-                                }
-                              >
-                                {columns.map((candidate) => (
-                                  <option key={candidate.status} value={candidate.status}>
-                                    {candidate.label}
-                                  </option>
-                                ))}
-                              </select>
-                            )}
-                            <button
-                              aria-label={`${locale === 'ko' ? '작업 메뉴' : 'Task actions'}: ${task.title}`}
-                              className="grid size-8 shrink-0 place-items-center rounded-md border border-slate-800 text-sm text-slate-500 hover:border-slate-700 hover:bg-slate-900 hover:text-sky-300 disabled:opacity-50"
-                              disabled={taskPending}
-                              onClick={(event) => openTaskMenuFromButton(event, task)}
-                              type="button"
-                            >
-                              •••
-                            </button>
-                          </div>
                         </article>
                       );
                     })}
@@ -524,6 +575,10 @@ export function TasksPage({ user }: { user: User }) {
                 key={task.id}
                 onContextMenu={(event) => openTaskMenu(event, task)}
                 onKeyDown={(event) => openTaskMenuFromKeyboard(event, task)}
+                onClick={(event) => {
+                  event.currentTarget.focus();
+                  openTaskDetail(task);
+                }}
                 tabIndex={0}
               >
                 <time className="font-mono text-sky-300" dateTime={task.due_date ?? undefined}>
@@ -566,6 +621,177 @@ export function TasksPage({ user }: { user: User }) {
               </div>
             ))}
         </section>
+      )}
+      {selectedTaskId && (
+        <div className="fixed inset-0 z-[80] flex justify-end" role="presentation">
+          <button
+            aria-label={t('tasks.closeDetail')}
+            className="absolute inset-0 cursor-default bg-slate-950/65 backdrop-blur-sm"
+            data-modal-backdrop
+            onClick={() => setSelectedTaskId('')}
+            type="button"
+          />
+          <aside
+            aria-labelledby="task-detail-title"
+            aria-modal="true"
+            className="relative h-full w-full max-w-2xl overflow-y-auto border-l border-slate-700 bg-slate-950 shadow-2xl shadow-black/50"
+            ref={taskDetailDialogRef}
+            role="dialog"
+            tabIndex={-1}
+          >
+            <header className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-slate-800 bg-slate-950/90 px-5 py-4 backdrop-blur-xl sm:px-7">
+              <div className="min-w-0">
+                <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-sky-400">
+                  {t('tasks.detailEyebrow')}
+                </p>
+                <h2 className="mt-1 truncate text-2xl font-semibold" id="task-detail-title">
+                  {taskDetail?.title ?? t('common.loading')}
+                </h2>
+                {taskDetail && (
+                  <p className="mt-1 font-mono text-[10px] text-slate-600">
+                    {taskDetail.id} · v{taskDetail.row_version}
+                  </p>
+                )}
+              </div>
+              <button
+                aria-label={t('tasks.closeDetail')}
+                className="grid size-9 shrink-0 place-items-center rounded-lg border border-slate-700 text-xl text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+                data-dialog-initial-focus
+                onClick={() => setSelectedTaskId('')}
+                type="button"
+              >
+                ×
+              </button>
+            </header>
+            {detailLoading || !taskDetail ? (
+              <div aria-label={t('common.loading')} className="space-y-3 p-6 sm:p-7">
+                <div className="h-10 animate-pulse rounded-lg bg-slate-800" />
+                <div className="h-28 animate-pulse rounded-lg bg-slate-800/80" />
+                <div className="h-10 animate-pulse rounded-lg bg-slate-800/60" />
+              </div>
+            ) : (
+              <form
+                className="grid gap-5 p-5 sm:p-7"
+                onSubmit={(event) => void saveTaskDetail(event)}
+              >
+                <label className={taskFormLabelClass}>
+                  {t('tasks.title')}
+                  <input
+                    className={inputClass}
+                    defaultValue={taskDetail.title}
+                    disabled={!allowed(user, 'task.update')}
+                    key={`title:${taskDetail.id}:${taskDetail.row_version}`}
+                    name="title"
+                    required
+                  />
+                </label>
+                <label className={taskFormLabelClass}>
+                  {t('tasks.descriptionLabel')}
+                  <textarea
+                    className={`${inputClass} min-h-32 resize-y`}
+                    defaultValue={taskDetail.description}
+                    disabled={!allowed(user, 'task.update')}
+                    key={`description:${taskDetail.id}:${taskDetail.row_version}`}
+                    name="description"
+                  />
+                </label>
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <label className={taskFormLabelClass}>
+                    {t('tasks.status')}
+                    <select
+                      className={inputClass}
+                      defaultValue={taskDetail.status}
+                      disabled={!allowed(user, 'task.update')}
+                      key={`status:${taskDetail.id}:${taskDetail.row_version}`}
+                      name="status"
+                    >
+                      {columns.map((column) => (
+                        <option key={column.status} value={column.status}>
+                          {column.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className={taskFormLabelClass}>
+                    {t('tasks.priority')}
+                    <select
+                      className={inputClass}
+                      defaultValue={taskDetail.priority}
+                      disabled={!allowed(user, 'task.update')}
+                      key={`priority:${taskDetail.id}:${taskDetail.row_version}`}
+                      name="priority"
+                    >
+                      {(['low', 'medium', 'high', 'critical'] as const).map((priority) => (
+                        <option key={priority} value={priority}>
+                          {priorityLabel(priority)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className={taskFormLabelClass}>
+                    {t('tasks.dueDate')}
+                    <input
+                      className={inputClass}
+                      defaultValue={taskDetail.due_date ?? ''}
+                      disabled={!allowed(user, 'task.update')}
+                      key={`due:${taskDetail.id}:${taskDetail.row_version}`}
+                      name="dueDate"
+                      type="date"
+                    />
+                  </label>
+                </div>
+                {taskDetail.assignee_name && (
+                  <p className="rounded-lg border border-slate-800 bg-slate-900/45 px-3 py-2 text-xs text-slate-400">
+                    {t('tasks.assignee')}: {taskDetail.assignee_name}
+                  </p>
+                )}
+                {taskDetail.links.length > 0 && (
+                  <section>
+                    <h3 className="text-sm font-semibold text-slate-200">
+                      {t('tasks.linkedEvidence')}
+                    </h3>
+                    <div className="mt-2 grid gap-2">
+                      {taskDetail.links.map((link) => (
+                        <p
+                          className="rounded-lg border border-slate-800 bg-slate-900/45 px-3 py-2 font-mono text-[10px] text-slate-500"
+                          key={link.id}
+                        >
+                          {link.entity_type} · {link.entity_id}
+                        </p>
+                      ))}
+                    </div>
+                  </section>
+                )}
+                {taskDetail.status_history.length > 0 && (
+                  <section className="border-t border-slate-800 pt-5">
+                    <h3 className="text-sm font-semibold text-slate-200">{t('tasks.activity')}</h3>
+                    <div className="mt-2 space-y-2">
+                      {taskDetail.status_history.map((item) => (
+                        <div className="flex items-center gap-3 text-xs" key={item.id}>
+                          <span className="size-1.5 rounded-full bg-sky-400" />
+                          <span className="text-slate-400">
+                            {item.changed_by_name} ·{' '}
+                            {columns.find((column) => column.status === item.to_status)?.label}
+                          </span>
+                          <time className="ml-auto text-slate-600" dateTime={item.changed_at}>
+                            {formatDate(item.changed_at)}
+                          </time>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                )}
+                {allowed(user, 'task.update') && (
+                  <div className="flex justify-end border-t border-slate-800 pt-5">
+                    <Button disabled={detailSaving} type="submit">
+                      {detailSaving ? t('common.working') : t('tasks.saveChanges')}
+                    </Button>
+                  </div>
+                )}
+              </form>
+            )}
+          </aside>
+        </div>
       )}
       {creatorOpen && allowed(user, 'task.create') && (
         <div

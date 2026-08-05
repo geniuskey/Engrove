@@ -1,5 +1,6 @@
 import { type ChangeEvent, useEffect, useId, useRef, useState } from 'react';
 import { api } from './App.js';
+import { IconAction } from './IconAction.js';
 import { useI18n } from './i18n.js';
 
 const IMAGE_TYPES = new Set(['image/avif', 'image/gif', 'image/jpeg', 'image/png', 'image/webp']);
@@ -198,26 +199,22 @@ export function ImageGridCell({
                 (fileId ? `${t('data.imageLoading')}…` : t('data.noImage'))))}
         </p>
         {editable && (
-          <div className="mt-0.5 flex items-center gap-2">
-            <button
-              aria-label={`${recordName} ${label} ${fileId ? t('data.replaceImage') : t('data.attachImage')}`}
-              className="text-[10px] font-medium text-sky-400 hover:text-sky-300 disabled:opacity-50"
+          <div className="mt-0.5 flex items-center gap-1">
+            <IconAction
               disabled={busy}
+              icon={fileId ? '↻' : '+'}
+              label={`${recordName} ${label} ${fileId ? t('data.replaceImage') : t('data.attachImage')}`}
               onClick={() => inputRef.current?.click()}
-              type="button"
-            >
-              {fileId ? t('data.replaceImage') : t('data.attachImage')}
-            </button>
+              tone="accent"
+            />
             {fileId && (
-              <button
-                aria-label={`${recordName} ${label} ${t('data.removeImage')}`}
-                className="text-[10px] text-slate-500 hover:text-rose-300 disabled:opacity-50"
+              <IconAction
                 disabled={busy}
+                icon="⌫"
+                label={`${recordName} ${label} ${t('data.removeImage')}`}
                 onClick={() => void removeImage()}
-                type="button"
-              >
-                {t('data.removeImage')}
-              </button>
+                tone="danger"
+              />
             )}
           </div>
         )}

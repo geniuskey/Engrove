@@ -36,6 +36,75 @@ describe('App', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
   });
 
+  it('turns the signed-in home into a searchable workspace command center', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/setup/status')) return json({ available: false });
+      if (url.endsWith('/auth/me')) {
+        return json({
+          user: {
+            id: '019fbcf9-e020-71da-935a-6a6a728b3790',
+            email: 'owner@example.com',
+            displayName: 'Owner',
+            organizationId: '019fbcf9-e020-71da-935a-6a6a728b3791',
+            role: 'owner',
+          },
+        });
+      }
+      if (url.endsWith('/workspaces')) {
+        return json({
+          items: [
+            {
+              id: 'alpha-id',
+              publicId: 'w11111111111111',
+              name: 'Alpha lab',
+              slug: 'alpha-lab',
+              description: 'Optical validation program',
+              archivedAt: null,
+            },
+            {
+              id: 'primary-id',
+              publicId: 'w22222222222222',
+              name: 'Primary materials',
+              slug: 'primary-materials',
+              description: 'Supplier qualification evidence',
+              archivedAt: null,
+            },
+          ],
+        });
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Welcome back, Owner' })).toBeInTheDocument();
+    expect(screen.getByLabelText('A connected evidence chain')).toBeInTheDocument();
+    const search = screen.getByRole('searchbox', { name: 'Search workspaces' });
+    fireEvent.change(search, { target: { value: 'supplier' } });
+    expect(screen.getByRole('heading', { name: 'Primary materials' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Alpha lab' })).not.toBeInTheDocument();
+    expect(screen.getByText('Showing 1 of 2 workspaces')).toBeInTheDocument();
+
+    fireEvent.change(search, { target: { value: 'not-a-workspace' } });
+    expect(screen.getByRole('heading', { name: 'No matching workspaces' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Show all workspaces' }));
+    expect(screen.getByRole('heading', { name: 'Alpha lab' })).toBeInTheDocument();
+
+    const createButton = screen.getAllByRole('button', { name: 'Create a workspace' })[0]!;
+    createButton.focus();
+    fireEvent.click(createButton);
+    const dialog = screen.getByRole('dialog', { name: 'Create a workspace' });
+    expect(within(dialog).getByRole('textbox', { name: 'Workspace name' })).toHaveFocus();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Create a workspace' })).not.toBeInTheDocument();
+    await waitFor(() => expect(createButton).toHaveFocus());
+  });
+
   it('keeps project areas available in contextual navigation', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
@@ -156,12 +225,15 @@ describe('App', () => {
     expect(projectNav).toHaveTextContent('Engineering records');
     expect(projectNav).toHaveTextContent('Files & datasets');
     expect(projectNav).toHaveTextContent('Visualizations');
+    expect(projectNav).toHaveTextContent('Milestones');
     expect(projectNav).toHaveTextContent('Tasks');
     expect(screen.getByRole('link', { name: 'Overview' })).toHaveAttribute('aria-current', 'page');
     expect(await screen.findByText('Project command center · ALPHA')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /Open data/ })).toHaveAttribute(
-      'href',
-      '/workspaces/workspace-id/projects/project-id/data',
+    await waitFor(() =>
+      expect(screen.getByRole('link', { name: /Open data/ })).toHaveAttribute(
+        'href',
+        '/workspaces/workspace-id/projects/p1234567890abcd/data',
+      ),
     );
     expect(await screen.findByText('Force sweep · revision 4')).toBeInTheDocument();
     const dashboardLinks = screen.getByRole('navigation', { name: 'Project quick links' });
@@ -197,27 +269,26 @@ describe('App', () => {
 
     expect(document.documentElement).toHaveAttribute('data-theme', 'light');
     expect(window.localStorage.getItem('engrove-theme')).toBe('light');
-    fireEvent.click(screen.getByRole('button', { name: 'Open user menu' }));
-    expect(screen.getByRole('combobox', { name: 'Language' })).toHaveClass(
-      'sidebar-utility-action',
-    );
-    expect(screen.getByRole('button', { name: 'Switch to dark theme' })).toHaveClass(
-      'sidebar-utility-action',
-    );
-    expect(screen.getByRole('button', { name: 'Sign out' })).toHaveClass('sidebar-utility-action');
-    fireEvent.click(screen.getByRole('button', { name: 'Switch to dark theme' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    const settingsDialog = screen.getByRole('dialog', { name: 'Settings' });
+    expect(within(settingsDialog).getByRole('combobox', { name: 'Language' })).toBeInTheDocument();
+    expect(within(settingsDialog).getByRole('button', { name: 'dark' })).toBeInTheDocument();
+    expect(within(settingsDialog).getByRole('button', { name: 'Sign out' })).toBeInTheDocument();
+    fireEvent.click(within(settingsDialog).getByRole('button', { name: 'dark' }));
     expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
     expect(window.localStorage.getItem('engrove-theme')).toBe('dark');
     expect(window.localStorage.getItem('engrove-theme-explicit')).toBe('true');
 
     expect(document.documentElement).toHaveAttribute('lang', 'en');
-    fireEvent.change(screen.getByRole('combobox', { name: 'Language' }), {
+    fireEvent.change(within(settingsDialog).getByRole('combobox', { name: 'Language' }), {
       target: { value: 'ko' },
     });
     expect(await screen.findByRole('link', { name: '데이터' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '프로젝트' })).toBeInTheDocument();
     expect(screen.getByText('프로젝트 운영 현황 · ALPHA')).toBeInTheDocument();
     expect(screen.getByText('작업 이어가기')).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: '설정' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '명령 팔레트 열기' }));
     expect(screen.getByRole('dialog', { name: '명령 팔레트' })).toBeInTheDocument();
     expect(screen.getByRole('searchbox', { name: '명령 검색' })).toBeInTheDocument();

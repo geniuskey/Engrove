@@ -128,8 +128,9 @@ describe('ImageGridCell', () => {
     );
 
     expect(screen.getByText('이미지 없음')).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: '샘플 A 검사 사진 이미지 첨부' }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '샘플 A 검사 사진 이미지 첨부' })).toHaveAttribute(
+      'title',
+      '샘플 A 검사 사진 이미지 첨부',
+    );
   });
 });

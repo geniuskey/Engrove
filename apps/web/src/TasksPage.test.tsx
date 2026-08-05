@@ -110,7 +110,9 @@ describe('TasksPage', () => {
     const expectedDate = new Intl.DateTimeFormat('ko').format(new Date('2026-08-04T00:00:00'));
     expect(screen.getByText(new RegExp(expectedDate.replaceAll('.', '\\.')))).toBeInTheDocument();
     expect(screen.getByText('높음')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '작업 메뉴: 시편 확인' }));
+    const card = screen.getByLabelText('시편 확인, 할 일');
+    expect(within(card).queryByRole('button')).not.toBeInTheDocument();
+    fireEvent.contextMenu(card, { clientX: 120, clientY: 140 });
     expect(screen.getByRole('menu', { name: '시편 확인' })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: '작업 제목 복사' })).toBeInTheDocument();
   });
@@ -162,6 +164,9 @@ describe('TasksPage', () => {
     );
 
     const card = await screen.findByLabelText('Move motor review, To do');
+    expect(
+      within(card).queryByRole('combobox', { name: 'Status for Move motor review' }),
+    ).not.toBeInTheDocument();
     const destination = screen.getByRole('region', { name: 'In progress, tasks: 0' });
     const transferValues = new Map<string, string>();
     const dataTransfer = {
@@ -190,6 +195,105 @@ describe('TasksPage', () => {
     resolvePatch(json({ ...task, status: 'in_progress', row_version: 2 }));
     expect(await screen.findAllByText('Move motor review moved to In progress.')).toHaveLength(2);
     expect(screen.getByRole('region', { name: 'In progress, tasks: 1' })).toBeInTheDocument();
+  });
+
+  it('opens a task detail panel from the card and saves edits', async () => {
+    const task = {
+      id: '019fbcf9-e020-71da-935a-6a6a728b3701',
+      title: 'Release readiness review',
+      description: 'Review the release evidence.',
+      status: 'todo',
+      priority: 'high',
+      assignee_id: null,
+      assignee_name: null,
+      due_date: '2026-08-20',
+      row_version: 1,
+      archived_at: null,
+      links: [],
+      status_history: [
+        {
+          id: '019fbcf9-e020-71da-935a-6a6a728b3702',
+          from_status: null,
+          to_status: 'todo',
+          changed_at: '2026-08-01T12:00:00.000Z',
+          changed_by_name: 'Owner',
+        },
+      ],
+    } as const;
+    let patchBody: Record<string, unknown> | undefined;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (init?.method === 'PATCH') {
+        patchBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return json({
+          ...task,
+          title: 'Release decision',
+          status: 'in_progress',
+          row_version: 2,
+          status_history: [
+            ...task.status_history,
+            {
+              id: '019fbcf9-e020-71da-935a-6a6a728b3703',
+              from_status: 'todo',
+              to_status: 'in_progress',
+              changed_at: '2026-08-05T12:00:00.000Z',
+              changed_by_name: 'Owner',
+            },
+          ],
+        });
+      }
+      if (url.endsWith(`/tasks/${task.id}`)) return json(task);
+      return json({ items: [task] });
+    });
+
+    render(
+      <I18nProvider>
+        <MemoryRouter initialEntries={[`/workspaces/${workspaceId}/projects/${projectId}/tasks`]}>
+          <Routes>
+            <Route
+              element={
+                <TasksPage
+                  user={{
+                    id: '019fbcf9-e020-71da-935a-6a6a728b3792',
+                    email: 'owner@example.com',
+                    displayName: 'Owner',
+                    organizationId: '019fbcf9-e020-71da-935a-6a6a728b3793',
+                    role: 'owner',
+                  }}
+                />
+              }
+              path="/workspaces/:workspaceId/projects/:projectId/tasks"
+            />
+          </Routes>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    fireEvent.click(await screen.findByLabelText('Release readiness review, To do'));
+    const dialog = await screen.findByRole('dialog', { name: 'Release readiness review' });
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Task title' }), {
+      target: { value: 'Release decision' },
+    });
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Status' }), {
+      target: { value: 'in_progress' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() =>
+      expect(patchBody).toMatchObject({
+        title: 'Release decision',
+        status: 'in_progress',
+        priority: 'high',
+        dueDate: '2026-08-20',
+        rowVersion: 1,
+      }),
+    );
+    expect(within(dialog).getByRole('heading', { name: 'Release decision' })).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('region', { name: 'In progress, tasks: 1' })).getByText(
+        'Release decision',
+      ),
+    ).toBeInTheDocument();
   });
 });
 

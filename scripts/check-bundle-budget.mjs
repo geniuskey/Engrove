@@ -5,11 +5,13 @@ const kibibyte = 1024;
 const budgets = {
   maxJavaScriptChunk: 450 * kibibyte,
   // Calculated fields, revision history, metadata editing, the command surface, the project
-  // dashboard, visual canvas, guided element picker, bilingual page dictionary, and accessible
-  // task-board drag-and-drop are product-level capabilities. Keep modest headroom above that
+  // dashboard, visual canvas, guided element picker, bilingual page dictionary, accessible
+  // task-board drag-and-drop, editable task details, project milestones, and the searchable
+  // home command center are product-level capabilities. Keep modest headroom above that
   // baseline while retaining the stricter per-chunk limit.
-  totalJavaScript: 1_238 * kibibyte,
-  maxCssAsset: 90 * kibibyte,
+  totalJavaScript: 1_280 * kibibyte,
+  // Responsive home, workbench, detail drawer, and timeline presentation share one stylesheet.
+  maxCssAsset: 96 * kibibyte,
 };
 
 const assetsDirectory = resolve(process.argv[2] ?? 'apps/web/dist/assets');

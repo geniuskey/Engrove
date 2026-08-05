@@ -33,6 +33,7 @@ import {
   menuFromPointer,
 } from './ContextMenu.js';
 import { CellValuePreview } from './DataPageCharts.js';
+import { IconAction } from './IconAction.js';
 import { useI18n } from './i18n.js';
 import type { TranslationKey } from './i18n-types.js';
 import { useServiceSidebarPortal } from './ServiceSidebar.js';
@@ -3863,17 +3864,15 @@ export function DataPage({
                     value={searchValue}
                   />
                   {searchValue && (
-                    <button
-                      aria-label={t('data.clearSearch')}
-                      className="grid size-5 place-items-center rounded text-xs text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+                    <IconAction
+                      className="size-5 text-xs"
+                      icon="×"
+                      label={t('data.clearSearch')}
                       onClick={() => {
                         setSearchValue('');
                         setPage(1);
                       }}
-                      type="button"
-                    >
-                      ×
-                    </button>
+                    />
                   )}
                 </div>
                 {selectedRows.size > 0 && (
@@ -3882,22 +3881,19 @@ export function DataPage({
                       {t('data.selected', { count: selectedRows.size })}
                     </span>
                     {allowed(user, 'record.archive') && (
-                      <button
-                        className="rounded-lg px-3 py-2 text-sm text-rose-300 hover:bg-rose-500/10"
+                      <IconAction
                         disabled={bulkBusy}
+                        icon={bulkBusy ? '…' : '⌫'}
+                        label={t('common.archive')}
                         onClick={() => void archiveSelectedRows()}
-                        type="button"
-                      >
-                        {bulkBusy ? 'Archiving…' : 'Archive'}
-                      </button>
+                        tone="danger"
+                      />
                     )}
-                    <button
-                      className="rounded-lg px-2 py-2 text-sm text-slate-400 hover:bg-slate-800"
+                    <IconAction
+                      icon="×"
+                      label={t('data.clear')}
                       onClick={() => setSelectedRows(new Set())}
-                      type="button"
-                    >
-                      {t('data.clear')}
-                    </button>
+                    />
                   </div>
                 )}
                 <span className="px-2 text-xs text-slate-500">
@@ -4606,8 +4602,10 @@ export function DataPage({
                           }
                         />
                       </th>
-                      <th className="w-20 border-b border-slate-800 px-2.5 py-2">
-                        {t('data.detail')}
+                      <th className="w-20 border-b border-slate-800 px-2.5 py-2 text-center">
+                        <span aria-label={t('data.detail')} title={t('data.detail')}>
+                          ↗
+                        </span>
                       </th>
                     </tr>
                   </thead>
@@ -4989,21 +4987,19 @@ export function DataPage({
                   ? `${t('data.records', { count: records.total })} · 페이지 ${records.page} / ${Math.max(1, Math.ceil(records.total / records.pageSize))}`
                   : `${records.total} records · page ${records.page} of ${Math.max(1, Math.ceil(records.total / records.pageSize))}`}
               </span>
-              <div className="flex gap-2">
-                <Button
-                  variant="quiet"
+              <div className="flex gap-1">
+                <IconAction
                   disabled={page <= 1}
+                  icon="←"
+                  label={t('common.previous')}
                   onClick={() => setPage((value) => value - 1)}
-                >
-                  {locale === 'ko' ? '이전' : 'Previous'}
-                </Button>
-                <Button
-                  variant="quiet"
+                />
+                <IconAction
                   disabled={page * records.pageSize >= records.total}
+                  icon="→"
+                  label={t('common.next')}
                   onClick={() => setPage((value) => value + 1)}
-                >
-                  {locale === 'ko' ? '다음' : 'Next'}
-                </Button>
+                />
               </div>
             </div>
 

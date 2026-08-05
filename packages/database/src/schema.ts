@@ -84,6 +84,12 @@ export const jobStatus = pgEnum('job_status', ['queued', 'running', 'succeeded',
 export const attemptStatus = pgEnum('attempt_status', ['running', 'succeeded', 'failed']);
 export const taskStatus = pgEnum('task_status', ['todo', 'in_progress', 'blocked', 'done']);
 export const taskPriority = pgEnum('task_priority', ['low', 'medium', 'high', 'critical']);
+export const milestoneStatus = pgEnum('milestone_status', [
+  'planned',
+  'active',
+  'at_risk',
+  'completed',
+]);
 
 export const organizations = pgTable('organizations', {
   id: uuid('id').primaryKey(),
@@ -1328,6 +1334,40 @@ export const tasks = pgTable(
     uniqueIndex('tasks_project_id_key').on(table.projectId, table.id),
     index('tasks_project_board_idx').on(table.projectId, table.status, table.priority),
     index('tasks_project_due_idx').on(table.projectId, table.dueDate),
+  ],
+);
+
+export const projectMilestones = pgTable(
+  'project_milestones',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'restrict' }),
+    title: text('title').notNull(),
+    description: text('description').notNull().default(''),
+    status: milestoneStatus('status').notNull().default('planned'),
+    startDate: date('start_date'),
+    targetDate: date('target_date').notNull(),
+    progress: integer('progress').notNull().default(0),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    rowVersion: integer('row_version').notNull().default(1),
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
+    archivedBy: uuid('archived_by').references(() => users.id, { onDelete: 'restrict' }),
+    archiveReason: text('archive_reason'),
+    ...auditColumns,
+  },
+  (table) => [
+    uniqueIndex('project_milestones_project_id_key').on(table.projectId, table.id),
+    index('project_milestones_timeline_idx').on(table.projectId, table.targetDate, table.status),
+    check('project_milestones_progress_check', sql`${table.progress} between 0 and 100`),
+    check(
+      'project_milestones_date_check',
+      sql`${table.startDate} is null or ${table.startDate} <= ${table.targetDate}`,
+    ),
   ],
 );
 
