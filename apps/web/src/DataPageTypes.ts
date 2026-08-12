@@ -8,6 +8,11 @@ export interface ObjectType {
   icon: string;
   description: string;
   system: boolean;
+  recordPermissions?: {
+    canCreate: boolean;
+    canUpdate: boolean;
+    canArchive: boolean;
+  };
 }
 
 export type FieldType =
@@ -73,6 +78,8 @@ export interface DynamicRecord {
   displayName: string;
   values: Record<string, unknown>;
   relations: Record<string, string[]>;
+  relationLabels?: Record<string, RecordReference[]>;
+  referenceLabels?: Record<string, RecordReference[]>;
   fileReferences: Record<string, string[]>;
   datasetReferences: Record<string, string[]>;
   measurements?: Record<
@@ -85,15 +92,24 @@ export interface DynamicRecord {
   updatedAt: string;
 }
 
+export interface RecordReference {
+  id: string;
+  displayName: string;
+  archivedAt: string | null;
+}
+
+export interface ProjectReference {
+  id: string;
+  publicId?: string;
+  name: string;
+  key: string;
+  archivedAt: string | null;
+}
+
 export interface WorkspaceDataContext {
   workspaceId: string;
   backingProjectId: string;
-  projects: Array<{
-    id: string;
-    name: string;
-    key: string;
-    archivedAt: string | null;
-  }>;
+  projects: ProjectReference[];
   legacyProjects?: Array<{ id: string; name: string }>;
 }
 
@@ -103,11 +119,39 @@ export interface QueryResult {
   pageSize: number;
   total: number;
   groups?: Array<{ value: string | null; count: number }>;
+  groupHierarchy?: RecordGroupResult[];
+  summaries?: RecordSummaryResult[];
+}
+
+export interface RecordGrouping {
+  fieldId: string;
+  direction: 'asc' | 'desc';
+  enabled: boolean;
+}
+
+export interface RecordGroupResult {
+  level: number;
+  fieldId: string;
+  path: Array<{ fieldId: string; value: string | null }>;
+  count: number;
+  summaries?: RecordSummaryResult[];
+}
+
+export type RecordSummaryOperation = 'count' | 'sum' | 'average' | 'min' | 'max';
+
+export interface RecordSummaryRequest {
+  fieldId: string;
+  operation: RecordSummaryOperation;
+}
+
+export interface RecordSummaryResult extends RecordSummaryRequest {
+  value: string | null;
+  unit: string | null;
 }
 
 export type GridColumn =
-  | { key: 'displayName'; label: string; kind: 'displayName'; editable: true }
-  | { key: 'contextProject'; label: string; kind: 'contextProject'; editable: true }
+  | { key: 'displayName'; label: string; kind: 'displayName'; editable: boolean }
+  | { key: 'contextProject'; label: string; kind: 'contextProject'; editable: boolean }
   | {
       key: `field:${string}`;
       label: string;
@@ -134,6 +178,7 @@ export interface GridSelectionBounds {
 }
 
 export type RecordViewType = 'grid' | 'form' | 'gallery' | 'kanban' | 'calendar';
+export type RecordViewPermissionType = 'collaborative' | 'personal' | 'locked';
 
 export interface RecordViewConfig {
   visibleFieldIds: string[];
@@ -151,6 +196,8 @@ export interface RecordViewConfig {
   }>;
   rowDensity: 'compact' | 'comfortable';
   pageSize: 25 | 50 | 100 | 250 | 500;
+  groupings?: RecordGrouping[];
+  summaries?: RecordSummaryRequest[];
   viewOptions?: {
     groupFieldId?: string;
     dateFieldId?: string;
@@ -166,16 +213,65 @@ export interface RecordView {
   objectTypeId: string;
   name: string;
   viewType: RecordViewType;
+  permissionType: RecordViewPermissionType;
+  ownerId: string | null;
+  lockReason: string | null;
   config: RecordViewConfig;
   rowVersion: number;
+  createdBy: string;
+  updatedBy: string;
   archivedAt: string | null;
   updatedAt: string;
 }
 export interface CsvResult {
   imported: number;
+  created: number;
+  updated: number;
+  skipped: number;
   failed: number;
+  createdIds: string[];
+  updatedIds: string[];
   errors: Array<{ row: number; field?: string; reason: string }>;
+  errorsTruncated: boolean;
   idempotentReplay: boolean;
+}
+
+export interface CsvImportPreview {
+  headers: string[];
+  totalRows: number;
+  sampleRows: Array<Record<string, string>>;
+  targetFields: Array<{
+    key: string;
+    name: string;
+    fieldType: FieldType | 'display_name';
+    required: boolean;
+    unique: boolean;
+    supported: boolean;
+  }>;
+  suggestedMappings: Array<{ sourceHeader: string; targetFieldKey: string | null }>;
+}
+
+export interface RecordExportJob {
+  id: string;
+  objectTypeId: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'expired';
+  progress: number;
+  rowCount: number | null;
+  fieldCount: number | null;
+  sizeBytes: number | null;
+  fileName: string;
+  errorCode: string | null;
+  retryable: boolean;
+  createdAt: string;
+  completedAt: string | null;
+  expiresAt: string | null;
+  downloadReady: boolean;
+}
+
+export interface BulkRecordFieldChange {
+  fieldKey: string;
+  operation: 'set' | 'clear';
+  value?: unknown;
 }
 
 export interface MeasurementResult {
@@ -188,6 +284,7 @@ export interface MeasurementResult {
   measured_at: string;
   supersedes_result_id: string | null;
   current: boolean;
+  evaluation: SpecificationEvaluation | null;
 }
 
 export interface Specification {
@@ -217,6 +314,7 @@ export interface SpecificationEvaluation {
 
 export interface LinkedTask {
   id: string;
+  task_key: string;
   title: string;
   status: string;
   priority: string;
@@ -231,4 +329,42 @@ export interface RecordHistoryItem {
   createdAt: string;
   rowVersion: number | null;
   undoable: boolean;
+}
+
+export interface ReviewParticipant {
+  id: string;
+  displayName: string;
+  email: string;
+  role: string;
+}
+
+export interface RecordReviewMessage {
+  id: string;
+  body: string;
+  authorId: string;
+  authorName: string;
+  mentionedUserIds: string[];
+  mentionedUsers?: Array<{ id: string; displayName: string }>;
+  createdAt: string;
+}
+
+export interface RecordReviewThread {
+  id: string;
+  subject: string;
+  status: 'open' | 'resolved';
+  reviewStatus: 'discussion' | 'requested' | 'approved' | 'changes_requested';
+  reviewerId: string | null;
+  reviewerName: string | null;
+  createdBy: string;
+  creatorName: string;
+  resolvedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  messages: RecordReviewMessage[];
+  messagePageInfo?: {
+    limit: number;
+    offset: number;
+    total: number;
+    hasNext: boolean;
+  };
 }

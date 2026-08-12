@@ -1,0 +1,2 @@
+ALTER TABLE "task_workflow_statuses" ADD COLUMN "wip_limit" integer;--> statement-breakpoint
+ALTER TABLE "task_workflow_statuses" ADD CONSTRAINT "task_workflow_statuses_wip_limit_check" CHECK ("task_workflow_statuses"."wip_limit" is null or "task_workflow_statuses"."wip_limit" between 1 and 999);

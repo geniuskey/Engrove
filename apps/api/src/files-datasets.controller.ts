@@ -24,16 +24,185 @@ import {
   Query,
   Req,
 } from '@nestjs/common';
+import { ApiCreatedResponse, ApiOkResponse, ApiQuery, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { z } from 'zod';
 import { v7 as uuidv7 } from 'uuid';
 import { requestId, requireActor } from './community.controller.js';
+import { ApiZodBody, openApiSchema } from './openapi.js';
 import type { Runtime } from './runtime.js';
 import { RUNTIME } from './runtime.provider.js';
 
 const id = z.string().uuid();
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/i);
+const fileStatus = z.enum(['pending_upload', 'verifying', 'available', 'failed']);
+const archiveState = z.enum(['active', 'archived', 'all']);
+const fileListInput = z
+  .object({
+    includeArchived: z.enum(['true', 'false']).optional(),
+    archiveState: archiveState.optional(),
+    query: z.string().trim().max(120).default(''),
+    status: z.union([z.literal('all'), fileStatus]).default('all'),
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+    offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+  })
+  .transform(({ includeArchived, archiveState: requestedState, ...input }) => ({
+    ...input,
+    archiveState: requestedState ?? (includeArchived === 'true' ? ('all' as const) : 'active'),
+  }));
+const datasetListInput = z.object({
+  includeArchived: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  query: z.string().trim().max(120).default(''),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+});
+const artifactResponse = z
+  .object({
+    id,
+    artifact_kind: z.string(),
+    content_type: z.string(),
+    size_bytes: z.number().nonnegative(),
+    checksum: z.string(),
+  })
+  .loose();
+const datasetResponse = z
+  .object({
+    id,
+    name: z.string(),
+    dataset_type: z.enum(['tabular', 'xy']),
+    status: z.enum(['pending', 'processing', 'ready', 'failed']),
+    schema: z.record(z.string(), z.unknown()),
+    archived_at: z.string().nullable(),
+    artifacts: z.array(artifactResponse),
+  })
+  .loose();
+const pageInfoResponse = z.object({
+  limit: z.number().int(),
+  offset: z.number().int(),
+  total: z.number().int(),
+  hasNext: z.boolean(),
+});
+const fileObjectResponse = z
+  .object({
+    id,
+    file_series_id: id,
+    version_number: z.number().int().positive(),
+    previous_file_id: id.nullable(),
+    original_name: z.string(),
+    content_type: z.string(),
+    size_bytes: z.number().nonnegative(),
+    checksum_algorithm: z.string(),
+    checksum: z.string(),
+    status: fileStatus,
+    failure_code: z.string().nullable(),
+    created_at: z.string(),
+    available_at: z.string().nullable(),
+    archived_at: z.string().nullable(),
+  })
+  .loose();
+const fileListItemResponse = fileObjectResponse.extend({ series_name: z.string() });
+const jobStatus = z.enum(['queued', 'running', 'succeeded', 'failed']);
+const jobListInput = z.object({
+  status: z.union([z.literal('all'), jobStatus]).default('all'),
+  query: z.string().trim().max(120).default(''),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+});
+const jobListItemResponse = z
+  .object({
+    id,
+    job_type: z.string(),
+    entity_type: z.string(),
+    entity_id: id,
+    status: jobStatus,
+    attempt_count: z.number().int().nonnegative(),
+    max_attempts: z.number().int().positive(),
+    progress: z.number().int().min(0).max(100),
+    scheduled_at: z.string(),
+    started_at: z.string().nullable(),
+    completed_at: z.string().nullable(),
+    error_code: z.string().nullable(),
+    retryable: z.boolean(),
+    created_at: z.string(),
+    updated_at: z.string(),
+    attempts: z.array(z.record(z.string(), z.unknown())),
+  })
+  .loose();
 const MAX_FILE_BYTES = 100 * 1024 * 1024;
+const uploadIssueInput = z
+  .object({
+    seriesId: id.optional(),
+    seriesName: z.string().trim().min(1).max(160),
+    originalName: z.string().trim().min(1).max(255),
+    contentType: z.string().trim().min(1).max(160),
+    sizeBytes: z.number().int().positive().max(MAX_FILE_BYTES),
+    checksum: sha256,
+  })
+  .strict();
+const uploadIssueResponse = z.object({
+  uploadId: id,
+  fileId: id,
+  seriesId: id,
+  version: z.number().int().positive(),
+  stagingObjectKey: z.string(),
+  expiresAt: z.iso.datetime(),
+  uploadUrl: z.url(),
+  method: z.literal('PUT'),
+  headers: z.record(z.string(), z.string()),
+  maxSizeBytes: z.number().int().positive(),
+});
+const signedDownloadResponse = z.object({
+  url: z.url(),
+  expiresIn: z.number().int().positive(),
+});
+const imagePreviewResponse = signedDownloadResponse.extend({
+  file: z.object({
+    id,
+    originalName: z.string(),
+    contentType: z.string(),
+    sizeBytes: z.number().nonnegative(),
+  }),
+});
+const archiveInput = z.object({ reason: z.string().trim().min(1).max(2000) }).strict();
+const datasetCreateInput = z
+  .object({
+    name: z.string().trim().min(1).max(160),
+    sourceFileId: id.optional(),
+    sourceDatasetId: id.optional(),
+    datasetType: z.enum(['tabular', 'xy']),
+    parameters: z.record(z.string(), z.unknown()).default({}),
+  })
+  .strict();
+const datasetCreateResponse = z.object({
+  dataset: datasetResponse,
+  jobId: id.optional(),
+  idempotent: z.boolean(),
+});
+const datasetPreviewResponse = z.object({
+  items: z.array(z.record(z.string(), z.unknown())),
+});
+const datasetRetryResponse = z.object({ id, jobId: id });
+const cleanupCandidateResponse = z.object({
+  key: z.string(),
+  versionId: z.string().nullable(),
+  reason: z.enum(['eligible-staging', 'unreferenced-committed']),
+  lastModified: z.iso.datetime(),
+});
+const cleanupResponse = z.object({
+  mode: z.enum(['execute', 'dry-run']),
+  graceSeconds: z.number().int().nonnegative(),
+  candidates: z.array(cleanupCandidateResponse),
+  deleted: z.number().int().nonnegative(),
+});
+const cleanupExecuteInput = z
+  .object({
+    confirmation: z.literal('DELETE_UNREFERENCED_OBJECTS'),
+    graceSeconds: z.number().int().min(0).max(2_592_000).default(86_400),
+  })
+  .strict();
 const SUPPORTED_IMAGE_TYPES = new Set([
   'image/avif',
   'image/gif',
@@ -168,12 +337,21 @@ async function cleanup(
   };
 }
 
+@ApiTags('FilesDatasets')
 @Controller('api/v1/workspaces/:workspaceId/projects/:projectId')
 export class FilesDatasetsController {
   constructor(@Inject(RUNTIME) private readonly runtime: Runtime) {}
 
   private readonly logger = new Logger(FilesDatasetsController.name);
 
+  @ApiCreatedResponse({ schema: openApiSchema(uploadIssueResponse) })
+  @ApiZodBody(uploadIssueInput, 'Issue a direct, checksum-verified object-storage upload.', {
+    seriesName: 'Force curve raw data',
+    originalName: 'force-run-001.csv',
+    contentType: 'text/csv',
+    sizeBytes: 48231,
+    checksum: '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08',
+  })
   @Post('file-upload-sessions')
   async issue(
     @Req() request: Request,
@@ -181,16 +359,7 @@ export class FilesDatasetsController {
     @Param('projectId') projectId: string,
     @Body() raw: unknown,
   ) {
-    const body = z
-      .object({
-        seriesId: id.optional(),
-        seriesName: z.string().trim().min(1).max(160),
-        originalName: z.string().trim().min(1).max(255),
-        contentType: z.string().trim().min(1).max(160),
-        sizeBytes: z.number().int().positive().max(MAX_FILE_BYTES),
-        checksum: sha256,
-      })
-      .parse(raw);
+    const body = uploadIssueInput.parse(raw);
     const runtime = this.runtime;
     const repo = await repository(
       this.runtime,
@@ -233,6 +402,7 @@ export class FilesDatasetsController {
     };
   }
 
+  @ApiCreatedResponse({ schema: openApiSchema(fileObjectResponse) })
   @Post('file-upload-sessions/:uploadId/complete')
   async complete(
     @Req() request: Request,
@@ -313,19 +483,44 @@ export class FilesDatasetsController {
     }
   }
 
-  @Get('files') async files(
+  @ApiQuery({ name: 'includeArchived', required: false, type: Boolean, deprecated: true })
+  @ApiQuery({ name: 'archiveState', required: false, enum: archiveState.options })
+  @ApiQuery({ name: 'query', required: false, type: String, maxLength: 120 })
+  @ApiQuery({ name: 'status', required: false, enum: ['all', ...fileStatus.options] })
+  @ApiQuery({ name: 'limit', required: false, type: Number, minimum: 1, maximum: 100 })
+  @ApiQuery({ name: 'offset', required: false, type: Number, minimum: 0 })
+  @ApiOkResponse({
+    schema: openApiSchema(
+      z.object({ items: z.array(fileListItemResponse).max(100), pageInfo: pageInfoResponse }),
+    ),
+  })
+  @Get('files')
+  async files(
     @Req() request: Request,
     @Param('workspaceId') workspaceId: string,
     @Param('projectId') projectId: string,
     @Query('includeArchived') includeArchived?: string,
+    @Query('archiveState') requestedArchiveState?: string,
+    @Query('query') query?: string,
+    @Query('status') status?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
   ) {
-    return {
-      items: await (
-        await repository(this.runtime, request, workspaceId, projectId, 'file.read')
-      ).listFiles(includeArchived === 'true'),
-    };
+    const input = fileListInput.parse({
+      includeArchived,
+      archiveState: requestedArchiveState,
+      query,
+      status,
+      limit,
+      offset,
+    });
+    return (
+      await repository(this.runtime, request, workspaceId, projectId, 'file.read')
+    ).listFilePage(input);
   }
-  @Get('files/:fileId/download') async download(
+  @ApiOkResponse({ schema: openApiSchema(signedDownloadResponse) })
+  @Get('files/:fileId/download')
+  async download(
     @Req() request: Request,
     @Param('workspaceId') workspaceId: string,
     @Param('projectId') projectId: string,
@@ -349,7 +544,9 @@ export class FilesDatasetsController {
       expiresIn: 300,
     };
   }
-  @Get('files/:fileId/preview') async imagePreview(
+  @ApiOkResponse({ schema: openApiSchema(imagePreviewResponse) })
+  @Get('files/:fileId/preview')
+  async imagePreview(
     @Req() request: Request,
     @Param('workspaceId') workspaceId: string,
     @Param('projectId') projectId: string,
@@ -387,19 +584,26 @@ export class FilesDatasetsController {
       },
     };
   }
-  @Patch('files/:fileId/archive') async archiveFile(
+  @ApiOkResponse({ schema: openApiSchema(fileObjectResponse) })
+  @ApiZodBody(archiveInput, 'Archive a file version while preserving exact references.', {
+    reason: 'Superseded by the approved rerun',
+  })
+  @Patch('files/:fileId/archive')
+  async archiveFile(
     @Req() request: Request,
     @Param('workspaceId') workspaceId: string,
     @Param('projectId') projectId: string,
     @Param('fileId') fileId: string,
     @Body() raw: unknown,
   ) {
-    const body = z.object({ reason: z.string().trim().min(1).max(2000) }).parse(raw);
+    const body = archiveInput.parse(raw);
     return (
       await repository(this.runtime, request, workspaceId, projectId, 'file.archive', true)
     ).setFileArchived(id.parse(fileId), true, body.reason, requestId(request));
   }
-  @Post('files/:fileId/restore') async restoreFile(
+  @ApiCreatedResponse({ schema: openApiSchema(fileObjectResponse) })
+  @Post('files/:fileId/restore')
+  async restoreFile(
     @Req() request: Request,
     @Param('workspaceId') workspaceId: string,
     @Param('projectId') projectId: string,
@@ -410,38 +614,55 @@ export class FilesDatasetsController {
     ).setFileArchived(id.parse(fileId), false, '', requestId(request));
   }
 
-  @Post('datasets') async createDataset(
+  @ApiCreatedResponse({ schema: openApiSchema(datasetCreateResponse) })
+  @ApiZodBody(datasetCreateInput, 'Create an immutable dataset processing request.', {
+    name: 'Force run 001',
+    sourceFileId: '019fbcf9-e020-71da-935a-6a6a728b3790',
+    datasetType: 'tabular',
+    parameters: { delimiter: ',', headerRow: 1 },
+  })
+  @Post('datasets')
+  async createDataset(
     @Req() request: Request,
     @Param('workspaceId') workspaceId: string,
     @Param('projectId') projectId: string,
     @Body() raw: unknown,
   ) {
-    const body = z
-      .object({
-        name: z.string().trim().min(1).max(160),
-        sourceFileId: id.optional(),
-        sourceDatasetId: id.optional(),
-        datasetType: z.enum(['tabular', 'xy']),
-        parameters: z.record(z.string(), z.unknown()).default({}),
-      })
-      .parse(raw);
+    const body = datasetCreateInput.parse(raw);
     return (
       await repository(this.runtime, request, workspaceId, projectId, 'dataset.upload', true)
     ).createDataset({ ...body, requestId: requestId(request) });
   }
-  @Get('datasets') async datasets(
+  @ApiQuery({ name: 'includeArchived', required: false, type: Boolean, example: false })
+  @ApiQuery({ name: 'query', required: false, type: String, example: 'thermal' })
+  @ApiQuery({ name: 'limit', required: false, type: Number, example: 50 })
+  @ApiQuery({ name: 'offset', required: false, type: Number, example: 0 })
+  @ApiOkResponse({
+    schema: openApiSchema(
+      z.object({
+        items: z.array(datasetResponse).max(100),
+        pageInfo: pageInfoResponse,
+      }),
+    ),
+  })
+  @Get('datasets')
+  async datasets(
     @Req() request: Request,
     @Param('workspaceId') workspaceId: string,
     @Param('projectId') projectId: string,
     @Query('includeArchived') includeArchived?: string,
+    @Query('query') query?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
   ) {
-    return {
-      items: await (
-        await repository(this.runtime, request, workspaceId, projectId, 'dataset.read')
-      ).listDatasets(includeArchived === 'true'),
-    };
+    const input = datasetListInput.parse({ includeArchived, query, limit, offset });
+    return (
+      await repository(this.runtime, request, workspaceId, projectId, 'dataset.read')
+    ).listDatasetPage(input);
   }
-  @Get('datasets/:datasetId') async dataset(
+  @ApiOkResponse({ schema: openApiSchema(datasetResponse) })
+  @Get('datasets/:datasetId')
+  async dataset(
     @Req() request: Request,
     @Param('workspaceId') workspaceId: string,
     @Param('projectId') projectId: string,
@@ -451,7 +672,9 @@ export class FilesDatasetsController {
       await repository(this.runtime, request, workspaceId, projectId, 'dataset.read')
     ).getDataset(id.parse(datasetId));
   }
-  @Get('datasets/:datasetId/preview') async preview(
+  @ApiOkResponse({ schema: openApiSchema(datasetPreviewResponse) })
+  @Get('datasets/:datasetId/preview')
+  async preview(
     @Req() request: Request,
     @Param('workspaceId') workspaceId: string,
     @Param('projectId') projectId: string,
@@ -477,19 +700,26 @@ export class FilesDatasetsController {
     );
     return { items: JSON.parse(Buffer.from(await bytes(object.Body)).toString('utf8')) };
   }
-  @Patch('datasets/:datasetId/archive') async archiveDataset(
+  @ApiOkResponse({ schema: openApiSchema(datasetResponse) })
+  @ApiZodBody(archiveInput, 'Archive an immutable dataset without deleting its lineage.', {
+    reason: 'Superseded by the corrected source file',
+  })
+  @Patch('datasets/:datasetId/archive')
+  async archiveDataset(
     @Req() request: Request,
     @Param('workspaceId') workspaceId: string,
     @Param('projectId') projectId: string,
     @Param('datasetId') datasetId: string,
     @Body() raw: unknown,
   ) {
-    const body = z.object({ reason: z.string().trim().min(1).max(2000) }).parse(raw);
+    const body = archiveInput.parse(raw);
     return (
       await repository(this.runtime, request, workspaceId, projectId, 'dataset.archive', true)
     ).setDatasetArchived(id.parse(datasetId), true, body.reason, requestId(request));
   }
-  @Post('datasets/:datasetId/restore') async restoreDataset(
+  @ApiCreatedResponse({ schema: openApiSchema(datasetResponse) })
+  @Post('datasets/:datasetId/restore')
+  async restoreDataset(
     @Req() request: Request,
     @Param('workspaceId') workspaceId: string,
     @Param('projectId') projectId: string,
@@ -499,7 +729,9 @@ export class FilesDatasetsController {
       await repository(this.runtime, request, workspaceId, projectId, 'dataset.restore', true)
     ).setDatasetArchived(id.parse(datasetId), false, '', requestId(request));
   }
-  @Post('datasets/:datasetId/retry') async retryDataset(
+  @ApiCreatedResponse({ schema: openApiSchema(datasetRetryResponse) })
+  @Post('datasets/:datasetId/retry')
+  async retryDataset(
     @Req() request: Request,
     @Param('workspaceId') workspaceId: string,
     @Param('projectId') projectId: string,
@@ -510,19 +742,35 @@ export class FilesDatasetsController {
     ).retryDataset(id.parse(datasetId), requestId(request));
   }
 
-  @Get('background-jobs') async jobs(
+  @ApiQuery({ name: 'status', required: false, enum: ['all', ...jobStatus.options] })
+  @ApiQuery({ name: 'query', required: false, type: String, maxLength: 120 })
+  @ApiQuery({ name: 'limit', required: false, type: Number, minimum: 1, maximum: 100 })
+  @ApiQuery({ name: 'offset', required: false, type: Number, minimum: 0 })
+  @ApiOkResponse({
+    schema: openApiSchema(
+      z.object({ items: z.array(jobListItemResponse).max(100), pageInfo: pageInfoResponse }),
+    ),
+  })
+  @Get('background-jobs')
+  async jobs(
     @Req() request: Request,
     @Param('workspaceId') workspaceId: string,
     @Param('projectId') projectId: string,
+    @Query('status') status?: string,
+    @Query('query') query?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
   ) {
-    return {
-      items: await (
-        await repository(this.runtime, request, workspaceId, projectId, 'job.read')
-      ).listJobs(),
-    };
+    const input = jobListInput.parse({ status, query, limit, offset });
+    return (
+      await repository(this.runtime, request, workspaceId, projectId, 'job.read')
+    ).listJobPage(input);
   }
 
-  @Get('storage-cleanup') async cleanupDryRun(
+  @ApiQuery({ name: 'graceSeconds', required: false, type: Number, minimum: 0, maximum: 2_592_000 })
+  @ApiOkResponse({ schema: openApiSchema(cleanupResponse) })
+  @Get('storage-cleanup')
+  async cleanupDryRun(
     @Req() request: Request,
     @Param('workspaceId') workspaceId: string,
     @Param('projectId') projectId: string,
@@ -541,18 +789,19 @@ export class FilesDatasetsController {
     return report;
   }
 
-  @Post('storage-cleanup') async cleanupExecute(
+  @ApiCreatedResponse({ schema: openApiSchema(cleanupResponse) })
+  @ApiZodBody(cleanupExecuteInput, 'Delete only revalidated unreferenced object versions.', {
+    confirmation: 'DELETE_UNREFERENCED_OBJECTS',
+    graceSeconds: 86400,
+  })
+  @Post('storage-cleanup')
+  async cleanupExecute(
     @Req() request: Request,
     @Param('workspaceId') workspaceId: string,
     @Param('projectId') projectId: string,
     @Body() raw: unknown,
   ) {
-    const body = z
-      .object({
-        confirmation: z.literal('DELETE_UNREFERENCED_OBJECTS'),
-        graceSeconds: z.number().int().min(0).max(2_592_000).default(86_400),
-      })
-      .parse(raw);
+    const body = cleanupExecuteInput.parse(raw);
     const repo = await repository(
       this.runtime,
       request,

@@ -72,8 +72,16 @@ export class ScopedFileDatasetRepository {
     const found = await pool.query(
       `select 1 from projects p join workspaces w on w.id=p.workspace_id
        where p.id=$1 and p.workspace_id=$2 and w.organization_id=$3
-         and ($4::boolean or p.system=false)`,
-      [projectId, workspaceId, actor.organizationId, options.allowSystem === true],
+         and ($4::boolean or p.system=false)
+         and project_visible_to(p.id,$2,$3,$5,$6)`,
+      [
+        projectId,
+        workspaceId,
+        actor.organizationId,
+        options.allowSystem === true,
+        actor.actorId,
+        actor.role,
+      ],
     );
     if (!found.rowCount)
       throw new RepositoryError('PROJECT_NOT_FOUND', 404, 'Project was not found.');
@@ -263,12 +271,55 @@ export class ScopedFileDatasetRepository {
       );
     });
   }
-  async listFiles(includeArchived = false) {
-    const result = await this.pool.query(
-      `select f.*,s.name series_name from file_objects f join file_series s on s.id=f.file_series_id and s.project_id=f.project_id where f.project_id=$1 and ($2::boolean or f.archived_at is null) order by f.created_at desc,f.id`,
-      [this.projectId, includeArchived],
-    );
-    return result.rows.map(fileRow);
+  async listFilePage(input: {
+    archiveState: 'active' | 'archived' | 'all';
+    query: string;
+    status: 'all' | 'pending_upload' | 'verifying' | 'available' | 'failed';
+    limit: number;
+    offset: number;
+  }) {
+    const query = input.query.trim().toLowerCase();
+    const parameters = [
+      this.projectId,
+      input.archiveState,
+      query,
+      input.status,
+      input.limit,
+      input.offset,
+    ];
+    const predicate = `f.project_id=$1
+      and ($2='all' or ($2='active' and f.archived_at is null)
+        or ($2='archived' and f.archived_at is not null))
+      and ($3='' or f.id::text=$3 or position($3 in lower(concat_ws(' ',s.name,f.original_name,f.content_type,
+        f.status::text,coalesce(f.failure_code,''),f.checksum)))>0)
+      and ($4='all' or f.status::text=$4)`;
+    const [items, count] = await Promise.all([
+      this.pool.query(
+        `select f.*,s.name series_name
+         from file_objects f
+         join file_series s on s.id=f.file_series_id and s.project_id=f.project_id
+         where ${predicate}
+         order by f.created_at desc,f.id desc limit $5 offset $6`,
+        parameters,
+      ),
+      this.pool.query<{ total: number }>(
+        `select count(*)::int total
+         from file_objects f
+         join file_series s on s.id=f.file_series_id and s.project_id=f.project_id
+         where ${predicate}`,
+        parameters.slice(0, 4),
+      ),
+    ]);
+    const total = Number(count.rows[0]?.total ?? 0);
+    return {
+      items: items.rows.map(fileRow),
+      pageInfo: {
+        limit: input.limit,
+        offset: input.offset,
+        total,
+        hasNext: input.offset + items.rows.length < total,
+      },
+    };
   }
   async getAvailableFile(fileId: string) {
     const result = await this.pool.query(
@@ -411,12 +462,44 @@ export class ScopedFileDatasetRepository {
       return { dataset: datasetRow(dataset.rows[0]), jobId, idempotent: false };
     });
   }
-  async listDatasets(includeArchived = false) {
-    const result = await this.pool.query(
-      `select d.*,coalesce(json_agg(a order by a.artifact_kind) filter(where a.id is not null),'[]') artifacts from datasets d left join dataset_artifacts a on a.dataset_id=d.id and a.project_id=d.project_id where d.project_id=$1 and ($2::boolean or d.archived_at is null) group by d.id order by d.created_at desc,d.id`,
-      [this.projectId, includeArchived],
-    );
-    return result.rows.map(datasetRow);
+  async listDatasetPage(input: {
+    includeArchived?: boolean;
+    query?: string;
+    limit: number;
+    offset: number;
+  }) {
+    const includeArchived = input.includeArchived === true;
+    const query = input.query?.trim().toLowerCase() ?? '';
+    const parameters = [this.projectId, includeArchived, query, input.limit, input.offset];
+    const predicate = `d.project_id=$1
+      and ($2::boolean or d.archived_at is null)
+      and ($3='' or d.id::text=$3 or position($3 in lower(concat_ws(' ',d.name,d.dataset_type,d.status)))>0)`;
+    const [items, count] = await Promise.all([
+      this.pool.query(
+        `select d.*,coalesce(json_agg(a order by a.artifact_kind) filter(where a.id is not null),'[]') artifacts
+         from datasets d
+         left join dataset_artifacts a on a.dataset_id=d.id and a.project_id=d.project_id
+         where ${predicate}
+         group by d.id
+         order by d.created_at desc,d.id
+         limit $4 offset $5`,
+        parameters,
+      ),
+      this.pool.query<{ total: number }>(
+        `select count(*)::int total from datasets d where ${predicate}`,
+        parameters.slice(0, 3),
+      ),
+    ]);
+    const total = Number(count.rows[0]?.total ?? 0);
+    return {
+      items: items.rows.map(datasetRow),
+      pageInfo: {
+        limit: input.limit,
+        offset: input.offset,
+        total,
+        hasNext: input.offset + items.rows.length < total,
+      },
+    };
   }
   async getDataset(id: string) {
     const result = await this.pool.query('select * from datasets where project_id=$1 and id=$2', [
@@ -482,14 +565,49 @@ export class ScopedFileDatasetRepository {
     });
   }
 
-  async listJobs() {
-    const result = await this.pool.query(
-      `select j.*,coalesce(json_agg(a order by a.attempt_number) filter(where a.id is not null),'[]') attempts
-       from background_jobs j left join background_job_attempts a on a.job_id=j.id and a.project_id=j.project_id
-       where j.project_id=$1 group by j.id order by j.created_at desc,j.id`,
-      [this.projectId],
-    );
-    return result.rows;
+  async listJobPage(input: {
+    status: 'all' | 'queued' | 'running' | 'succeeded' | 'failed';
+    query: string;
+    limit: number;
+    offset: number;
+  }) {
+    const query = input.query.trim().toLowerCase();
+    const parameters = [this.projectId, input.status, query, input.limit, input.offset];
+    const predicate = `j.project_id=$1
+      and ($2='all' or j.status::text=$2)
+      and ($3='' or position($3 in lower(concat_ws(' ',j.job_type,j.entity_type,j.entity_id::text,
+        j.status::text,coalesce(j.error_code,''))))>0)`;
+    const [items, count] = await Promise.all([
+      this.pool.query(
+        `select j.*,coalesce(a.attempts,'[]') attempts
+         from (
+           select j.* from background_jobs j
+           where ${predicate}
+           order by j.created_at desc,j.id desc limit $4 offset $5
+         ) j
+         left join lateral (
+           select json_agg(a order by a.attempt_number) attempts
+           from background_job_attempts a
+           where a.job_id=j.id and a.project_id=j.project_id
+         ) a on true
+         order by j.created_at desc,j.id desc`,
+        parameters,
+      ),
+      this.pool.query<{ total: number }>(
+        `select count(*)::int total from background_jobs j where ${predicate}`,
+        parameters.slice(0, 3),
+      ),
+    ]);
+    const total = Number(count.rows[0]?.total ?? 0);
+    return {
+      items: items.rows,
+      pageInfo: {
+        limit: input.limit,
+        offset: input.offset,
+        total,
+        hasNext: input.offset + items.rows.length < total,
+      },
+    };
   }
 
   async storageCleanupProtection(graceSeconds: number) {
@@ -498,30 +616,44 @@ export class ScopedFileDatasetRepository {
         "update file_upload_sessions set status='expired',failure_code='UPLOAD_EXPIRED' where project_id=$1 and status='issued' and expires_at<now()",
         [this.projectId],
       );
-      const [project, active, eligible, committed, checkpoints] = await Promise.all([
-        client.query<{ public_id: string }>('select public_id from projects where id=$1', [
-          this.projectId,
-        ]),
-        client.query<{ staging_object_key: string }>(
-          "select staging_object_key from file_upload_sessions where project_id=$1 and status in ('issued','verifying')",
-          [this.projectId],
-        ),
-        client.query<{ staging_object_key: string }>(
-          `select staging_object_key from file_upload_sessions where project_id=$1 and status in ('finalized','failed','expired')
-           and created_at<now()-($2||' seconds')::interval`,
-          [this.projectId, graceSeconds],
-        ),
-        client.query<{ object_key: string }>(
-          `select final_object_key object_key from file_objects where project_id=$1 and status in ('pending_upload','verifying','available')
-           union all select object_key from dataset_artifacts where project_id=$1`,
-          [this.projectId],
-        ),
-        client.query<{ result_checkpoint: { artifacts?: Array<{ objectKey?: string }> } }>(
-          `select a.result_checkpoint from background_job_attempts a join background_jobs j on j.id=a.job_id
-           where j.project_id=$1 and j.status='running' and a.status='running'`,
-          [this.projectId],
-        ),
-      ]);
+      const project = await client.query<{ public_id: string }>(
+        'select public_id from projects where id=$1',
+        [this.projectId],
+      );
+      const active = await client.query<{ staging_object_key: string }>(
+        "select staging_object_key from file_upload_sessions where project_id=$1 and status in ('issued','verifying')",
+        [this.projectId],
+      );
+      const eligible = await client.query<{ staging_object_key: string }>(
+        `select staging_object_key from file_upload_sessions where project_id=$1 and status in ('finalized','failed','expired')
+         and created_at<now()-($2||' seconds')::interval`,
+        [this.projectId, graceSeconds],
+      );
+      const committed = await client.query<{ object_key: string }>(
+        `select final_object_key object_key from file_objects where project_id=$1 and status in ('pending_upload','verifying','available')
+         union all select object_key from dataset_artifacts where project_id=$1`,
+        [this.projectId],
+      );
+      const checkpoints = await client.query<{
+        result_checkpoint: {
+          artifact?: { objectKey?: string };
+          artifacts?: Array<{ objectKey?: string }>;
+        };
+      }>(
+        `select a.result_checkpoint from background_job_attempts a join background_jobs j on j.id=a.job_id
+         where j.project_id=$1 and j.status='running' and a.status='running'`,
+        [this.projectId],
+      );
+      const recordExports = await client.query<{ object_key: string }>(
+        `select a.result_checkpoint->'artifact'->>'objectKey' object_key
+         from background_job_attempts a join background_jobs j
+           on j.id=a.job_id and j.project_id=a.project_id
+         where j.project_id=$1 and j.job_type='record.export.csv' and j.status='succeeded'
+           and a.status='succeeded' and a.result_checkpoint->'artifact'->>'deletedAt' is null
+           and a.result_checkpoint->'artifact'->>'objectKey' is not null
+           and (a.result_checkpoint->'artifact'->>'expiresAt')::timestamptz>now()`,
+        [this.projectId],
+      );
       return {
         storageProjectIds: [
           this.projectId,
@@ -531,11 +663,15 @@ export class ScopedFileDatasetRepository {
         eligibleStagingKeys: eligible.rows.map((row) => row.staging_object_key),
         protectedCommittedKeys: [
           ...committed.rows.map((row) => row.object_key),
-          ...checkpoints.rows.flatMap((row) =>
-            (row.result_checkpoint.artifacts ?? []).flatMap((artifact) =>
+          ...checkpoints.rows.flatMap((row) => [
+            ...(row.result_checkpoint.artifact?.objectKey
+              ? [row.result_checkpoint.artifact.objectKey]
+              : []),
+            ...(row.result_checkpoint.artifacts ?? []).flatMap((artifact) =>
               artifact.objectKey ? [artifact.objectKey] : [],
             ),
-          ),
+          ]),
+          ...recordExports.rows.map((row) => row.object_key),
         ],
       };
     });
@@ -566,10 +702,20 @@ export class ScopedFileDatasetRepository {
        select 1 from background_job_attempts a
        join background_jobs j on j.id=a.job_id and j.project_id=a.project_id
        where j.project_id=$1 and j.status='running' and a.status='running'
-         and exists (
-           select 1 from jsonb_array_elements(coalesce(a.result_checkpoint->'artifacts','[]'::jsonb)) artifact
-           where artifact->>'objectKey'=$2
+         and (
+           a.result_checkpoint->'artifact'->>'objectKey'=$2
+           or exists (
+             select 1 from jsonb_array_elements(coalesce(a.result_checkpoint->'artifacts','[]'::jsonb)) artifact
+             where artifact->>'objectKey'=$2
+           )
          )
+       union all
+       select 1 from background_job_attempts a
+       join background_jobs j on j.id=a.job_id and j.project_id=a.project_id
+       where j.project_id=$1 and j.job_type='record.export.csv' and j.status='succeeded'
+         and a.status='succeeded' and a.result_checkpoint->'artifact'->>'objectKey'=$2
+         and a.result_checkpoint->'artifact'->>'deletedAt' is null
+         and (a.result_checkpoint->'artifact'->>'expiresAt')::timestamptz>now()
        limit 1`,
       [this.projectId, objectKey],
     );

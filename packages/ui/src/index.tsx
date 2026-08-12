@@ -10,7 +10,7 @@ const button = cva(
     variants: {
       variant: {
         primary:
-          'bg-sky-400 text-slate-950 shadow-md shadow-sky-950/20 hover:-translate-y-px hover:bg-sky-300 hover:shadow-lg focus-visible:outline-sky-400',
+          'bg-sky-400 text-[var(--engrove-primary-foreground)] shadow-md shadow-sky-950/20 hover:-translate-y-px hover:bg-sky-300 hover:shadow-lg focus-visible:outline-sky-400',
         quiet:
           'border border-slate-700/80 bg-slate-900/80 text-slate-200 hover:border-slate-600 hover:bg-slate-800/90 hover:text-slate-100 focus-visible:outline-sky-400',
       },

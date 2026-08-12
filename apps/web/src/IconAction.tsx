@@ -14,12 +14,14 @@ export function IconAction({
   icon,
   label,
   tone = 'default',
+  tooltipAlign = 'center',
   type = 'button',
   ...props
 }: Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'children'> & {
   icon: ReactNode;
   label: string;
   tone?: IconTone;
+  tooltipAlign?: 'center' | 'end';
 }) {
   const tooltipId = useId();
   return (
@@ -35,7 +37,7 @@ export function IconAction({
         {icon}
       </span>
       <span
-        className="pointer-events-none absolute bottom-[calc(100%+0.4rem)] left-1/2 z-[80] -translate-x-1/2 whitespace-nowrap rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-[10px] font-medium leading-none text-slate-200 opacity-0 shadow-xl transition-opacity group-hover/icon:opacity-100 group-focus-visible/icon:opacity-100"
+        className={`pointer-events-none absolute bottom-[calc(100%+0.4rem)] z-[80] whitespace-nowrap rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-[10px] font-medium leading-none text-slate-200 opacity-0 shadow-xl transition-opacity group-hover/icon:opacity-100 group-focus-visible/icon:opacity-100 ${tooltipAlign === 'end' ? 'right-0' : 'left-1/2 -translate-x-1/2'}`}
         id={tooltipId}
         role="tooltip"
       >

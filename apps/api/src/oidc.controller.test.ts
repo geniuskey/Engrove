@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { parseOidcIdentityClaims, resolveOidcUser } from './oidc.controller.js';
+import { parseOidcIdentityClaims, resolveOidcUser, safeOidcReturnTo } from './oidc.controller.js';
 
 const claimConfig = {
   OIDC_EMAIL_CLAIM: 'email',
@@ -43,6 +43,25 @@ describe('OIDC identity claims', () => {
       email: 'member@example.com',
       displayName: 'Member',
     });
+  });
+});
+
+describe('OIDC return path', () => {
+  it('preserves an internal deep link including query and hash', () => {
+    expect(safeOidcReturnTo('/workspaces/w1/projects/p1/tasks?view=list#task-1')).toBe(
+      '/workspaces/w1/projects/p1/tasks?view=list#task-1',
+    );
+  });
+
+  it.each([
+    undefined,
+    'https://attacker.example/path',
+    '//attacker.example/path',
+    '/\\attacker.example/path',
+    '/sign-in',
+    `/workspaces/${'x'.repeat(2048)}`,
+  ])('falls back instead of redirecting to an unsafe or auth path (%s)', (value) => {
+    expect(safeOidcReturnTo(value)).toBe('/workspaces');
   });
 });
 

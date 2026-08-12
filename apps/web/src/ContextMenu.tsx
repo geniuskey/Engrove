@@ -157,7 +157,11 @@ export function ContextMenu({
             {item.icon ?? ''}
           </span>
           <span className="min-w-0 flex-1 truncate">{item.label}</span>
-          {item.shortcut && <span className="text-[10px] text-slate-600">{item.shortcut}</span>}
+          {item.shortcut && (
+            <span aria-hidden="true" className="text-[10px] text-slate-600">
+              {item.shortcut}
+            </span>
+          )}
         </button>
       ))}
     </div>,

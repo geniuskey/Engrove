@@ -5,9 +5,12 @@ import {
   type MouseEvent as ReactMouseEvent,
   useCallback,
   useEffect,
+  useMemo,
   useState,
 } from 'react';
+import { Link } from 'react-router';
 import { allowed, api, ErrorText, HelpTip, inputClass, type User } from './App.js';
+import { useActionDialog } from './ActionDialogProvider.js';
 import type {
   DynamicRecord,
   FieldDefinition,
@@ -15,12 +18,39 @@ import type {
   MeasurementResult,
   QueryResult,
   RecordHistoryItem,
+  RecordReference,
   Specification,
-  SpecificationEvaluation,
 } from './DataPageTypes.js';
+import { FormField } from './FormFieldLabel.js';
+import { IconAction } from './IconAction.js';
 import { useI18n } from './i18n.js';
 
 const panelClass = 'mt-8 rounded-2xl border border-slate-800 bg-slate-900/60 p-6';
+const emptyPageInfo = { total: 0, hasNext: false };
+type PageInfo = typeof emptyPageInfo;
+
+function localDateTimeInput(date = new Date()): string {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
+
+function LoadMoreHistory({
+  shown,
+  total,
+  onClick,
+}: {
+  shown: number;
+  total: number;
+  onClick: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="mt-4 text-center">
+      <Button onClick={onClick} type="button" variant="quiet">
+        {t('data.loadMoreHistory', { shown, total })}
+      </Button>
+    </div>
+  );
+}
 
 function structuredDataSummary(field: FieldDefinition, value: unknown): string | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
@@ -56,7 +86,22 @@ export function displayValue(value: unknown): string {
   return String(value);
 }
 
-export function displayFieldValue(field: FieldDefinition, value: unknown): string {
+export function displayFieldValue(
+  field: FieldDefinition,
+  value: unknown,
+  references?: RecordReference[],
+): string {
+  if (
+    (field.fieldType === 'user' || field.fieldType === 'file' || field.fieldType === 'dataset') &&
+    references?.length
+  )
+    return references.map((reference) => reference.displayName).join(', ');
+  if (field.fieldType === 'single_select' && typeof value === 'string')
+    return field.config.options?.find((option) => option.key === value)?.label ?? value;
+  if (field.fieldType === 'multi_select' && Array.isArray(value)) {
+    const labels = new Map(field.config.options?.map((option) => [option.key, option.label]));
+    return value.map((item) => labels.get(String(item)) ?? String(item)).join(', ');
+  }
   return structuredDataSummary(field, value) ?? displayValue(value);
 }
 
@@ -97,7 +142,11 @@ export function GalleryRecordsView({
                 <div className="grid grid-cols-[5rem_1fr] gap-2 text-xs" key={field.id}>
                   <dt className="truncate text-slate-500">{field.name}</dt>
                   <dd className="truncate text-slate-300">
-                    {displayFieldValue(field, recordGridValue(record, field))}
+                    {displayFieldValue(
+                      field,
+                      recordGridValue(record, field),
+                      record.referenceLabels?.[field.id],
+                    )}
                   </dd>
                 </div>
               ))}
@@ -311,22 +360,28 @@ export function SpecificationsPanel({
   const { t } = useI18n();
   const measurementFields = fields.filter((field) => field.fieldType === 'measurement');
   const [specifications, setSpecifications] = useState<Specification[]>([]);
+  const [pageInfo, setPageInfo] = useState<PageInfo>(emptyPageInfo);
   const [error, setError] = useState('');
-  const load = useCallback(async () => {
-    if (!measurementFields.length) {
-      setSpecifications([]);
-      return;
-    }
-    try {
-      const result = await api<{ items: Specification[] }>(
-        `${base}/specifications?includeArchived=true`,
-      );
-      setSpecifications(result.items);
-      setError('');
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t('data.specificationsLoadFailed'));
-    }
-  }, [base, measurementFields.length, t]);
+  const load = useCallback(
+    async (offset = 0, append = false) => {
+      if (!measurementFields.length) {
+        setSpecifications([]);
+        setPageInfo(emptyPageInfo);
+        return;
+      }
+      try {
+        const result = await api<{ items: Specification[]; pageInfo: PageInfo }>(
+          `${base}/specifications?archiveState=all&limit=50&offset=${offset}`,
+        );
+        setSpecifications((current) => (append ? [...current, ...result.items] : result.items));
+        setPageInfo(result.pageInfo);
+        setError('');
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : t('data.specificationsLoadFailed'));
+      }
+    },
+    [base, measurementFields.length, t],
+  );
   useEffect(() => void load(), [load]);
   if (!measurementFields.length) return null;
   async function create(event: FormEvent<HTMLFormElement>) {
@@ -376,33 +431,39 @@ export function SpecificationsPanel({
           );
         })}
       </div>
+      {pageInfo.hasNext && (
+        <LoadMoreHistory
+          shown={specifications.length}
+          total={pageInfo.total}
+          onClick={() => void load(specifications.length, true)}
+        />
+      )}
       {allowed(user, 'specification.manage') && (
         <form className="mt-5 grid gap-2 md:grid-cols-3" onSubmit={(event) => void create(event)}>
-          <input
-            className={inputClass}
-            name="name"
-            placeholder={t('data.specificationName')}
-            required
-          />
-          <select className={inputClass} name="measurementFieldId">
-            {measurementFields.map((field) => (
-              <option key={field.id} value={field.id}>
-                {field.name}
-              </option>
-            ))}
-          </select>
-          <input className={inputClass} name="lowerLimit" placeholder={t('data.hardLower')} />
-          <input
-            className={inputClass}
-            name="warningLowerLimit"
-            placeholder={t('data.warningLower')}
-          />
-          <input
-            className={inputClass}
-            name="warningUpperLimit"
-            placeholder={t('data.warningUpper')}
-          />
-          <input className={inputClass} name="upperLimit" placeholder={t('data.hardUpper')} />
+          <FormField label={t('data.specificationName')} required>
+            <input className={inputClass} name="name" required />
+          </FormField>
+          <FormField label={t('data.measurementField')} required>
+            <select className={inputClass} name="measurementFieldId" required>
+              {measurementFields.map((field) => (
+                <option key={field.id} value={field.id}>
+                  {field.name}
+                </option>
+              ))}
+            </select>
+          </FormField>
+          <FormField label={t('data.hardLower')}>
+            <input className={inputClass} name="lowerLimit" />
+          </FormField>
+          <FormField label={t('data.warningLower')}>
+            <input className={inputClass} name="warningLowerLimit" />
+          </FormField>
+          <FormField label={t('data.warningUpper')}>
+            <input className={inputClass} name="warningUpperLimit" />
+          </FormField>
+          <FormField label={t('data.hardUpper')}>
+            <input className={inputClass} name="upperLimit" />
+          </FormField>
           <Button type="submit">{t('data.createSpecification')}</Button>
         </form>
       )}
@@ -423,32 +484,47 @@ export function MeasurementsPanel({
   user: User;
 }) {
   const { t, formatDate } = useI18n();
-  const measurementFields = fields.filter((field) => field.fieldType === 'measurement');
+  const measurementFields = useMemo(
+    () => fields.filter((field) => field.fieldType === 'measurement'),
+    [fields],
+  );
   const [results, setResults] = useState<MeasurementResult[]>([]);
-  const [evaluations, setEvaluations] = useState<SpecificationEvaluation[]>([]);
+  const [pageInfo, setPageInfo] = useState<PageInfo>(emptyPageInfo);
   const [error, setError] = useState('');
-  const load = useCallback(async () => {
-    if (!measurementFields.length) return;
-    try {
-      const [histories, evaluationResult] = await Promise.all([
-        Promise.all(
-          measurementFields.map((field) =>
-            api<{ items: MeasurementResult[] }>(
-              `${base}/records/${recordId}/measurement-results?fieldId=${field.id}`,
-            ),
-          ),
-        ),
-        api<{ items: SpecificationEvaluation[] }>(
-          `${base}/specification-evaluations?recordId=${recordId}`,
-        ),
-      ]);
-      setResults(histories.flatMap((history) => history.items));
-      setEvaluations(evaluationResult.items);
-      setError('');
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t('data.measurementsLoadFailed'));
-    }
-  }, [base, recordId, measurementFields.length, t]);
+  const [creatingEvaluationId, setCreatingEvaluationId] = useState('');
+  const [followUpTasks, setFollowUpTasks] = useState<Record<string, LinkedTask>>({});
+  const [measurementFieldId, setMeasurementFieldId] = useState(
+    () => measurementFields[0]?.id ?? '',
+  );
+  const [measurementUnit, setMeasurementUnit] = useState(
+    () => measurementFields[0]?.config.allowedUnits?.[0] ?? '',
+  );
+  const [measuredAt, setMeasuredAt] = useState(() => localDateTimeInput());
+  const selectedMeasurementField =
+    measurementFields.find((field) => field.id === measurementFieldId) ?? measurementFields[0];
+  const measurementUnits = selectedMeasurementField?.config.allowedUnits ?? [];
+  useEffect(() => {
+    if (!selectedMeasurementField) return;
+    if (measurementFieldId !== selectedMeasurementField.id)
+      setMeasurementFieldId(selectedMeasurementField.id);
+    if (!measurementUnits.includes(measurementUnit)) setMeasurementUnit(measurementUnits[0] ?? '');
+  }, [measurementFieldId, measurementUnit, measurementUnits, selectedMeasurementField]);
+  const load = useCallback(
+    async (offset = 0, append = false) => {
+      if (!measurementFields.length) return;
+      try {
+        const history = await api<{ items: MeasurementResult[]; pageInfo: PageInfo }>(
+          `${base}/records/${recordId}/measurement-results?currentState=all&limit=50&offset=${offset}`,
+        );
+        setResults((loaded) => (append ? [...loaded, ...history.items] : history.items));
+        setPageInfo(history.pageInfo);
+        setError('');
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : t('data.measurementsLoadFailed'));
+      }
+    },
+    [base, recordId, measurementFields.length, t],
+  );
   useEffect(() => void load(), [load]);
   if (!measurementFields.length) return null;
   async function create(event: FormEvent<HTMLFormElement>) {
@@ -471,17 +547,24 @@ export function MeasurementsPanel({
         }),
       });
       form.reset();
+      setMeasuredAt(localDateTimeInput());
       await load();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t('data.measurementCreateFailed'));
     }
   }
   async function createTask(evaluationId: string) {
+    setCreatingEvaluationId(evaluationId);
     try {
-      await api(`${base}/specification-evaluations/${evaluationId}/task`, { method: 'POST' });
+      const task = await api<LinkedTask>(`${base}/specification-evaluations/${evaluationId}/task`, {
+        method: 'POST',
+      });
+      setFollowUpTasks((current) => ({ ...current, [evaluationId]: task }));
       setError('');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t('data.followUpCreateFailed'));
+    } finally {
+      setCreatingEvaluationId('');
     }
   }
   return (
@@ -490,9 +573,8 @@ export function MeasurementsPanel({
       <div className="mt-4 grid gap-3">
         {results.map((result) => {
           const field = measurementFields.find((candidate) => candidate.id === result.field_id);
-          const evaluation = evaluations.find(
-            (candidate) => candidate.measurement_result_id === result.id,
-          );
+          const evaluation = result.evaluation;
+          const followUpTask = evaluation ? followUpTasks[evaluation.id] : undefined;
           return (
             <div
               className="flex flex-wrap items-center justify-between rounded-xl border border-slate-800 p-4"
@@ -516,12 +598,38 @@ export function MeasurementsPanel({
                   {result.current ? ` · ${t('data.current')}` : ''}
                 </span>
                 {evaluation?.status === 'fail' && allowed(user, 'task.create') && (
-                  <button
-                    className="text-xs text-sky-400"
-                    onClick={() => void createTask(evaluation.id)}
-                  >
-                    {t('data.createTask')}
-                  </button>
+                  <div className="flex items-center gap-1">
+                    {followUpTask ? (
+                      <>
+                        <span aria-live="polite" className="font-mono text-[10px] text-emerald-300">
+                          {followUpTask.task_key}
+                        </span>
+                        <Link
+                          aria-label={t('data.openFollowUpTask', { key: followUpTask.task_key })}
+                          className="group/icon relative grid size-7 shrink-0 place-items-center rounded-md text-sm text-emerald-300 transition hover:bg-emerald-500/10 hover:text-emerald-200"
+                          title={t('data.openFollowUpTask', { key: followUpTask.task_key })}
+                          to={`${base}/tasks?task=${followUpTask.task_key}`}
+                        >
+                          <span aria-hidden="true">↗</span>
+                          <span
+                            className="pointer-events-none absolute bottom-[calc(100%+0.4rem)] right-0 z-[80] whitespace-nowrap rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-[10px] font-medium leading-none text-slate-200 opacity-0 shadow-xl transition-opacity group-hover/icon:opacity-100 group-focus-visible/icon:opacity-100"
+                            role="tooltip"
+                          >
+                            {t('data.openFollowUpTask', { key: followUpTask.task_key })}
+                          </span>
+                        </Link>
+                      </>
+                    ) : (
+                      <IconAction
+                        disabled={Boolean(creatingEvaluationId)}
+                        icon={creatingEvaluationId === evaluation.id ? '…' : '+'}
+                        label={t('data.createFollowUpTask')}
+                        onClick={() => void createTask(evaluation.id)}
+                        tone="accent"
+                        tooltipAlign="end"
+                      />
+                    )}
+                  </div>
                 )}
               </div>
             </div>
@@ -531,70 +639,86 @@ export function MeasurementsPanel({
           <p className="text-sm text-slate-400">{t('data.noObservations')}</p>
         )}
       </div>
+      {pageInfo.hasNext && (
+        <LoadMoreHistory
+          shown={results.length}
+          total={pageInfo.total}
+          onClick={() => void load(results.length, true)}
+        />
+      )}
       {allowed(user, 'measurement.create') && (
         <form className="mt-5 grid gap-2 md:grid-cols-3" onSubmit={(event) => void create(event)}>
-          <select
-            className={inputClass}
-            name="fieldId"
-            onChange={(event) => {
-              const field = measurementFields.find(
-                (candidate) => candidate.id === event.target.value,
-              );
-              const unit = event.currentTarget.form?.elements.namedItem(
-                'unit',
-              ) as HTMLSelectElement | null;
-              if (unit && field)
-                unit.innerHTML = (field.config.allowedUnits ?? [])
-                  .map((value) => `<option>${value}</option>`)
-                  .join('');
-            }}
-          >
-            {measurementFields.map((field) => (
-              <option key={field.id} value={field.id}>
-                {field.name}
-              </option>
-            ))}
-          </select>
-          <input
-            className={inputClass}
-            name="value"
-            placeholder={t('data.decimalValue')}
-            required
-          />
-          <select className={inputClass} name="unit">
-            {(measurementFields[0]?.config.allowedUnits ?? []).map((unit) => (
-              <option key={unit}>{unit}</option>
-            ))}
-          </select>
-          <input className={inputClass} name="measuredAt" type="datetime-local" required />
-          <input
-            className={inputClass}
-            name="uncertaintyValue"
-            placeholder={t('data.uncertaintyOptional')}
-          />
-          <input
-            className={inputClass}
-            name="uncertaintyUnit"
-            placeholder={t('data.uncertaintyUnit')}
-          />
-          <select className={inputClass} name="supersedesResultId" defaultValue="">
-            <option value="">{t('data.newObservation')}</option>
-            {results
-              .filter((result) => result.current)
-              .map((result) => (
-                <option key={result.id} value={result.id}>
-                  {t('data.correctValue', {
-                    value: result.original_value,
-                    unit: result.original_unit,
-                  })}
+          <FormField label={t('data.measurementField')} required>
+            <select
+              className={inputClass}
+              name="fieldId"
+              onChange={(event) => {
+                const field = measurementFields.find(
+                  (candidate) => candidate.id === event.target.value,
+                );
+                setMeasurementFieldId(event.target.value);
+                setMeasurementUnit(field?.config.allowedUnits?.[0] ?? '');
+              }}
+              required
+              value={selectedMeasurementField?.id ?? ''}
+            >
+              {measurementFields.map((field) => (
+                <option key={field.id} value={field.id}>
+                  {field.name}
                 </option>
               ))}
-          </select>
-          <input
-            className={inputClass}
-            name="correctionReason"
-            placeholder={t('data.correctionReason')}
-          />
+            </select>
+          </FormField>
+          <FormField label={t('data.decimalValue')} required>
+            <input className={inputClass} name="value" required />
+          </FormField>
+          <FormField label={t('data.measurementUnit')} required>
+            <select
+              className={inputClass}
+              name="unit"
+              onChange={(event) => setMeasurementUnit(event.target.value)}
+              required
+              value={measurementUnits.includes(measurementUnit) ? measurementUnit : ''}
+            >
+              {measurementUnits.map((unit) => (
+                <option key={unit}>{unit}</option>
+              ))}
+            </select>
+          </FormField>
+          <FormField label={t('data.measuredAt')} required>
+            <input
+              className={inputClass}
+              name="measuredAt"
+              onChange={(event) => setMeasuredAt(event.target.value)}
+              type="datetime-local"
+              required
+              value={measuredAt}
+            />
+          </FormField>
+          <FormField label={t('data.uncertaintyValue')}>
+            <input className={inputClass} name="uncertaintyValue" />
+          </FormField>
+          <FormField label={t('data.uncertaintyUnit')}>
+            <input className={inputClass} name="uncertaintyUnit" />
+          </FormField>
+          <FormField label={t('data.correctsObservation')}>
+            <select className={inputClass} name="supersedesResultId" defaultValue="">
+              <option value="">{t('data.newObservation')}</option>
+              {results
+                .filter((result) => result.current)
+                .map((result) => (
+                  <option key={result.id} value={result.id}>
+                    {t('data.correctValue', {
+                      value: result.original_value,
+                      unit: result.original_unit,
+                    })}
+                  </option>
+                ))}
+            </select>
+          </FormField>
+          <FormField label={t('data.correctionReason')}>
+            <input className={inputClass} name="correctionReason" />
+          </FormField>
           <Button type="submit">{t('data.recordMeasurement')}</Button>
         </form>
       )}
@@ -606,30 +730,41 @@ export function MeasurementsPanel({
 export function LinkedTasksPanel({ base, recordId }: { base: string; recordId: string }) {
   const { t } = useI18n();
   const [tasks, setTasks] = useState<LinkedTask[]>([]);
+  const [pageInfo, setPageInfo] = useState<PageInfo>(emptyPageInfo);
   const [error, setError] = useState('');
-  useEffect(
-    () =>
-      void api<{ items: LinkedTask[] }>(`${base}/tasks?entityId=${recordId}&includeArchived=true`)
-        .then((result) => {
-          setTasks(result.items);
-          setError('');
-        })
-        .catch((cause: unknown) =>
-          setError(cause instanceof Error ? cause.message : t('data.linkedTasksLoadFailed')),
-        ),
+  const load = useCallback(
+    async (offset = 0, append = false) => {
+      try {
+        const result = await api<{ items: LinkedTask[]; pageInfo: PageInfo }>(
+          `${base}/tasks?entityId=${recordId}&archiveState=all&limit=50&offset=${offset}`,
+        );
+        setTasks((current) => (append ? [...current, ...result.items] : result.items));
+        setPageInfo(result.pageInfo);
+        setError('');
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : t('data.linkedTasksLoadFailed'));
+      }
+    },
     [base, recordId, t],
   );
+  useEffect(() => void load(), [load]);
   return (
     <section className={panelClass}>
       <h2 className="text-xl font-semibold">{t('data.linkedTasks')}</h2>
       <div className="mt-4 space-y-2">
         {tasks.map((task) => (
           <div
-            className="flex justify-between rounded-xl border border-slate-800 p-3"
+            className="flex items-start justify-between gap-4 rounded-xl border border-slate-800 p-3"
             key={task.id}
           >
-            <span>{task.title}</span>
-            <span className="text-xs uppercase text-slate-400">
+            <Link
+              className="min-w-0 text-sm font-medium text-slate-100 hover:text-sky-300"
+              to={`${base}/tasks?task=${task.task_key}`}
+            >
+              <span className="mr-2 font-mono text-xs text-sky-400">{task.task_key}</span>
+              {task.title}
+            </Link>
+            <span className="shrink-0 text-xs uppercase text-slate-400">
               {task.status} · {task.priority}
               {task.archived_at ? ` · ${t('data.archived')}` : ''}
             </span>
@@ -639,6 +774,13 @@ export function LinkedTasksPanel({ base, recordId }: { base: string; recordId: s
           <p className="text-sm text-slate-500">{t('data.noLinkedTasks')}</p>
         )}
       </div>
+      {pageInfo.hasNext && (
+        <div className="mt-4 text-center">
+          <Button onClick={() => void load(tasks.length, true)} type="button" variant="quiet">
+            {t('tasks.loadMoreTasks', { shown: tasks.length, total: pageInfo.total })}
+          </Button>
+        </div>
+      )}
       <ErrorText>{error}</ErrorText>
     </section>
   );
@@ -665,23 +807,59 @@ export function RecordHistoryPanel({
   onRestored: (record: DynamicRecord) => void;
 }) {
   const { t, formatDate } = useI18n();
+  const { confirmAction } = useActionDialog();
   const [items, setItems] = useState<RecordHistoryItem[]>([]);
+  const [pageInfo, setPageInfo] = useState({
+    limit: 50,
+    offset: 0,
+    total: 0,
+    hasNext: false,
+  });
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
   const load = useCallback(async () => {
+    setLoading(true);
     try {
-      const result = await api<{ items: RecordHistoryItem[] }>(
-        `${base}/object-types/${objectTypeId}/records/${record.id}/history`,
-      );
+      const result = await api<{
+        items: RecordHistoryItem[];
+        pageInfo: { limit: number; offset: number; total: number; hasNext: boolean };
+      }>(`${base}/object-types/${objectTypeId}/records/${record.id}/history?limit=50&offset=0`);
       setItems(result.items);
+      setPageInfo(result.pageInfo);
       setError('');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t('data.historyLoadFailed'));
+    } finally {
+      setLoading(false);
     }
   }, [base, objectTypeId, record.id, record.rowVersion, t]);
   useEffect(() => void load(), [load]);
+  async function loadMoreHistory() {
+    if (loadingMore || !pageInfo.hasNext) return;
+    setLoadingMore(true);
+    try {
+      const result = await api<{
+        items: RecordHistoryItem[];
+        pageInfo: { limit: number; offset: number; total: number; hasNext: boolean };
+      }>(
+        `${base}/object-types/${objectTypeId}/records/${record.id}/history?limit=${pageInfo.limit}&offset=${items.length}`,
+      );
+      setItems((current) => {
+        const known = new Set(current.map((item) => item.id));
+        return [...current, ...result.items.filter((item) => !known.has(item.id))];
+      });
+      setPageInfo(result.pageInfo);
+      setError('');
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t('data.historyLoadFailed'));
+    } finally {
+      setLoadingMore(false);
+    }
+  }
   async function undo(item: RecordHistoryItem) {
-    if (!window.confirm(t('data.restoreConfirm'))) return;
+    if (!(await confirmAction(t('data.restoreConfirm')))) return;
     setBusy(item.id);
     try {
       const restored = await api<DynamicRecord>(
@@ -724,10 +902,27 @@ export function RecordHistoryPanel({
             )}
           </li>
         ))}
-        {!items.length && !error && (
+        {!items.length && !error && !loading && (
           <li className="px-4 py-6 text-center text-sm text-slate-500">{t('data.noChanges')}</li>
         )}
+        {loading && !items.length && (
+          <li className="px-4 py-6 text-center text-sm text-slate-500">{t('common.loading')}</li>
+        )}
       </ol>
+      {pageInfo.hasNext && (
+        <div className="mt-3 flex justify-center">
+          <Button
+            disabled={loadingMore}
+            onClick={() => void loadMoreHistory()}
+            type="button"
+            variant="quiet"
+          >
+            {loadingMore
+              ? t('common.loading')
+              : t('data.loadMoreHistory', { shown: items.length, total: pageInfo.total })}
+          </Button>
+        </div>
+      )}
       <ErrorText>{error}</ErrorText>
     </section>
   );

@@ -1,0 +1,1 @@
+CREATE INDEX "task_status_history_project_task_changed_idx" ON "task_status_history" USING btree ("project_id","task_id","changed_at");

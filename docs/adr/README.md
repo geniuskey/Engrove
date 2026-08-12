@@ -17,3 +17,5 @@ All decisions below are accepted for the Community implementation. Use [000-temp
 - [ADR-013: Maintenance-mode encrypted backup and fresh-install restore](013-maintenance-mode-encrypted-backup-and-fresh-install-restore.md) — Accepted
 - [ADR-014: Community-first repository and future Enterprise boundary](014-community-first-repository-and-future-enterprise-boundary.md) — Accepted
 - [ADR-015: Workspace-shared tables with optional project context](015-workspace-shared-tables-with-optional-project-context.md) — Accepted
+- [ADR-016: Fail-closed task-level visibility](016-fail-closed-task-level-visibility.md) — Accepted
+- [ADR-017: Inherited workspace and project access](017-inherited-workspace-project-access.md) — Accepted

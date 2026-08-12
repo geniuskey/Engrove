@@ -16,6 +16,7 @@ boundary.
 Transitive security fixes that are not yet selected by their parent packages are pinned separately:
 
 - `@nestjs/swagger > js-yaml` is pinned to `5.2.2`.
+- `postcss > nanoid` is pinned to `3.3.17`.
 - `tsup > esbuild` is pinned to `0.28.1`.
 
 Run `pnpm audit --audit-level low` as part of every project loop. Do not add an audit ignore without

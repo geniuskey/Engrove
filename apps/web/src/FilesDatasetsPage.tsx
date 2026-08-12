@@ -17,6 +17,7 @@ import {
   menuFromKeyboard,
   menuFromPointer,
 } from './ContextMenu.js';
+import { FormField } from './FormFieldLabel.js';
 import { useI18n } from './i18n.js';
 
 interface FileObject {
@@ -391,27 +392,24 @@ export function FilesDatasetsPage({ user }: { user: User }) {
           className="mt-8 grid gap-3 rounded-2xl border border-slate-800 bg-slate-900/45 p-5 shadow-xl shadow-slate-950/10 md:grid-cols-4"
           onSubmit={(event) => void upload(event)}
         >
-          <input
-            aria-label={t('files.choose')}
-            className={inputClass}
-            name="file"
-            type="file"
-            required
-          />
-          <input
-            aria-label={t('files.seriesName')}
-            className={inputClass}
-            name="seriesName"
-            placeholder={t('files.seriesName')}
-          />
-          <select className={inputClass} name="seriesId" defaultValue="">
-            <option value="">{t('files.newSeries')}</option>
-            {[...new Map(files.map((file) => [file.file_series_id, file])).values()].map((file) => (
-              <option key={file.file_series_id} value={file.file_series_id}>
-                {file.series_name}
-              </option>
-            ))}
-          </select>
+          <FormField label={t('files.choose')} required>
+            <input className={inputClass} name="file" type="file" required />
+          </FormField>
+          <FormField label={t('files.seriesName')}>
+            <input className={inputClass} name="seriesName" />
+          </FormField>
+          <FormField label={t('files.existingSeries')}>
+            <select className={inputClass} name="seriesId" defaultValue="">
+              <option value="">{t('files.newSeries')}</option>
+              {[...new Map(files.map((file) => [file.file_series_id, file])).values()].map(
+                (file) => (
+                  <option key={file.file_series_id} value={file.file_series_id}>
+                    {file.series_name}
+                  </option>
+                ),
+              )}
+            </select>
+          </FormField>
           <Button disabled={busy} type="submit">
             {busy ? t('common.working') : t('files.upload')}
           </Button>
@@ -480,31 +478,30 @@ export function FilesDatasetsPage({ user }: { user: User }) {
             onSubmit={(event) => void createTabular(event)}
           >
             <h2 className="text-xl font-semibold">{t('files.parseCsv')}</h2>
-            <input
-              aria-label={t('files.datasetName')}
-              className={inputClass}
-              name="name"
-              placeholder={t('files.datasetName')}
-              required
-            />
-            <select className={inputClass} name="fileId" required>
-              <option value="">{t('files.selectFile')}</option>
-              {files
-                .filter((file) => file.status === 'available' && !file.archived_at)
-                .map((file) => (
-                  <option key={file.id} value={file.id}>
-                    {file.series_name} v{file.version_number} · {file.original_name}
-                  </option>
-                ))}
-            </select>
-            <input
-              className={inputClass}
-              aria-label={t('files.delimiter')}
-              name="delimiter"
-              defaultValue=","
-              maxLength={1}
-              required
-            />
+            <FormField label={t('files.datasetName')} required>
+              <input className={inputClass} name="name" required />
+            </FormField>
+            <FormField label={t('files.sourceFile')} required>
+              <select className={inputClass} name="fileId" required>
+                <option value="">{t('files.selectFile')}</option>
+                {files
+                  .filter((file) => file.status === 'available' && !file.archived_at)
+                  .map((file) => (
+                    <option key={file.id} value={file.id}>
+                      {file.series_name} v{file.version_number} · {file.original_name}
+                    </option>
+                  ))}
+              </select>
+            </FormField>
+            <FormField label={t('files.delimiter')} required>
+              <input
+                className={inputClass}
+                name="delimiter"
+                defaultValue=","
+                maxLength={1}
+                required
+              />
+            </FormField>
             <Button disabled={busy} type="submit">
               {t('files.createTabular')}
             </Button>
@@ -514,55 +511,55 @@ export function FilesDatasetsPage({ user }: { user: User }) {
             onSubmit={(event) => void createXy(event)}
           >
             <h2 className="text-xl font-semibold">{t('files.deriveXy')}</h2>
-            <input
-              aria-label={t('files.xyName')}
-              className={inputClass}
-              name="name"
-              placeholder={t('files.xyName')}
-              required
-            />
-            <select
-              className={inputClass}
-              value={source?.id ?? ''}
-              onChange={(event) => setSourceDatasetId(event.target.value)}
-              required
-            >
-              <option value="">{t('files.selectTabular')}</option>
-              {tabular.map((dataset) => (
-                <option key={dataset.id} value={dataset.id}>
-                  {dataset.name}
-                </option>
-              ))}
-            </select>
+            <FormField label={t('files.xyName')} required>
+              <input className={inputClass} name="name" required />
+            </FormField>
+            <FormField label={t('files.sourceDataset')} required>
+              <select
+                className={inputClass}
+                value={source?.id ?? ''}
+                onChange={(event) => setSourceDatasetId(event.target.value)}
+                required
+              >
+                <option value="">{t('files.selectTabular')}</option>
+                {tabular.map((dataset) => (
+                  <option key={dataset.id} value={dataset.id}>
+                    {dataset.name}
+                  </option>
+                ))}
+              </select>
+            </FormField>
             <div className="grid grid-cols-2 gap-2">
-              <select className={inputClass} name="xColumnId" required>
-                {source?.schema.columns?.map((column) => (
-                  <option key={column.id} value={column.id}>
-                    X · {column.name}
-                  </option>
-                ))}
-              </select>
-              <select className={inputClass} name="yColumnId" required>
-                {source?.schema.columns?.map((column) => (
-                  <option key={column.id} value={column.id}>
-                    Y · {column.name}
-                  </option>
-                ))}
-              </select>
-              <input
-                className={inputClass}
-                name="xDimension"
-                placeholder={t('files.xDimension')}
-                required
-              />
-              <input className={inputClass} name="xUnit" placeholder={t('files.xUnit')} required />
-              <input
-                className={inputClass}
-                name="yDimension"
-                placeholder={t('files.yDimension')}
-                required
-              />
-              <input className={inputClass} name="yUnit" placeholder={t('files.yUnit')} required />
+              <FormField label={t('files.xColumn')} required>
+                <select className={inputClass} name="xColumnId" required>
+                  {source?.schema.columns?.map((column) => (
+                    <option key={column.id} value={column.id}>
+                      X · {column.name}
+                    </option>
+                  ))}
+                </select>
+              </FormField>
+              <FormField label={t('files.yColumn')} required>
+                <select className={inputClass} name="yColumnId" required>
+                  {source?.schema.columns?.map((column) => (
+                    <option key={column.id} value={column.id}>
+                      Y · {column.name}
+                    </option>
+                  ))}
+                </select>
+              </FormField>
+              <FormField label={t('files.xDimension')} required>
+                <input className={inputClass} name="xDimension" required />
+              </FormField>
+              <FormField label={t('files.xUnit')} required>
+                <input className={inputClass} name="xUnit" required />
+              </FormField>
+              <FormField label={t('files.yDimension')} required>
+                <input className={inputClass} name="yDimension" required />
+              </FormField>
+              <FormField label={t('files.yUnit')} required>
+                <input className={inputClass} name="yUnit" required />
+              </FormField>
             </div>
             <Button disabled={busy || !source} type="submit">
               {t('files.createXy')}

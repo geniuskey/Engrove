@@ -23,6 +23,7 @@ import {
 } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { allowed, api, HelpTip, inputClass, NoticeText, type User } from './App.js';
+import { useActionDialog } from './ActionDialogProvider.js';
 import {
   ContextMenu,
   type ContextMenuItem,
@@ -30,7 +31,10 @@ import {
   menuFromKeyboard,
   menuFromPointer,
 } from './ContextMenu.js';
+import { FormFieldLabel } from './FormFieldLabel.js';
+import { IconAction } from './IconAction.js';
 import { useI18n } from './i18n.js';
+import { RemoteOptionPicker } from './RemoteOptionPicker.js';
 
 echarts.use([
   BarChart,
@@ -49,8 +53,8 @@ const visualizationSourceCopy = {
   en: {
     emptyTitle: 'Add a data source to start visualizing',
     emptyBody:
-      'This project has no datasets or record tables yet. Upload a CSV and derive an XY dataset for line and statistical charts, or create a record table for live dashboard cards.',
-    addDataset: 'Add a dataset',
+      'This project has no record tables yet. Create a typed table for live dashboard cards, or review external materials before modeling the fields you need.',
+    openSources: 'Review external materials',
     createTable: 'Create a record table',
     noXy: 'No ready XY dataset is available in this project.',
     noNumeric: 'No ready dataset with a numeric column is available.',
@@ -60,8 +64,8 @@ const visualizationSourceCopy = {
   ko: {
     emptyTitle: '시각화를 시작할 데이터 소스를 추가하세요',
     emptyBody:
-      '이 프로젝트에는 아직 데이터셋이나 레코드 테이블이 없습니다. CSV를 업로드하고 XY 데이터셋을 파생해 선·통계 차트를 만들거나, 레코드 테이블을 만들어 라이브 대시보드 카드를 구성하세요.',
-    addDataset: '데이터셋 추가',
+      '이 프로젝트에는 아직 레코드 테이블이 없습니다. 라이브 대시보드 카드용 테이블을 만들거나, 필요한 필드를 모델링하기 전에 외부 자료를 검토하세요.',
+    openSources: '외부 자료 검토',
     createTable: '레코드 테이블 만들기',
     noXy: '이 프로젝트에 준비된 XY 데이터셋이 없습니다.',
     noNumeric: '수치 컬럼이 있는 준비된 데이터셋이 없습니다.',
@@ -104,6 +108,12 @@ interface Chart {
   sources: ChartSource[];
   archived_at: string | null;
   revisions?: Array<{ id: string }>;
+}
+interface VisualizationPageInfo {
+  limit: number;
+  offset: number;
+  total: number;
+  hasNext: boolean;
 }
 type Literal = string | number | boolean | null;
 type FilterNode =
@@ -852,8 +862,21 @@ function VisualizationElementIcon({ kind }: { kind: VisualizationElementKind }) 
   );
 }
 
+function mergeVisualizations<T extends { id: string }>(current: T[], incoming: T[]): T[] {
+  const byId = new Map(current.map((item) => [item.id, item]));
+  for (const item of incoming) byId.set(item.id, item);
+  return [...byId.values()];
+}
+
+function activeVisualizationsFirst<T extends { archived_at: string | null }>(items: T[]): T[] {
+  return [...items].sort(
+    (left, right) => Number(Boolean(left.archived_at)) - Number(Boolean(right.archived_at)),
+  );
+}
+
 export function VisualizationsPage({ user }: { user: User }) {
   const { formatNumber, formatTime, locale, t } = useI18n();
+  const { confirmAction } = useActionDialog();
   const sourceCopy = visualizationSourceCopy[locale];
   const { workspaceId, projectId } = useParams();
   const navigate = useNavigate();
@@ -861,6 +884,32 @@ export function VisualizationsPage({ user }: { user: User }) {
   const [datasets, setDatasets] = useState<Dataset[]>([]),
     [charts, setCharts] = useState<Chart[]>([]),
     [dashboards, setDashboards] = useState<Dashboard[]>([]);
+  const [chartPage, setChartPage] = useState<VisualizationPageInfo>({
+    limit: 50,
+    offset: 0,
+    total: 0,
+    hasNext: false,
+  });
+  const [dashboardPage, setDashboardPage] = useState<VisualizationPageInfo>({
+    limit: 50,
+    offset: 0,
+    total: 0,
+    hasNext: false,
+  });
+  const [datasetOptions, setDatasetOptions] = useState<Dataset[]>([]);
+  const [datasetPage, setDatasetPage] = useState<VisualizationPageInfo>({
+    limit: 50,
+    offset: 0,
+    total: 0,
+    hasNext: false,
+  });
+  const [datasetOverallTotal, setDatasetOverallTotal] = useState(0);
+  const [datasetSearch, setDatasetSearch] = useState('');
+  const [datasetQuery, setDatasetQuery] = useState('');
+  const [datasetsLoading, setDatasetsLoading] = useState(true);
+  const [loadingMoreDatasets, setLoadingMoreDatasets] = useState(false);
+  const [selectedDatasetIds, setSelectedDatasetIds] = useState<string[]>([]);
+  const [selectedStatisticalDatasetId, setSelectedStatisticalDatasetId] = useState('');
   const [metrics, setMetrics] = useState<Metrics>(),
     [message, setMessage] = useState(''),
     [selectedDashboard, setSelectedDashboard] = useState('');
@@ -868,16 +917,23 @@ export function VisualizationsPage({ user }: { user: User }) {
   const [loading, setLoading] = useState(true);
   const [recordTablesLoading, setRecordTablesLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [loadingMore, setLoadingMore] = useState<'charts' | 'dashboards' | ''>('');
   const [showElementLibrary, setShowElementLibrary] = useState(false);
   const [showNewDashboard, setShowNewDashboard] = useState(false);
   const [elementPickerStep, setElementPickerStep] = useState<1 | 2 | 3>(1);
   const [elementKind, setElementKind] = useState<VisualizationElementKind>();
   const [elementSize, setElementSize] = useState<VisualizationElementSize>('wide');
   const [recordTables, setRecordTables] = useState<ObjectType[]>([]);
+  const [recordTableOptions, setRecordTableOptions] = useState<ObjectType[]>([]);
+  const [recordTableSearch, setRecordTableSearch] = useState('');
+  const [recordTableQuery, setRecordTableQuery] = useState('');
   const [recordFields, setRecordFields] = useState<RecordField[]>([]);
   const [recordViews, setRecordViews] = useState<RecordView[]>([]);
+  const [recordMetadataLoading, setRecordMetadataLoading] = useState(false);
   const [recordSourceId, setRecordSourceId] = useState('');
   const [recordViewId, setRecordViewId] = useState('');
+  const [selectedRecordView, setSelectedRecordView] = useState<RecordView>();
+  const [selectedSavedChart, setSelectedSavedChart] = useState<Chart>();
   const [recordChartType, setRecordChartType] = useState<'bar' | 'donut'>('bar');
   const [recordGroupFieldId, setRecordGroupFieldId] = useState('');
   const [recordListFieldIds, setRecordListFieldIds] = useState<string[]>([]);
@@ -890,10 +946,38 @@ export function VisualizationsPage({ user }: { user: User }) {
     Record<string, Pick<DashboardCard, 'x' | 'y' | 'width' | 'height'>>
   >({});
   const dashboardGridRef = useRef<HTMLDivElement>(null);
+  const savedChartEndpoint = useCallback(
+    (query: string, limit: number) => {
+      const parameters = new URLSearchParams({
+        archiveState: 'active',
+        limit: String(limit),
+        offset: '0',
+      });
+      if (query) parameters.set('query', query);
+      return `${base}/charts?${parameters.toString()}`;
+    },
+    [base],
+  );
+  const recordViewEndpoint = useCallback(
+    (query: string, limit: number) => {
+      const parameters = new URLSearchParams({ limit: String(limit), offset: '0' });
+      if (query) parameters.set('query', query);
+      return `${base}/object-types/${recordSourceId}/views?${parameters.toString()}`;
+    },
+    [base, recordSourceId],
+  );
   useEffect(() => {
     const timeout = window.setTimeout(() => setDashboardQuery(dashboardSearch), 250);
     return () => window.clearTimeout(timeout);
   }, [dashboardSearch]);
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setRecordTableQuery(recordTableSearch), 250);
+    return () => window.clearTimeout(timeout);
+  }, [recordTableSearch]);
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setDatasetQuery(datasetSearch), 250);
+    return () => window.clearTimeout(timeout);
+  }, [datasetSearch]);
   useEffect(() => {
     if (!showElementLibrary) return;
     const closePicker = (event: KeyboardEvent) => {
@@ -902,17 +986,49 @@ export function VisualizationsPage({ user }: { user: User }) {
     window.addEventListener('keydown', closePicker);
     return () => window.removeEventListener('keydown', closePicker);
   }, [showElementLibrary]);
+  useEffect(() => {
+    setDatasets([]);
+    setDatasetOptions([]);
+    setDatasetOverallTotal(0);
+    setDatasetSearch('');
+    setDatasetQuery('');
+    setSelectedDatasetIds([]);
+    setSelectedStatisticalDatasetId('');
+    setRecordTables([]);
+    setRecordTableOptions([]);
+    setRecordSourceId('');
+    setRecordTableSearch('');
+    setRecordTableQuery('');
+  }, [base]);
   const refresh = useCallback(async () => {
     try {
-      const [d, c, b, m] = await Promise.all([
-        api<{ items: Dataset[] }>(`${base}/datasets`),
-        api<{ items: Chart[] }>(`${base}/charts?includeArchived=true`),
-        api<{ items: Dashboard[] }>(`${base}/dashboards?includeArchived=true`),
+      const [c, b, m] = await Promise.all([
+        api<{ items: Chart[]; pageInfo?: VisualizationPageInfo }>(
+          `${base}/charts?archiveState=all&limit=50&offset=0`,
+        ),
+        api<{ items: Dashboard[]; pageInfo?: VisualizationPageInfo }>(
+          `${base}/dashboards?archiveState=all&limit=50&offset=0`,
+        ),
         api<Metrics>(`${base}/dashboard-metrics`),
       ]);
-      setDatasets(d.items);
-      setCharts(c.items);
-      setDashboards(b.items);
+      setCharts(activeVisualizationsFirst(c.items));
+      setDashboards(activeVisualizationsFirst(b.items));
+      setChartPage(
+        c.pageInfo ?? {
+          limit: 50,
+          offset: 0,
+          total: c.items.length,
+          hasNext: false,
+        },
+      );
+      setDashboardPage(
+        b.pageInfo ?? {
+          limit: 50,
+          offset: 0,
+          total: b.items.length,
+          hasNext: false,
+        },
+      );
       setMetrics(m);
       setMessage('');
     } catch (cause) {
@@ -923,15 +1039,112 @@ export function VisualizationsPage({ user }: { user: User }) {
     }
   }, [base, t]);
   useEffect(() => void refresh(), [refresh]);
+
+  useEffect(() => {
+    let active = true;
+    const query = datasetQuery.trim();
+    const parameters = new URLSearchParams({ limit: '50', offset: '0' });
+    if (query) parameters.set('query', query);
+    setDatasetsLoading(true);
+    void api<{ items: Dataset[]; pageInfo?: VisualizationPageInfo }>(
+      `${base}/datasets?${parameters.toString()}`,
+    )
+      .then((response) => {
+        if (!active) return;
+        const pageInfo = response.pageInfo ?? {
+          limit: 50,
+          offset: 0,
+          total: response.items.length,
+          hasNext: false,
+        };
+        setDatasetOptions(response.items);
+        setDatasetPage(pageInfo);
+        if (!query) setDatasetOverallTotal(pageInfo.total);
+        setDatasets((current) => mergeVisualizations(current, response.items));
+      })
+      .catch((cause: unknown) => {
+        if (!active) return;
+        setMessageTone('error');
+        setMessage(cause instanceof Error ? cause.message : t('visualizations.loadError'));
+      })
+      .finally(() => {
+        if (active) setDatasetsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [base, datasetQuery, t]);
+
+  async function loadMoreDatasets() {
+    if (loadingMoreDatasets || !datasetPage.hasNext) return;
+    const parameters = new URLSearchParams({
+      limit: String(datasetPage.limit),
+      offset: String(datasetOptions.length),
+    });
+    const query = datasetQuery.trim();
+    if (query) parameters.set('query', query);
+    setLoadingMoreDatasets(true);
+    try {
+      const response = await api<{ items: Dataset[]; pageInfo: VisualizationPageInfo }>(
+        `${base}/datasets?${parameters.toString()}`,
+      );
+      setDatasetOptions((current) => mergeVisualizations(current, response.items));
+      setDatasets((current) => mergeVisualizations(current, response.items));
+      setDatasetPage(response.pageInfo);
+    } catch (cause) {
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : t('visualizations.loadError'));
+    } finally {
+      setLoadingMoreDatasets(false);
+    }
+  }
+
+  async function loadMoreVisualizations(kind: 'charts' | 'dashboards') {
+    if (loadingMore) return;
+    const currentItems = kind === 'charts' ? charts : dashboards;
+    const currentPage = kind === 'charts' ? chartPage : dashboardPage;
+    if (!currentPage.hasNext) return;
+    setLoadingMore(kind);
+    try {
+      const page = await api<{
+        items: Chart[] | Dashboard[];
+        pageInfo: VisualizationPageInfo;
+      }>(
+        `${base}/${kind}?archiveState=all&limit=${currentPage.limit}&offset=${currentItems.length}`,
+      );
+      if (kind === 'charts') {
+        setCharts((current) =>
+          activeVisualizationsFirst(mergeVisualizations(current, page.items as Chart[])),
+        );
+        setChartPage(page.pageInfo);
+      } else {
+        setDashboards((current) =>
+          activeVisualizationsFirst(mergeVisualizations(current, page.items as Dashboard[])),
+        );
+        setDashboardPage(page.pageInfo);
+      }
+    } catch (cause) {
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : t('visualizations.loadError'));
+    } finally {
+      setLoadingMore('');
+    }
+  }
   useEffect(() => {
     let active = true;
     setRecordTablesLoading(true);
-    setRecordTables([]);
-    setRecordSourceId('');
-    void api<{ items: ObjectType[] }>(`${base}/object-types`)
+    const tablePath = recordTableQuery.trim()
+      ? `${base}/object-types?query=${encodeURIComponent(recordTableQuery.trim())}&limit=50&offset=0`
+      : `${base}/object-types?limit=50&offset=0`;
+    void api<{ items: ObjectType[] }>(tablePath)
       .then((response) => {
         if (!active) return;
-        setRecordTables(response.items);
+        setRecordTableOptions(response.items);
+        setRecordTables((current) => {
+          const merged = new Map(current.map((item) => [item.id, item]));
+          response.items.forEach((item) => merged.set(item.id, item));
+          return [...merged.values()];
+        });
         setRecordSourceId((current) => current || response.items[0]?.id || '');
       })
       .catch((cause: unknown) => {
@@ -945,17 +1158,31 @@ export function VisualizationsPage({ user }: { user: User }) {
     return () => {
       active = false;
     };
-  }, [base, t]);
+  }, [base, recordTableQuery, t]);
   useEffect(() => {
-    if (!recordSourceId) {
-      setRecordFields([]);
-      setRecordViews([]);
+    const configuringRecordElement =
+      showElementLibrary && elementPickerStep === 3 && elementKind?.startsWith('record_');
+    if (!configuringRecordElement || !recordSourceId) {
+      if (!recordSourceId) {
+        setRecordFields([]);
+        setRecordViews([]);
+        setRecordViewId('');
+        setSelectedRecordView(undefined);
+      }
+      setRecordMetadataLoading(false);
       return;
     }
+    setRecordMetadataLoading(true);
+    setRecordFields([]);
+    setRecordViews([]);
+    setRecordViewId('');
+    setSelectedRecordView(undefined);
     let active = true;
     void Promise.all([
       api<{ items: RecordField[] }>(`${base}/object-types/${recordSourceId}/fields`),
-      api<{ items: RecordView[] }>(`${base}/object-types/${recordSourceId}/views`),
+      api<{ items: RecordView[] }>(
+        `${base}/object-types/${recordSourceId}/views?limit=20&offset=0`,
+      ),
     ])
       .then(([fieldResponse, viewResponse]) => {
         if (!active) return;
@@ -966,7 +1193,6 @@ export function VisualizationsPage({ user }: { user: User }) {
         );
         setRecordFields(usableFields);
         setRecordViews(viewResponse.items);
-        setRecordViewId('');
         setRecordGroupFieldId(
           usableFields.find((field) =>
             ['single_select', 'multi_select', 'boolean', 'date', 'datetime'].includes(
@@ -980,36 +1206,55 @@ export function VisualizationsPage({ user }: { user: User }) {
         if (!active) return;
         setMessageTone('error');
         setMessage(cause instanceof Error ? cause.message : t('visualizations.fieldsError'));
+      })
+      .finally(() => {
+        if (active) setRecordMetadataLoading(false);
       });
     return () => {
       active = false;
     };
-  }, [base, recordSourceId, t]);
+  }, [base, elementKind, elementPickerStep, recordSourceId, showElementLibrary, t]);
+  const selectableDatasets = useMemo(() => {
+    const selected = datasets.filter(
+      (dataset) =>
+        selectedDatasetIds.includes(dataset.id) || dataset.id === selectedStatisticalDatasetId,
+    );
+    return mergeVisualizations(selected, datasetOptions);
+  }, [datasetOptions, datasets, selectedDatasetIds, selectedStatisticalDatasetId]);
   const xy = useMemo(
-    () => datasets.filter((dataset) => dataset.status === 'ready' && dataset.dataset_type === 'xy'),
-    [datasets],
+    () =>
+      selectableDatasets.filter(
+        (dataset) => dataset.status === 'ready' && dataset.dataset_type === 'xy',
+      ),
+    [selectableDatasets],
   );
   const statisticalDatasets = useMemo(
     () =>
-      datasets.filter(
+      selectableDatasets.filter(
         (dataset) =>
           dataset.status === 'ready' &&
           dataset.schema.columns?.some((column) =>
             /(int|float|double|decimal)/i.test(column.dataType),
           ),
       ),
-    [datasets],
+    [selectableDatasets],
   );
-  const sourceDiscoveryComplete = !loading && !recordTablesLoading;
-  const hasVisualizationSources = datasets.length > 0 || recordTables.length > 0;
+  const sourceDiscoveryComplete = !loading && !datasetsLoading && !recordTablesLoading;
+  const hasVisualizationSources = datasetOverallTotal > 0 || recordTables.length > 0;
   const dashboard = dashboards.find((item) => item.id === selectedDashboard) ?? dashboards[0];
+  const dashboardEditable = Boolean(
+    dashboard && !dashboard.archived_at && allowed(user, 'dashboard.manage'),
+  );
   useEffect(() => setLayoutDraft({}), [dashboard?.id, dashboard?.revision_number]);
   const liveCardCount =
     dashboard?.cards.filter((card) =>
       ['record_kpi', 'record_chart', 'record_list'].includes(card.card_type),
     ).length ?? 0;
   const selectedRecordTable = recordTables.find((item) => item.id === recordSourceId);
-  const selectedRecordView = recordViews.find((item) => item.id === recordViewId);
+  const selectableRecordTables =
+    selectedRecordTable && !recordTableOptions.some((item) => item.id === selectedRecordTable.id)
+      ? [selectedRecordTable, ...recordTableOptions]
+      : recordTableOptions;
   const recordGroupFields = recordFields.filter((field) =>
     ['single_select', 'multi_select', 'boolean', 'date', 'datetime'].includes(field.fieldType),
   );
@@ -1094,6 +1339,40 @@ export function VisualizationsPage({ user }: { user: User }) {
       setBusy(false);
     }
   }
+  async function changeChartLifecycle(chart: Chart) {
+    if (
+      !chart.archived_at &&
+      !(await confirmAction(t('visualizations.archiveChartConfirm', { name: chart.name }), {
+        tone: 'danger',
+      }))
+    )
+      return;
+    await mutate(() =>
+      api(`${base}/charts/${chart.id}/${chart.archived_at ? 'restore' : 'archive'}`, {
+        method: chart.archived_at ? 'POST' : 'PATCH',
+        ...(chart.archived_at
+          ? {}
+          : { body: JSON.stringify({ reason: 'Archived from visualization catalog' }) }),
+      }),
+    );
+  }
+  async function changeDashboardLifecycle(target: Dashboard) {
+    if (
+      !target.archived_at &&
+      !(await confirmAction(t('visualizations.archiveDashboardConfirm', { name: target.name }), {
+        tone: 'danger',
+      }))
+    )
+      return;
+    await mutate(() =>
+      api(`${base}/dashboards/${target.id}/${target.archived_at ? 'restore' : 'archive'}`, {
+        method: target.archived_at ? 'POST' : 'PATCH',
+        ...(target.archived_at
+          ? {}
+          : { body: JSON.stringify({ reason: 'Archived from dashboard catalog' }) }),
+      }),
+    );
+  }
   async function createDashboard(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -1130,6 +1409,10 @@ export function VisualizationsPage({ user }: { user: User }) {
     setElementPickerStep(1);
     setElementKind(undefined);
     setElementSize('wide');
+    setDatasetSearch('');
+    setSelectedDatasetIds([]);
+    setSelectedStatisticalDatasetId('');
+    setSelectedSavedChart(undefined);
     setShowElementLibrary(true);
   }
 
@@ -1186,7 +1469,7 @@ export function VisualizationsPage({ user }: { user: User }) {
           config: { title },
         };
       } else if (elementKind === 'saved_chart') {
-        const chart = charts.find((candidate) => candidate.id === form.get('chartId'));
+        const chart = selectedSavedChart;
         if (!chart) {
           validationError = t('visualizations.chooseSavedChart');
           throw new Error(validationError);
@@ -1198,7 +1481,7 @@ export function VisualizationsPage({ user }: { user: User }) {
           config: { title },
         };
       } else if (elementKind === 'xy_chart') {
-        const selected = form.getAll('datasets').map(String);
+        const selected = selectedDatasetIds;
         if (!selected.length) {
           validationError = t('visualizations.selectXy');
           throw new Error(validationError);
@@ -1262,7 +1545,9 @@ export function VisualizationsPage({ user }: { user: User }) {
           config: { title },
         };
       } else if (elementKind === 'statistical_chart') {
-        const dataset = statisticalDatasets.find((item) => item.id === form.get('datasetId'));
+        const dataset = statisticalDatasets.find(
+          (item) => item.id === selectedStatisticalDatasetId,
+        );
         const column = dataset?.schema.columns?.find((candidate) =>
           /(int|float|double|decimal)/i.test(candidate.dataType),
         );
@@ -1391,6 +1676,9 @@ export function VisualizationsPage({ user }: { user: User }) {
       setShowElementLibrary(false);
       setElementPickerStep(1);
       setElementKind(undefined);
+      setDatasetSearch('');
+      setSelectedDatasetIds([]);
+      setSelectedStatisticalDatasetId('');
       setMessage(t('visualizations.elementInserted'));
     } else if (validationError) {
       setMessage(validationError);
@@ -1490,7 +1778,7 @@ export function VisualizationsPage({ user }: { user: User }) {
             } satisfies ContextMenuItem,
           ]
         : []),
-      ...(allowed(user, 'dashboard.manage')
+      ...(dashboardEditable
         ? [
             {
               label: t('visualizations.duplicateCard'),
@@ -1586,7 +1874,7 @@ export function VisualizationsPage({ user }: { user: User }) {
       name: t('visualizations.elementXyName'),
       body: t('visualizations.elementXyBody'),
       accent: 'text-indigo-300 bg-indigo-500/10 border-indigo-500/20',
-      disabled: xy.length === 0,
+      disabled: datasetOverallTotal === 0,
     },
     {
       kind: 'statistical_chart',
@@ -1594,7 +1882,7 @@ export function VisualizationsPage({ user }: { user: User }) {
       name: t('visualizations.elementStatName'),
       body: t('visualizations.elementStatBody'),
       accent: 'text-fuchsia-300 bg-fuchsia-500/10 border-fuchsia-500/20',
-      disabled: statisticalDatasets.length === 0,
+      disabled: datasetOverallTotal === 0,
     },
     {
       kind: 'record_kpi',
@@ -1667,15 +1955,15 @@ export function VisualizationsPage({ user }: { user: User }) {
               <div className="mt-5 flex flex-wrap gap-3">
                 <Link
                   className="rounded-lg bg-sky-400 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-sky-300"
-                  to={`${base}/files-datasets`}
-                >
-                  {sourceCopy.addDataset}
-                </Link>
-                <Link
-                  className="rounded-lg border border-slate-700 bg-slate-900/70 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-sky-400/50 hover:text-sky-200"
                   to={`${base}/data`}
                 >
                   {sourceCopy.createTable}
+                </Link>
+                <Link
+                  className="rounded-lg border border-slate-700 bg-slate-900/70 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-sky-400/50 hover:text-sky-200"
+                  to={`${base}/sources`}
+                >
+                  {sourceCopy.openSources}
                 </Link>
               </div>
             </div>
@@ -1700,7 +1988,14 @@ export function VisualizationsPage({ user }: { user: User }) {
                 >
                   <div className="flex justify-between">
                     <div>
-                      <h3 className="font-semibold">{chart.name}</h3>
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-semibold">{chart.name}</h3>
+                        {chart.archived_at && (
+                          <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-amber-300">
+                            {t('common.archived')}
+                          </span>
+                        )}
+                      </div>
                       <p className="text-xs text-slate-500">
                         {t('visualizations.revisionSummary', {
                           revision: chart.revision_number,
@@ -1710,52 +2005,82 @@ export function VisualizationsPage({ user }: { user: User }) {
                       </p>
                     </div>
                     {allowed(user, 'dashboard.manage') && (
-                      <button
-                        className="text-sm text-sky-400"
-                        onClick={() =>
-                          void mutate(() =>
-                            api(`${base}/charts/${chart.id}/revisions`, {
-                              method: 'POST',
-                              body: JSON.stringify({
-                                name: chart.name,
-                                description: chart.description,
-                                chartType: chart.chart_type,
-                                configVersion: chart.config_version,
-                                config: chart.config,
-                                sources: chart.sources.map((source) => ({
-                                  sourceKey: source.source_key,
-                                  datasetId: source.dataset_id,
-                                  sourceRole: source.source_role,
-                                  seriesOrder: source.series_order,
-                                })),
-                                changeNote: 'Explicit republish',
-                              }),
-                            }),
-                          )
-                        }
-                      >
-                        {t('visualizations.publishRevision')}
-                      </button>
+                      <div className="flex items-center gap-2">
+                        {!chart.archived_at && (
+                          <button
+                            className="text-sm text-sky-400"
+                            onClick={() =>
+                              void mutate(() =>
+                                api(`${base}/charts/${chart.id}/revisions`, {
+                                  method: 'POST',
+                                  body: JSON.stringify({
+                                    name: chart.name,
+                                    description: chart.description,
+                                    chartType: chart.chart_type,
+                                    configVersion: chart.config_version,
+                                    config: chart.config,
+                                    sources: chart.sources.map((source) => ({
+                                      sourceKey: source.source_key,
+                                      datasetId: source.dataset_id,
+                                      sourceRole: source.source_role,
+                                      seriesOrder: source.series_order,
+                                    })),
+                                    changeNote: 'Explicit republish',
+                                  }),
+                                }),
+                              )
+                            }
+                          >
+                            {t('visualizations.publishRevision')}
+                          </button>
+                        )}
+                        <IconAction
+                          disabled={busy}
+                          icon={chart.archived_at ? '↥' : '⌑'}
+                          label={t(
+                            chart.archived_at
+                              ? 'visualizations.restoreChart'
+                              : 'visualizations.archiveChart',
+                            { name: chart.name },
+                          )}
+                          onClick={() => void changeChartLifecycle(chart)}
+                          tone={chart.archived_at ? 'success' : 'danger'}
+                          tooltipAlign="end"
+                        />
+                      </div>
                     )}
                   </div>
                   <ChartView base={base} revisionId={chart.current_revision_id} fallback={chart} />
                   <div className="text-xs text-slate-500">
                     {chart.sources.map((source) => (
-                      <Link
-                        className="mr-3 text-sky-400"
-                        key={source.source_key}
-                        to={`${base}/files-datasets`}
-                      >
+                      <span className="mr-3 text-slate-500" key={source.source_key}>
                         {t('visualizations.source', {
                           key: source.source_key,
                           id: source.dataset_id,
                         })}
-                      </Link>
+                      </span>
                     ))}
                   </div>
                 </article>
               ))}
             </div>
+            {chartPage.hasNext && (
+              <div className="mt-4 text-center">
+                <Button
+                  disabled={Boolean(loadingMore)}
+                  onClick={() => void loadMoreVisualizations('charts')}
+                  type="button"
+                  variant="quiet"
+                >
+                  {loadingMore === 'charts'
+                    ? t('common.loading')
+                    : t('visualizations.loadMoreCharts', {
+                        shown: charts.length,
+                        total: chartPage.total,
+                      })}
+                </Button>
+              </div>
+            )}
           </div>
         </details>
         <section className="order-2 mt-6">
@@ -1764,6 +2089,11 @@ export function VisualizationsPage({ user }: { user: User }) {
               <h2 className="text-2xl font-semibold">
                 {dashboard?.name ?? t('visualizations.canvasTitle')}
               </h2>
+              {dashboard?.archived_at && (
+                <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-amber-300">
+                  {t('common.archived')}
+                </span>
+              )}
               <HelpTip label={t('visualizations.dashboardHelp')}>
                 {t('visualizations.dashboardHelpBody')}
               </HelpTip>
@@ -1782,11 +2112,41 @@ export function VisualizationsPage({ user }: { user: User }) {
                         name: item.name,
                         revision: item.revision_number,
                       })}
+                      {item.archived_at ? ` · ${t('common.archived')}` : ''}
                     </option>
                   ))}
                 </select>
               )}
               {dashboard && allowed(user, 'dashboard.manage') && (
+                <IconAction
+                  disabled={busy}
+                  icon={dashboard.archived_at ? '↥' : '⌑'}
+                  label={t(
+                    dashboard.archived_at
+                      ? 'visualizations.restoreDashboard'
+                      : 'visualizations.archiveDashboard',
+                    { name: dashboard.name },
+                  )}
+                  onClick={() => void changeDashboardLifecycle(dashboard)}
+                  tone={dashboard.archived_at ? 'success' : 'danger'}
+                />
+              )}
+              {dashboardPage.hasNext && (
+                <button
+                  className="rounded-lg px-2 py-2 text-xs text-sky-400 hover:bg-sky-500/10"
+                  disabled={Boolean(loadingMore)}
+                  onClick={() => void loadMoreVisualizations('dashboards')}
+                  type="button"
+                >
+                  {loadingMore === 'dashboards'
+                    ? t('common.loading')
+                    : t('visualizations.loadMoreDashboards', {
+                        shown: dashboards.length,
+                        total: dashboardPage.total,
+                      })}
+                </button>
+              )}
+              {dashboardEditable && (
                 <Button disabled={busy} onClick={openElementPicker}>
                   <span aria-hidden="true">＋</span> {t('visualizations.addElement')}
                 </Button>
@@ -1809,25 +2169,22 @@ export function VisualizationsPage({ user }: { user: User }) {
                     time: formatTime(lastRecordRefreshAt),
                   })}
                 </span>
-                <button
-                  className="rounded-md px-2 py-1 text-sky-400 hover:bg-sky-500/10"
+                <IconAction
+                  icon="↻"
+                  label={t('visualizations.refresh')}
                   onClick={refreshLiveCards}
-                  type="button"
-                >
-                  {t('visualizations.refresh')}
-                </button>
+                  tone="accent"
+                />
               </div>
             )}
-            {dashboard && allowed(user, 'dashboard.manage') && (
+            {dashboardEditable && (
               <div className="flex items-center gap-2">
                 {Object.keys(layoutDraft).length > 0 && (
-                  <button
-                    className="text-xs text-slate-500 hover:text-slate-200"
+                  <IconAction
+                    icon="↶"
+                    label={t('visualizations.resetLayout')}
                     onClick={() => setLayoutDraft({})}
-                    type="button"
-                  >
-                    {t('visualizations.resetLayout')}
-                  </button>
+                  />
                 )}
                 <button
                   className="text-sm text-sky-400"
@@ -1844,14 +2201,10 @@ export function VisualizationsPage({ user }: { user: User }) {
               className="mt-4 flex flex-col gap-3 rounded-2xl border border-sky-500/25 bg-sky-500/5 p-4 sm:flex-row sm:items-center"
               onSubmit={(event) => void createDashboard(event)}
             >
-              <input
-                aria-label={t('visualizations.dashboardName')}
-                autoFocus
-                className={`${inputClass} flex-1`}
-                name="name"
-                placeholder={t('visualizations.dashboardName')}
-                required
-              />
+              <label className="grid flex-1 gap-1 text-xs text-slate-400">
+                <FormFieldLabel required>{t('visualizations.dashboardName')}</FormFieldLabel>
+                <input autoFocus className={inputClass} name="name" required />
+              </label>
               <Button disabled={busy} type="submit">
                 {t('visualizations.createCanvas')}
               </Button>
@@ -1904,34 +2257,31 @@ export function VisualizationsPage({ user }: { user: User }) {
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-2">
-                      {allowed(user, 'dashboard.manage') && (
-                        <button
-                          aria-label={t('visualizations.moveCard', {
+                      {dashboardEditable && (
+                        <IconAction
+                          className="cursor-grab active:cursor-grabbing"
+                          icon="⠿"
+                          label={t('visualizations.moveCard', {
                             title: card.config.title ?? 'card',
                           })}
-                          className="cursor-grab rounded px-1 text-slate-600 hover:bg-slate-800 hover:text-sky-300 active:cursor-grabbing"
                           onPointerDown={(event) => beginLayoutChange(event, card, 'move')}
-                          title={t('visualizations.dragMove')}
-                          type="button"
-                        >
-                          ⠿
-                        </button>
+                          tone="accent"
+                        />
                       )}
                       <h3 className="truncate text-sm font-medium text-slate-300">
                         {card.config.title}
                       </h3>
                     </div>
-                    {allowed(user, 'dashboard.manage') && (
-                      <button
-                        aria-label={t('visualizations.removeCard', {
+                    {dashboardEditable && (
+                      <IconAction
+                        icon="×"
+                        label={t('visualizations.removeCard', {
                           title: card.config.title ?? 'card',
                         })}
-                        className="text-xs text-slate-500 hover:text-rose-300"
                         onClick={() => void removeDashboardCard(card.id)}
-                        type="button"
-                      >
-                        {t('visualizations.remove')}
-                      </button>
+                        tone="danger"
+                        tooltipAlign="end"
+                      />
                     )}
                   </div>
                   {card.card_type === 'chart' && card.chart_revision_id ? (
@@ -1962,22 +2312,23 @@ export function VisualizationsPage({ user }: { user: User }) {
                   ) : (
                     <p className="mt-4 text-4xl font-semibold">{metrics?.overdue_tasks ?? 0}</p>
                   )}
-                  {allowed(user, 'dashboard.manage') && (
-                    <button
-                      aria-label={t('visualizations.resizeCard', {
-                        title: card.config.title ?? 'card',
-                      })}
-                      className="absolute bottom-1 right-1 cursor-nwse-resize px-1 text-slate-700 hover:text-sky-300"
-                      onPointerDown={(event) => beginLayoutChange(event, card, 'resize')}
-                      title={t('visualizations.dragResize')}
-                      type="button"
-                    >
-                      ◢
-                    </button>
+                  {dashboardEditable && (
+                    <span className="absolute bottom-1 right-1">
+                      <IconAction
+                        className="cursor-nwse-resize"
+                        icon="◢"
+                        label={t('visualizations.resizeCard', {
+                          title: card.config.title ?? 'card',
+                        })}
+                        onPointerDown={(event) => beginLayoutChange(event, card, 'resize')}
+                        tone="accent"
+                        tooltipAlign="end"
+                      />
+                    </span>
                   )}
                 </article>
               ))}
-              {allowed(user, 'dashboard.manage') && (
+              {dashboardEditable && (
                 <button
                   className="col-span-12 flex min-h-24 items-center justify-center gap-2 rounded-2xl border border-dashed border-slate-700 bg-slate-950/20 text-sm font-medium text-slate-500 transition hover:border-sky-500/50 hover:bg-sky-500/5 hover:text-sky-300"
                   onClick={openElementPicker}
@@ -1994,19 +2345,23 @@ export function VisualizationsPage({ user }: { user: User }) {
             <div className="mt-5 grid min-h-[32rem] place-items-center rounded-3xl border border-dashed border-slate-700 bg-[radial-gradient(circle_at_1px_1px,rgb(51_65_85_/_0.38)_1px,transparent_0)] bg-[size:24px_24px] p-6 text-center">
               <div className="max-w-lg rounded-3xl border border-slate-800 bg-slate-950/75 p-8 shadow-2xl shadow-slate-950/30 backdrop-blur">
                 <span className="mx-auto grid size-14 place-items-center rounded-2xl border border-sky-500/25 bg-sky-500/10 text-2xl text-sky-300">
-                  ＋
+                  {dashboard?.archived_at ? '⌑' : '＋'}
                 </span>
                 <h3 className="mt-5 text-2xl font-semibold">
-                  {dashboard
-                    ? t('visualizations.emptyCanvasTitle')
-                    : t('visualizations.noDashboardTitle')}
+                  {dashboard?.archived_at
+                    ? t('visualizations.archivedCanvasTitle')
+                    : dashboard
+                      ? t('visualizations.emptyCanvasTitle')
+                      : t('visualizations.noDashboardTitle')}
                 </h3>
                 <p className="mt-2 text-sm leading-6 text-slate-500">
-                  {dashboard
-                    ? t('visualizations.emptyCanvasBody')
-                    : t('visualizations.noDashboardBody')}
+                  {dashboard?.archived_at
+                    ? t('visualizations.archivedCanvasBody')
+                    : dashboard
+                      ? t('visualizations.emptyCanvasBody')
+                      : t('visualizations.noDashboardBody')}
                 </p>
-                {allowed(user, 'dashboard.manage') && (
+                {allowed(user, 'dashboard.manage') && (!dashboard || !dashboard.archived_at) && (
                   <Button
                     className="mt-6"
                     onClick={() => (dashboard ? openElementPicker() : setShowNewDashboard(true))}
@@ -2021,7 +2376,7 @@ export function VisualizationsPage({ user }: { user: User }) {
           )}
         </section>
       </div>
-      {showElementLibrary && dashboard && allowed(user, 'dashboard.manage') && (
+      {showElementLibrary && dashboard && dashboardEditable && (
         <div
           className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/75 p-0 backdrop-blur-sm sm:items-center sm:p-6"
           onMouseDown={(event) => {
@@ -2233,7 +2588,7 @@ export function VisualizationsPage({ user }: { user: User }) {
                     </div>
                     <div className="mt-7 grid gap-5 rounded-2xl border border-slate-800 bg-slate-900/35 p-5 md:grid-cols-2">
                       <label className="text-sm text-slate-400 md:col-span-2">
-                        {t('visualizations.elementTitle')}
+                        <FormFieldLabel required>{t('visualizations.elementTitle')}</FormFieldLabel>
                         <input
                           autoFocus
                           className={inputClass}
@@ -2244,8 +2599,10 @@ export function VisualizationsPage({ user }: { user: User }) {
                       </label>
                       {elementKind === 'metric' && (
                         <label className="text-sm text-slate-400 md:col-span-2">
-                          {t('visualizations.elementMetric')}
-                          <select className={inputClass} name="metric">
+                          <FormFieldLabel required>
+                            {t('visualizations.elementMetric')}
+                          </FormFieldLabel>
+                          <select className={inputClass} name="metric" required>
                             <option value="total_samples">
                               {t('visualizations.metricSamples')}
                             </option>
@@ -2258,58 +2615,117 @@ export function VisualizationsPage({ user }: { user: User }) {
                       )}
                       {elementKind === 'saved_chart' && (
                         <label className="text-sm text-slate-400 md:col-span-2">
-                          {t('visualizations.elementSavedChartName')}
-                          <select className={inputClass} name="chartId" required>
-                            <option value="">{t('visualizations.chooseSavedChart')}</option>
-                            {charts
-                              .filter((chart) => !chart.archived_at)
-                              .map((chart) => (
-                                <option key={chart.id} value={chart.id}>
-                                  {chart.name}
-                                </option>
-                              ))}
-                          </select>
+                          <FormFieldLabel required>
+                            {t('visualizations.elementSavedChartName')}
+                          </FormFieldLabel>
+                          <RemoteOptionPicker<Chart>
+                            ariaLabel={t('visualizations.searchSavedCharts')}
+                            className={inputClass}
+                            endpoint={savedChartEndpoint}
+                            getLabel={(chart) => chart.name}
+                            initialOptions={charts.filter((chart) => !chart.archived_at)}
+                            loadError={t('visualizations.loadError')}
+                            name="chartId"
+                            noResults={t('visualizations.noSavedChartMatches')}
+                            onChange={(_, chart) => setSelectedSavedChart(chart)}
+                            refineMessage={t('visualizations.refineSavedChartSearch')}
+                            value={selectedSavedChart?.id ?? ''}
+                          />
+                        </label>
+                      )}
+                      {(elementKind === 'xy_chart' || elementKind === 'statistical_chart') && (
+                        <label className="text-sm text-slate-400 md:col-span-2">
+                          <FormFieldLabel>{t('visualizations.searchDatasets')}</FormFieldLabel>
+                          <input
+                            className={inputClass}
+                            onChange={(event) => setDatasetSearch(event.target.value)}
+                            placeholder={t('visualizations.searchDatasetsPlaceholder')}
+                            type="search"
+                            value={datasetSearch}
+                          />
                         </label>
                       )}
                       {elementKind === 'xy_chart' && (
                         <>
                           <label className="text-sm text-slate-400">
-                            {t('visualizations.xyHeading')}
-                            <select className={inputClass} name="chartType">
+                            <FormFieldLabel required>
+                              {t('visualizations.xyHeading')}
+                            </FormFieldLabel>
+                            <select className={inputClass} name="chartType" required>
                               <option value="line">{t('visualizations.line')}</option>
                               <option value="scatter">{t('visualizations.scatter')}</option>
                             </select>
                           </label>
                           <fieldset className="text-sm text-slate-400">
-                            <legend>{t('common.filesDatasets')}</legend>
+                            <legend className="w-full">
+                              <FormFieldLabel required>{t('common.filesDatasets')}</FormFieldLabel>
+                            </legend>
                             <div className="mt-2 max-h-36 space-y-2 overflow-auto rounded-xl border border-slate-800 p-3">
                               {xy.map((dataset) => (
                                 <label className="block text-sm text-slate-300" key={dataset.id}>
                                   <input
+                                    checked={selectedDatasetIds.includes(dataset.id)}
                                     className="mr-2"
                                     name="datasets"
+                                    onChange={(event) =>
+                                      setSelectedDatasetIds((current) =>
+                                        event.target.checked
+                                          ? [...new Set([...current, dataset.id])]
+                                          : current.filter((id) => id !== dataset.id),
+                                      )
+                                    }
                                     type="checkbox"
                                     value={dataset.id}
                                   />
                                   {dataset.name}
                                 </label>
                               ))}
+                              {!datasetsLoading && xy.length === 0 && (
+                                <p className="text-xs leading-relaxed text-slate-500">
+                                  {datasetQuery.trim()
+                                    ? t('visualizations.noDatasetMatches')
+                                    : sourceCopy.noXy}
+                                </p>
+                              )}
                             </div>
+                            {datasetPage.hasNext && (
+                              <button
+                                className="mt-2 text-xs font-medium text-sky-300 hover:text-sky-200 disabled:opacity-50"
+                                disabled={loadingMoreDatasets}
+                                onClick={() => void loadMoreDatasets()}
+                                type="button"
+                              >
+                                {t('visualizations.loadMoreDatasets', {
+                                  shown: datasetOptions.length,
+                                  total: datasetPage.total,
+                                })}
+                              </button>
+                            )}
                           </fieldset>
                         </>
                       )}
                       {elementKind === 'statistical_chart' && (
                         <>
                           <label className="text-sm text-slate-400">
-                            {t('visualizations.statisticalHeading')}
-                            <select className={inputClass} name="chartType">
+                            <FormFieldLabel required>
+                              {t('visualizations.statisticalHeading')}
+                            </FormFieldLabel>
+                            <select className={inputClass} name="chartType" required>
                               <option value="histogram">{t('visualizations.histogram')}</option>
                               <option value="box_plot">{t('visualizations.boxPlot')}</option>
                             </select>
                           </label>
                           <label className="text-sm text-slate-400">
-                            {t('common.filesDatasets')}
-                            <select className={inputClass} name="datasetId" required>
+                            <FormFieldLabel required>{t('common.filesDatasets')}</FormFieldLabel>
+                            <select
+                              className={inputClass}
+                              name="datasetId"
+                              onChange={(event) =>
+                                setSelectedStatisticalDatasetId(event.target.value)
+                              }
+                              required
+                              value={selectedStatisticalDatasetId}
+                            >
                               <option value="">{t('visualizations.selectNumeric')}</option>
                               {statisticalDatasets.map((dataset) => (
                                 <option key={dataset.id} value={dataset.id}>
@@ -2318,19 +2734,55 @@ export function VisualizationsPage({ user }: { user: User }) {
                               ))}
                             </select>
                           </label>
+                          {!datasetsLoading && statisticalDatasets.length === 0 && (
+                            <p className="text-xs leading-relaxed text-slate-500 md:col-span-2">
+                              {datasetQuery.trim()
+                                ? t('visualizations.noDatasetMatches')
+                                : sourceCopy.noNumeric}
+                            </p>
+                          )}
+                          {datasetPage.hasNext && (
+                            <button
+                              className="text-left text-xs font-medium text-sky-300 hover:text-sky-200 disabled:opacity-50 md:col-span-2"
+                              disabled={loadingMoreDatasets}
+                              onClick={() => void loadMoreDatasets()}
+                              type="button"
+                            >
+                              {t('visualizations.loadMoreDatasets', {
+                                shown: datasetOptions.length,
+                                total: datasetPage.total,
+                              })}
+                            </button>
+                          )}
                         </>
                       )}
                       {elementKind?.startsWith('record_') && (
                         <>
                           <label className="text-sm text-slate-400">
-                            {t('visualizations.selectTable')}
+                            <FormFieldLabel>{t('data.searchTables')}</FormFieldLabel>
+                            <input
+                              className={inputClass}
+                              onChange={(event) => setRecordTableSearch(event.target.value)}
+                              placeholder={t('data.searchTables')}
+                              type="search"
+                              value={recordTableSearch}
+                            />
+                          </label>
+                          <label className="text-sm text-slate-400">
+                            <FormFieldLabel required>
+                              {t('visualizations.selectTable')}
+                            </FormFieldLabel>
                             <select
                               className={inputClass}
                               value={recordSourceId}
-                              onChange={(event) => setRecordSourceId(event.target.value)}
+                              onChange={(event) => {
+                                setRecordSourceId(event.target.value);
+                                setRecordViewId('');
+                                setSelectedRecordView(undefined);
+                              }}
                               required
                             >
-                              {recordTables.map((table) => (
+                              {selectableRecordTables.map((table) => (
                                 <option key={table.id} value={table.id}>
                                   {table.pluralName}
                                 </option>
@@ -2338,38 +2790,48 @@ export function VisualizationsPage({ user }: { user: User }) {
                             </select>
                           </label>
                           <label className="text-sm text-slate-400">
-                            {t('visualizations.allRecords')}
-                            <select
+                            <FormFieldLabel>{t('visualizations.savedView')}</FormFieldLabel>
+                            <RemoteOptionPicker<RecordView>
+                              ariaLabel={t('visualizations.searchSavedViews')}
                               className={inputClass}
-                              value={recordViewId}
-                              onChange={(event) => {
-                                const viewId = event.target.value;
-                                const view = recordViews.find((item) => item.id === viewId);
+                              disabled={recordMetadataLoading || !recordSourceId}
+                              endpoint={recordViewEndpoint}
+                              getLabel={(view) => view.name}
+                              initialOptions={recordViews}
+                              loadError={t('visualizations.loadError')}
+                              noResults={t('visualizations.noSavedViewMatches')}
+                              onChange={(viewId, view) => {
                                 setRecordViewId(viewId);
-                                if (view) {
-                                  const visible = view.config.visibleFieldIds.filter((fieldId) =>
-                                    recordFields.some((field) => field.id === fieldId),
-                                  );
-                                  if (visible.length) setRecordListFieldIds(visible.slice(0, 6));
-                                }
+                                setSelectedRecordView(view);
+                                if (!view) return;
+                                const visible = view.config.visibleFieldIds.filter((fieldId) =>
+                                  recordFields.some((field) => field.id === fieldId),
+                                );
+                                if (visible.length) setRecordListFieldIds(visible.slice(0, 6));
                               }}
-                            >
-                              <option value="">{t('visualizations.allRecords')}</option>
-                              {recordViews.map((view) => (
-                                <option key={view.id} value={view.id}>
-                                  {view.name} · {view.viewType}
-                                </option>
-                              ))}
-                            </select>
+                              refineMessage={t('visualizations.refineSavedViewSearch')}
+                              renderMeta={(view) => (
+                                <span className="shrink-0 text-[9px] text-slate-500">
+                                  {view.viewType}
+                                </span>
+                              )}
+                              specialOptions={[
+                                { value: '', label: t('visualizations.allRecords') },
+                              ]}
+                              value={recordViewId}
+                            />
                           </label>
                         </>
                       )}
                       {elementKind === 'record_chart' && (
                         <>
                           <label className="text-sm text-slate-400">
-                            {t('visualizations.groupedChart')}
+                            <FormFieldLabel required>
+                              {t('visualizations.groupedChart')}
+                            </FormFieldLabel>
                             <select
                               className={inputClass}
+                              required
                               value={recordChartType}
                               onChange={(event) =>
                                 setRecordChartType(event.target.value as 'bar' | 'donut')
@@ -2380,7 +2842,7 @@ export function VisualizationsPage({ user }: { user: User }) {
                             </select>
                           </label>
                           <label className="text-sm text-slate-400">
-                            {t('visualizations.groupBy')}
+                            <FormFieldLabel required>{t('visualizations.groupBy')}</FormFieldLabel>
                             <select
                               className={inputClass}
                               value={recordGroupFieldId}
@@ -2399,8 +2861,10 @@ export function VisualizationsPage({ user }: { user: User }) {
                       )}
                       {elementKind === 'record_list' && (
                         <fieldset className="md:col-span-2">
-                          <legend className="text-sm text-slate-400">
-                            {t('visualizations.visibleColumns')}
+                          <legend className="w-full text-sm text-slate-400">
+                            <FormFieldLabel required>
+                              {t('visualizations.visibleColumns')}
+                            </FormFieldLabel>
                           </legend>
                           <div className="mt-2 flex max-h-36 flex-wrap gap-3 overflow-auto rounded-xl border border-slate-800 p-3">
                             {recordFields.map((field) => {

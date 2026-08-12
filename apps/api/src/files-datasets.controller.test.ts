@@ -275,6 +275,97 @@ describe('FilesDatasetsController storage identity and cleanup', () => {
   });
 });
 
+describe('FilesDatasetsController dataset catalog', () => {
+  it('passes a bounded normalized list contract to the scoped repository', async () => {
+    const page = {
+      items: [{ id: 'dataset-1', name: 'Thermal sweep' }],
+      pageInfo: { limit: 25, offset: 25, total: 26, hasNext: false },
+    };
+    const repo = { listDatasetPage: vi.fn(async () => page) };
+    database.open.mockResolvedValue(repo);
+    const runtime = { pool: {}, config: {}, s3: {} } as never;
+
+    await expect(
+      new FilesDatasetsController(runtime).datasets(
+        {} as never,
+        'workspace-public-id',
+        'project-public-id',
+        'false',
+        ' Thermal ',
+        '25',
+        '25',
+      ),
+    ).resolves.toEqual(page);
+    expect(repo.listDatasetPage).toHaveBeenCalledWith({
+      includeArchived: false,
+      query: 'Thermal',
+      limit: 25,
+      offset: 25,
+    });
+  });
+});
+
+describe('FilesDatasetsController bounded operational catalogs', () => {
+  it('normalizes file search, lifecycle, status, and page controls', async () => {
+    const page = {
+      items: [{ id: 'file-1', original_name: 'report.pdf' }],
+      pageInfo: { limit: 25, offset: 50, total: 51, hasNext: false },
+    };
+    const repo = { listFilePage: vi.fn(async () => page) };
+    database.open.mockResolvedValue(repo);
+    const runtime = { pool: {}, config: {}, s3: {} } as never;
+
+    await expect(
+      new FilesDatasetsController(runtime).files(
+        {} as never,
+        'workspace-public-id',
+        'project-public-id',
+        'true',
+        undefined,
+        ' Report ',
+        'available',
+        '25',
+        '50',
+      ),
+    ).resolves.toEqual(page);
+    expect(repo.listFilePage).toHaveBeenCalledWith({
+      archiveState: 'all',
+      query: 'Report',
+      status: 'available',
+      limit: 25,
+      offset: 50,
+    });
+  });
+
+  it('normalizes background-job search, status, and page controls', async () => {
+    const page = {
+      items: [{ id: 'job-1', job_type: 'dataset.process' }],
+      pageInfo: { limit: 20, offset: 20, total: 21, hasNext: false },
+    };
+    const repo = { listJobPage: vi.fn(async () => page) };
+    database.open.mockResolvedValue(repo);
+    const runtime = { pool: {}, config: {}, s3: {} } as never;
+
+    await expect(
+      new FilesDatasetsController(runtime).jobs(
+        {} as never,
+        'workspace-public-id',
+        'project-public-id',
+        'failed',
+        ' Dataset ',
+        '20',
+        '20',
+      ),
+    ).resolves.toEqual(page);
+    expect(repo.listJobPage).toHaveBeenCalledWith({
+      status: 'failed',
+      query: 'Dataset',
+      limit: 20,
+      offset: 20,
+    });
+  });
+});
+
 function byteBody(content: Uint8Array) {
   return { transformToByteArray: async () => content };
 }

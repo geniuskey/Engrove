@@ -1,0 +1,1 @@
+CREATE INDEX "audit_events_project_target_created_idx" ON "audit_events" USING btree ("project_id","target_type","target_id","created_at","id");

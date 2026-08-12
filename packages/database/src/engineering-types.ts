@@ -194,6 +194,7 @@ export async function evaluateNewRecord(
   recordId: string,
   objectTypeId: string,
   requestId: string,
+  actorId: string | null = scope.actor.actorId,
 ): Promise<void> {
   const specs = await client.query<{ id: string; measurement_field_id: string }>(
     `select s.id,s.measurement_field_id from specifications s join field_definitions f on f.id=s.measurement_field_id and f.project_id=s.project_id where s.project_id=$1 and f.object_type_id=$2 and s.status='active'`,
@@ -212,7 +213,7 @@ export async function evaluateNewRecord(
       organizationId: scope.actor.organizationId,
       workspaceId: scope.workspaceId,
       projectId: scope.projectId,
-      actorId: scope.actor.actorId,
+      ...(actorId ? { actorId } : {}),
       action: 'specification.evaluated',
       targetType: 'specification_evaluation',
       targetId: String(evaluation.id),
@@ -231,8 +232,8 @@ export class ScopedEngineeringRepository {
   ) {}
   static async open(pool: Pool, actor: ActorSession, workspaceId: string, projectId: string) {
     const found = await pool.query(
-      'select 1 from projects p join workspaces w on w.id=p.workspace_id where p.id=$1 and p.workspace_id=$2 and w.organization_id=$3 and p.system=false',
-      [projectId, workspaceId, actor.organizationId],
+      'select 1 from projects p join workspaces w on w.id=p.workspace_id where p.id=$1 and p.workspace_id=$2 and w.organization_id=$3 and p.system=false and project_visible_to(p.id,$2,$3,$4,$5)',
+      [projectId, workspaceId, actor.organizationId, actor.actorId, actor.role],
     );
     if (!found.rowCount)
       throw new RepositoryError('PROJECT_NOT_FOUND', 404, 'Project was not found.');
@@ -417,12 +418,61 @@ export class ScopedEngineeringRepository {
     });
   }
 
-  async listMeasurements(recordId: string, fieldId?: string) {
-    const result = await this.pool.query(
-      `select mr.*, not exists(select 1 from measurement_results successor where successor.project_id=mr.project_id and successor.supersedes_result_id=mr.id) as current from measurement_results mr where mr.project_id=$1 and mr.record_id=$2 and ($3::uuid is null or mr.field_id=$3) order by mr.measured_at desc,mr.created_at desc,mr.id desc`,
-      [this.projectId, recordId, fieldId ?? null],
-    );
-    return result.rows;
+  async listMeasurementPage(input: {
+    recordId: string;
+    fieldId?: string | undefined;
+    currentState: 'all' | 'current' | 'superseded';
+    query: string;
+    limit: number;
+    offset: number;
+  }) {
+    const query = input.query.trim().toLowerCase();
+    const parameters = [
+      this.projectId,
+      input.recordId,
+      input.fieldId ?? null,
+      input.currentState,
+      query,
+      input.limit,
+      input.offset,
+    ];
+    const successor = `exists(select 1 from measurement_results successor
+      where successor.project_id=mr.project_id and successor.supersedes_result_id=mr.id)`;
+    const predicate = `mr.project_id=$1 and mr.record_id=$2
+      and ($3::uuid is null or mr.field_id=$3)
+      and ($4='all' or ($4='current' and not ${successor}) or ($4='superseded' and ${successor}))
+      and ($5='' or position($5 in lower(concat_ws(' ',mr.original_value,mr.original_unit,
+        mr.canonical_value,mr.canonical_unit,coalesce(mr.correction_reason,''),mr.field_id::text)))>0)`;
+    const [items, count] = await Promise.all([
+      this.pool.query(
+        `select mr.*,not ${successor} as current,
+           case when evaluation.id is null then null else row_to_json(evaluation) end evaluation
+         from measurement_results mr
+         left join lateral (
+           select e.id,e.status,e.reason_code,e.evaluated_at,e.measurement_result_id,e.measurement_field_id
+           from specification_evaluations e
+           where e.project_id=mr.project_id and e.measurement_result_id=mr.id
+           order by e.evaluated_at desc,e.id desc limit 1
+         ) evaluation on true
+         where ${predicate}
+         order by mr.measured_at desc,mr.created_at desc,mr.id desc limit $6 offset $7`,
+        parameters,
+      ),
+      this.pool.query<{ total: number }>(
+        `select count(*)::int total from measurement_results mr where ${predicate}`,
+        parameters.slice(0, 5),
+      ),
+    ]);
+    const total = Number(count.rows[0]?.total ?? 0);
+    return {
+      items: items.rows,
+      pageInfo: {
+        limit: input.limit,
+        offset: input.offset,
+        total,
+        hasNext: input.offset + items.rows.length < total,
+      },
+    };
   }
 
   async createSpecification(input: {
@@ -591,23 +641,90 @@ export class ScopedEngineeringRepository {
     );
     return { ...spec.rows[0], revisions: revisions.rows };
   }
-  async listSpecifications(includeArchived = false) {
-    const specs = await this.pool.query<{ id: string }>(
-      `select id from specifications where project_id=$1 and ($2::boolean or status='active') order by created_at desc,id`,
-      [this.projectId, includeArchived],
-    );
-    return Promise.all(
-      specs.rows.map((row) =>
-        this.getSpecificationFrom(this.pool as unknown as PoolClient, row.id),
+  async listSpecificationPage(input: {
+    archiveState: 'active' | 'archived' | 'all';
+    query: string;
+    limit: number;
+    offset: number;
+  }) {
+    const query = input.query.trim().toLowerCase();
+    const parameters = [this.projectId, input.archiveState, query, input.limit, input.offset];
+    const predicate = `s.project_id=$1
+      and ($2='all' or s.status::text=$2)
+      and ($3='' or position($3 in lower(concat_ws(' ',s.name,s.status::text,f.name,f.key)))>0)`;
+    const [items, count] = await Promise.all([
+      this.pool.query(
+        `select s.*,coalesce(revisions.items,'[]') revisions
+         from specifications s
+         join field_definitions f on f.project_id=s.project_id and f.id=s.measurement_field_id
+         left join lateral (
+           select json_agg(sr order by sr.revision_number desc) items
+           from specification_revisions sr
+           where sr.project_id=s.project_id and sr.specification_id=s.id
+         ) revisions on true
+         where ${predicate}
+         order by s.created_at desc,s.id desc limit $4 offset $5`,
+        parameters,
       ),
-    );
+      this.pool.query<{ total: number }>(
+        `select count(*)::int total from specifications s
+         join field_definitions f on f.project_id=s.project_id and f.id=s.measurement_field_id
+         where ${predicate}`,
+        parameters.slice(0, 3),
+      ),
+    ]);
+    const total = Number(count.rows[0]?.total ?? 0);
+    return {
+      items: items.rows,
+      pageInfo: {
+        limit: input.limit,
+        offset: input.offset,
+        total,
+        hasNext: input.offset + items.rows.length < total,
+      },
+    };
   }
-  async listEvaluations(recordId?: string) {
-    const result = await this.pool.query(
-      `select e.* from specification_evaluations e where e.project_id=$1 and ($2::uuid is null or e.record_id=$2) order by e.evaluated_at desc,e.id desc`,
-      [this.projectId, recordId ?? null],
-    );
-    return result.rows;
+  async listEvaluationPage(input: {
+    recordId?: string | undefined;
+    status: 'all' | EvaluationStatus;
+    query: string;
+    limit: number;
+    offset: number;
+  }) {
+    const query = input.query.trim().toLowerCase();
+    const parameters = [
+      this.projectId,
+      input.recordId ?? null,
+      input.status,
+      query,
+      input.limit,
+      input.offset,
+    ];
+    const predicate = `e.project_id=$1 and ($2::uuid is null or e.record_id=$2)
+      and ($3='all' or e.status::text=$3)
+      and ($4='' or position($4 in lower(concat_ws(' ',e.status::text,e.reason_code,
+        e.record_id::text,e.measurement_field_id::text,coalesce(e.measurement_result_id::text,''))))>0)`;
+    const [items, count] = await Promise.all([
+      this.pool.query(
+        `select e.* from specification_evaluations e where ${predicate}
+         order by e.evaluated_at desc,e.id desc limit $5 offset $6`,
+        parameters,
+      ),
+      this.pool.query<{ total: number }>(
+        `select count(*)::int total from specification_evaluations e where ${predicate}`,
+        parameters.slice(0, 4),
+      ),
+    ]);
+    const total = Number(count.rows[0]?.total ?? 0);
+    return {
+      items: items.rows,
+      pageInfo: {
+        limit: input.limit,
+        offset: input.offset,
+        total,
+        hasNext: input.offset + items.rows.length < total,
+      },
+    };
   }
   async retryEvaluation(input: {
     specificationRevisionId: string;

@@ -194,8 +194,8 @@ export class ScopedVisualizationRepository {
 
   static async open(pool: Pool, actor: ActorSession, workspaceId: string, projectId: string) {
     const found = await pool.query(
-      'select 1 from projects p join workspaces w on w.id=p.workspace_id where p.id=$1 and p.workspace_id=$2 and w.organization_id=$3 and p.system=false',
-      [projectId, workspaceId, actor.organizationId],
+      'select 1 from projects p join workspaces w on w.id=p.workspace_id where p.id=$1 and p.workspace_id=$2 and w.organization_id=$3 and p.system=false and project_visible_to(p.id,$2,$3,$4,$5)',
+      [projectId, workspaceId, actor.organizationId, actor.actorId, actor.role],
     );
     if (!found.rowCount)
       throw new RepositoryError('PROJECT_NOT_FOUND', 404, 'Project was not found.');
@@ -233,6 +233,51 @@ export class ScopedVisualizationRepository {
       [this.scope.projectId, includeArchived],
     );
     return result.rows;
+  }
+
+  async listChartPage(options: {
+    archiveState: 'active' | 'all' | 'archived';
+    query: string;
+    limit: number;
+    offset: number;
+  }) {
+    const parameters = [
+      this.scope.projectId,
+      options.archiveState,
+      options.query.toLocaleLowerCase(),
+    ];
+    const lifecycle = `($2='all' or ($2='active' and c.archived_at is null)
+      or ($2='archived' and c.archived_at is not null))`;
+    const search = `($3='' or position($3 in lower(c.name||' '||c.description))>0)`;
+    const [count, result] = await Promise.all([
+      this.pool.query<{ total: number }>(
+        `select count(*)::int total from charts c
+         where c.project_id=$1 and ${lifecycle} and ${search}`,
+        parameters,
+      ),
+      this.pool.query(
+        `select c.*,r.revision_number,r.config_version,r.chart_type,r.config,r.change_note,
+         coalesce(json_agg(s order by s.series_order,s.source_key)
+           filter(where s.id is not null),'[]') sources
+         from charts c join chart_revisions r
+           on r.id=c.current_revision_id and r.project_id=c.project_id
+         left join chart_dataset_sources s
+           on s.chart_revision_id=r.id and s.project_id=r.project_id
+         where c.project_id=$1 and ${lifecycle} and ${search}
+         group by c.id,r.id order by c.updated_at desc,c.id limit $4 offset $5`,
+        [...parameters, options.limit, options.offset],
+      ),
+    ]);
+    const total = count.rows[0]?.total ?? 0;
+    return {
+      items: result.rows,
+      pageInfo: {
+        limit: options.limit,
+        offset: options.offset,
+        total,
+        hasNext: options.offset + result.rows.length < total,
+      },
+    };
   }
 
   async getChart(chartId: string) {
@@ -426,15 +471,75 @@ export class ScopedVisualizationRepository {
     return result.rows;
   }
 
+  async listDashboardPage(options: {
+    archiveState: 'active' | 'all' | 'archived';
+    query: string;
+    limit: number;
+    offset: number;
+  }) {
+    const parameters = [
+      this.scope.projectId,
+      options.archiveState,
+      options.query.toLocaleLowerCase(),
+    ];
+    const lifecycle = `($2='all' or ($2='active' and d.archived_at is null)
+      or ($2='archived' and d.archived_at is not null))`;
+    const search = `($3='' or position($3 in lower(d.name||' '||d.description))>0)`;
+    const [count, result] = await Promise.all([
+      this.pool.query<{ total: number }>(
+        `select count(*)::int total from dashboards d
+         where d.project_id=$1 and ${lifecycle} and ${search}`,
+        parameters,
+      ),
+      this.pool.query(
+        `select d.*,r.revision_number,r.layout_version,r.change_note,
+         coalesce(json_agg(c order by c.position) filter(where c.id is not null),'[]') cards
+         from dashboards d join dashboard_revisions r
+           on r.id=d.current_revision_id and r.project_id=d.project_id
+         left join dashboard_cards c
+           on c.dashboard_revision_id=r.id and c.project_id=r.project_id
+         where d.project_id=$1 and ${lifecycle} and ${search}
+         group by d.id,r.id order by d.updated_at desc,d.id limit $4 offset $5`,
+        [...parameters, options.limit, options.offset],
+      ),
+    ]);
+    const total = count.rows[0]?.total ?? 0;
+    return {
+      items: result.rows,
+      pageInfo: {
+        limit: options.limit,
+        offset: options.offset,
+        total,
+        hasNext: options.offset + result.rows.length < total,
+      },
+    };
+  }
+
   async dashboardMetrics() {
     const result = await this.pool.query(
       `select
        (select count(*)::int from records r join object_types o on o.id=r.object_type_id and o.project_id=r.project_id where r.project_id=$1 and o.key='sample' and r.archived_at is null) total_samples,
        (select count(*)::int from datasets where project_id=$1 and status='ready' and archived_at is null) dataset_count,
+       (select count(*)::int from charts where project_id=$1 and archived_at is null) chart_count,
+       (select count(*)::int from dashboards where project_id=$1 and archived_at is null) dashboard_count,
+       (select count(*)::int from object_types where project_id=$1) object_type_count,
        (select count(*)::int from specification_evaluations where project_id=$1 and status='fail') failed_evaluations,
        (select case when count(*)=0 then null else round(100.0*count(*) filter(where status='pass')/count(*),1) end from specification_evaluations where project_id=$1 and status<>'missing') pass_rate,
-       (select count(*)::int from tasks where project_id=$1 and archived_at is null and status<>'done' and due_date < current_date) overdue_tasks`,
-      [this.scope.projectId],
+       (select count(*)::int from tasks t where project_id=$1 and archived_at is null
+          and task_visible_to(t.id,$2::uuid,$3::text)) active_task_count,
+       (select count(*)::int from tasks t join task_workflow_statuses s
+          on s.project_id=t.project_id and s.key=t.status
+         where t.project_id=$1 and t.archived_at is null and s.category='done'
+           and task_visible_to(t.id,$2::uuid,$3::text)) completed_task_count,
+       (select count(*)::int from tasks t join task_workflow_statuses s
+          on s.project_id=t.project_id and s.key=t.status
+         where t.project_id=$1 and t.archived_at is null and s.key='blocked'
+           and task_visible_to(t.id,$2::uuid,$3::text)) blocked_task_count,
+       (select count(*)::int from tasks t join task_workflow_statuses s
+          on s.project_id=t.project_id and s.key=t.status
+         where t.project_id=$1 and t.archived_at is null and s.category<>'done'
+           and t.due_date < current_date and task_visible_to(t.id,$2::uuid,$3::text)) overdue_tasks`,
+      [this.scope.projectId, this.scope.actor.actorId, this.scope.actor.role],
     );
     const recent = await this.pool.query(
       `select id,name,dataset_type,status,row_count,created_at from datasets

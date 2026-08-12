@@ -32,6 +32,36 @@ afterEach(() => {
 });
 
 describe('CellValuePreview', () => {
+  it('renders hydrated reference labels instead of transport UUIDs', () => {
+    const referenceId = '019fbcf9-e020-71da-935a-6a6a728b3711';
+    render(
+      <CellValuePreview
+        field={{ ...field('user'), name: 'Operator' }}
+        references={[{ id: referenceId, displayName: 'Avery Chen', archivedAt: null }]}
+        value={referenceId}
+      />,
+    );
+
+    expect(screen.getByText('Avery Chen')).toBeInTheDocument();
+    expect(screen.queryByText(referenceId)).not.toBeInTheDocument();
+  });
+
+  it('renders configured select labels instead of stored option keys', () => {
+    render(
+      <CellValuePreview
+        field={{
+          ...field('single_select'),
+          name: 'Status',
+          config: { options: [{ key: 'complete', label: 'Complete' }] },
+        }}
+        value="complete"
+      />,
+    );
+
+    expect(screen.getByText('Complete')).toBeInTheDocument();
+    expect(screen.queryByText('complete')).not.toBeInTheDocument();
+  });
+
   it('maps RGB aliases to red, green, and blue chart colors', () => {
     expect(chartSeriesColor('r', 0)).toBe('#ef4444');
     expect(chartSeriesColor('Red', 1)).toBe('#ef4444');

@@ -59,6 +59,16 @@ describe('DataPage', () => {
     let inlineCreateBody: Record<string, unknown> | undefined;
     let createdViewCount = 0;
     const recordQueryBodies: Array<Record<string, unknown>> = [];
+    let recordExportBody: Record<string, unknown> | undefined;
+    let releaseRecordExportPoll!: () => void;
+    const recordExportPollGate = new Promise<void>((resolve) => {
+      releaseRecordExportPoll = resolve;
+    });
+    let bulkFieldUpdateBody: Record<string, unknown> | undefined;
+    const bulkLifecycleBodies: Array<{
+      path: string;
+      body: Record<string, unknown>;
+    }> = [];
     const confirmMock = vi.spyOn(window, 'confirm').mockReturnValue(true);
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
@@ -93,7 +103,7 @@ describe('DataPage', () => {
           system: false,
         });
       }
-      if (url.endsWith('/fields')) {
+      if (url.endsWith('/fields') && (init?.method ?? 'GET') === 'GET') {
         return json({
           items: [
             {
@@ -210,7 +220,7 @@ describe('DataPage', () => {
           projectionStatus: 'ready',
         });
       }
-      if (url.endsWith('/views')) {
+      if (new URL(url).pathname.endsWith('/views')) {
         if (init?.method === 'POST') {
           createViewBody = JSON.parse(String(init.body)) as Record<string, unknown>;
           createdViewCount += 1;
@@ -231,25 +241,135 @@ describe('DataPage', () => {
             updatedAt: '2026-08-01T00:00:00.000Z',
           });
         }
-        return json({ items: [] });
+        const offset = Number(new URL(url).searchParams.get('offset') ?? 0);
+        return json({
+          items: [
+            {
+              id: offset ? 'view-older' : 'view-current',
+              publicId: offset ? 'v00000000000002' : 'v00000000000001',
+              objectTypeId: '019fbcf9-e020-71da-935a-6a6a728b3792',
+              name: offset ? 'Older qualification view' : 'Current qualification view',
+              viewType: 'grid',
+              config: {
+                visibleFieldIds: [],
+                fieldWidths: {},
+                filters: [],
+                sorts: [],
+                rowDensity: 'compact',
+                pageSize: 25,
+              },
+              rowVersion: 1,
+              archivedAt: null,
+              updatedAt: '2026-08-01T00:00:00.000Z',
+            },
+          ],
+          pageInfo: { limit: 50, offset, total: 2, hasNext: offset === 0 },
+        });
       }
       if (url.endsWith('/views/v1234567890abcd')) {
-        updateViewBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        updateViewBody =
+          (init?.method ?? 'GET') === 'GET'
+            ? createViewBody
+            : (JSON.parse(String(init?.body)) as Record<string, unknown>);
         return json({
           id: '019fbcf9-e020-71da-935a-6a6a728b3796',
           publicId: 'v1234567890abcd',
           objectTypeId: '019fbcf9-e020-71da-935a-6a6a728b3792',
-          name: updateViewBody.name,
+          name: updateViewBody!.name,
           viewType: 'grid',
-          config: updateViewBody.config,
+          config: updateViewBody!.config,
           rowVersion: 2,
           archivedAt: null,
           updatedAt: '2026-08-01T01:00:00.000Z',
         });
       }
+      if (url.endsWith('/views/v1234567890abce') && (init?.method ?? 'GET') === 'GET') {
+        return json({
+          id: '019fbcf9-e020-71da-935a-6a6a728b379a',
+          publicId: 'v1234567890abce',
+          objectTypeId: '019fbcf9-e020-71da-935a-6a6a728b3792',
+          name: createViewBody!.name,
+          viewType: createViewBody!.viewType,
+          config: createViewBody!.config,
+          rowVersion: 1,
+          archivedAt: null,
+          updatedAt: '2026-08-01T01:00:00.000Z',
+        });
+      }
+      if (url.endsWith('/records/export.csv') && init?.method === 'POST') {
+        recordExportBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return json({
+          id: '019fbcf9-e020-71da-935a-6a6a728b3710',
+          objectTypeId: '019fbcf9-e020-71da-935a-6a6a728b3792',
+          status: 'queued',
+          progress: 0,
+          rowCount: null,
+          fieldCount: null,
+          sizeBytes: null,
+          fileName: 'sample.csv',
+          errorCode: null,
+          retryable: true,
+          createdAt: '2026-08-01T00:00:00.000Z',
+          completedAt: null,
+          expiresAt: null,
+          downloadReady: false,
+        });
+      }
+      if (url.endsWith('/records/exports') && init?.method === 'POST') {
+        recordExportBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return json({
+          id: '019fbcf9-e020-71da-935a-6a6a728b3710',
+          objectTypeId: '019fbcf9-e020-71da-935a-6a6a728b3792',
+          status: 'queued',
+          progress: 0,
+          rowCount: null,
+          fieldCount: null,
+          sizeBytes: null,
+          fileName: 'sample.csv',
+          errorCode: null,
+          retryable: true,
+          createdAt: '2026-08-01T00:00:00.000Z',
+          completedAt: null,
+          expiresAt: null,
+          downloadReady: false,
+        });
+      }
+      if (url.endsWith('/records/exports/019fbcf9-e020-71da-935a-6a6a728b3710')) {
+        await recordExportPollGate;
+        return json({
+          id: '019fbcf9-e020-71da-935a-6a6a728b3710',
+          objectTypeId: '019fbcf9-e020-71da-935a-6a6a728b3792',
+          status: 'succeeded',
+          progress: 100,
+          rowCount: 1,
+          fieldCount: 4,
+          sizeBytes: 40,
+          fileName: 'sample.csv',
+          errorCode: null,
+          retryable: true,
+          createdAt: '2026-08-01T00:00:00.000Z',
+          completedAt: '2026-08-01T00:00:01.000Z',
+          expiresAt: '2026-08-01T06:00:01.000Z',
+          downloadReady: true,
+        });
+      }
+      if (url.endsWith('/records/exports/019fbcf9-e020-71da-935a-6a6a728b3710/download')) {
+        return json({
+          url: 'https://storage.example.test/sample.csv',
+          expiresIn: 300,
+          fileName: 'sample.csv',
+        });
+      }
       if (url.endsWith('/records/query')) {
         const queryBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
         recordQueryBodies.push(queryBody);
+        const archived = queryBody.archiveState === 'archived';
+        const requestedGroupings = Array.isArray(queryBody.groupings)
+          ? (queryBody.groupings as Array<{ fieldId: string }>)
+          : [];
+        const requestedSummaries = Array.isArray(queryBody.summaries)
+          ? (queryBody.summaries as Array<Record<string, unknown>>)
+          : [];
         return json({
           items: [
             {
@@ -266,7 +386,7 @@ describe('DataPage', () => {
               },
               relations: {},
               rowVersion: 1,
-              archivedAt: null,
+              archivedAt: archived ? '2026-08-01T02:00:00.000Z' : null,
               createdAt: '2026-08-01T00:00:00.000Z',
               updatedAt: '2026-08-01T00:00:00.000Z',
             },
@@ -275,6 +395,38 @@ describe('DataPage', () => {
           pageSize: 25,
           total: 1,
           ...(queryBody.groupByFieldId ? { groups: [{ value: 'ready', count: 7 }] } : {}),
+          ...(requestedGroupings.length
+            ? {
+                groupHierarchy: requestedGroupings.map((grouping, index) => ({
+                  level: index + 1,
+                  fieldId: grouping.fieldId,
+                  path: requestedGroupings.slice(0, index + 1).map((candidate) => ({
+                    fieldId: candidate.fieldId,
+                    value:
+                      candidate.fieldId === '019fbcf9-e020-71da-935a-6a6a728b3798' ? 'ready' : '2',
+                  })),
+                  count: index === 0 ? 7 : 4,
+                  ...(requestedSummaries.length
+                    ? {
+                        summaries: requestedSummaries.map((summary) => ({
+                          ...summary,
+                          value: index === 0 ? '5.5' : '2',
+                          unit: null,
+                        })),
+                      }
+                    : {}),
+                })),
+              }
+            : {}),
+          ...(requestedSummaries.length
+            ? {
+                summaries: requestedSummaries.map((summary) => ({
+                  ...summary,
+                  value: '2',
+                  unit: null,
+                })),
+              }
+            : {}),
         });
       }
       if (url.endsWith('/records') && init?.method === 'POST') {
@@ -291,6 +443,28 @@ describe('DataPage', () => {
           archivedAt: null,
           createdAt: '2026-08-01T02:00:00.000Z',
           updatedAt: '2026-08-01T02:00:00.000Z',
+        });
+      }
+      if (
+        (url.endsWith('/records/bulk/archive') || url.endsWith('/records/bulk/restore')) &&
+        init?.method === 'POST'
+      ) {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        bulkLifecycleBodies.push({ path: new URL(url).pathname, body });
+        return json({
+          updated: [
+            {
+              id: '019fbcf9-e020-71da-935a-6a6a728b3795',
+              rowVersion: 2,
+            },
+          ],
+          archived: url.endsWith('/archive'),
+        });
+      }
+      if (url.endsWith('/records/bulk/fields') && init?.method === 'PATCH') {
+        bulkFieldUpdateBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return json({
+          updated: [{ id: '019fbcf9-e020-71da-935a-6a6a728b3795', rowVersion: 4 }],
         });
       }
       if (url.endsWith('/records/019fbcf9-e020-71da-935a-6a6a728b3795')) {
@@ -338,6 +512,12 @@ describe('DataPage', () => {
     );
 
     expect(await screen.findByRole('heading', { name: 'Samples' })).toBeInTheDocument();
+    await screen.findByRole('button', { name: 'Current qualification view' });
+    fireEvent.click(screen.getByRole('button', { name: 'Load more (1 of 2)' }));
+    expect(
+      await screen.findByRole('button', { name: 'Older qualification view' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Current qualification view' })).toBeInTheDocument();
     expect(
       screen.getByRole('region', {
         name: 'Samples table. Scroll horizontally to view more columns.',
@@ -346,12 +526,101 @@ describe('DataPage', () => {
     expect(
       await screen.findByRole('button', { name: 'Quick view Sample Two' }),
     ).toBeInTheDocument();
+    const serialHeader = screen.getByRole('columnheader', { name: 'Serial' });
+    expect(within(serialHeader).getByRole('img', { name: 'Decimal' })).toHaveTextContent('.0');
+    expect(within(serialHeader).queryByText('Decimal')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Serial column options' })).not.toBeInTheDocument();
+    const serialSortButton = screen.getByRole('button', { name: 'Sort by Serial' });
+    fireEvent.keyDown(serialSortButton, { key: 'F10', shiftKey: true });
+    expect(screen.getByRole('menu', { name: 'Serial' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Filter this column' })).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole('menuitem', { name: 'Filter this column' }), {
+      key: 'Escape',
+    });
     expect(screen.getByText('1 records · page 1 of 1')).toBeInTheDocument();
+    expect(screen.getByText('1 filtered rows')).toBeInTheDocument();
+    const serialSummary = screen.getByRole('combobox', { name: 'Summary for Serial' });
+    fireEvent.change(serialSummary, { target: { value: 'average' } });
+    await waitFor(() =>
+      expect(recordQueryBodies.at(-1)).toMatchObject({
+        summaries: [
+          {
+            fieldId: '019fbcf9-e020-71da-935a-6a6a728b3794',
+            operation: 'average',
+          },
+        ],
+      }),
+    );
+    expect(within(serialSummary.parentElement!).getByText('2')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Group' }));
+    fireEvent.click(screen.getByRole('button', { name: /Add group/ }));
+    await waitFor(() =>
+      expect(recordQueryBodies.at(-1)).toMatchObject({
+        groupings: [
+          {
+            fieldId: '019fbcf9-e020-71da-935a-6a6a728b3794',
+            direction: 'asc',
+            enabled: true,
+          },
+        ],
+      }),
+    );
+    const serialGroup = await screen.findByRole('button', { name: 'Collapse 2' });
+    expect(serialGroup.parentElement).toHaveTextContent('7');
+    expect(screen.getByLabelText('Serial Average: 5.5')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Add subgroup/ }));
+    await waitFor(() =>
+      expect(recordQueryBodies.at(-1)).toMatchObject({
+        groupings: [
+          expect.objectContaining({ fieldId: '019fbcf9-e020-71da-935a-6a6a728b3794' }),
+          expect.objectContaining({ fieldId: '019fbcf9-e020-71da-935a-6a6a728b3798' }),
+        ],
+      }),
+    );
+    expect(await screen.findByRole('button', { name: 'Collapse Ready' })).toBeInTheDocument();
+    fireEvent.click(serialGroup);
+    expect(screen.queryByRole('button', { name: 'Quick view Sample Two' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Expand 2' }));
+    expect(screen.getByRole('button', { name: 'Quick view Sample Two' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable group level 2' }));
+    await waitFor(() =>
+      expect(recordQueryBodies.at(-1)?.groupings).toEqual([
+        {
+          fieldId: '019fbcf9-e020-71da-935a-6a6a728b3794',
+          direction: 'asc',
+          enabled: true,
+        },
+      ]),
+    );
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable group level 2' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear grouping' }));
+    await waitFor(() => expect(recordQueryBodies.at(-1)?.groupings).toBeUndefined());
     expect(screen.getByRole('button', { name: 'New record' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Schema' })).toHaveClass('engrove-button');
-    expect(screen.getByRole('button', { name: 'Export CSV' })).toHaveClass('engrove-button');
+    expect(screen.getByRole('button', { name: 'Schema' })).toHaveClass('size-9');
+    const downloadClick = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => undefined);
+    const exportButton = screen.getByRole('button', { name: 'Export current view CSV' });
+    expect(exportButton).toHaveClass('size-9');
+    fireEvent.click(exportButton);
+    await waitFor(() => expect(recordExportBody).toBeDefined());
+    expect(recordExportBody).toEqual({
+      fieldKeys: ['serial', 'state', 'related-sample', 'spectrum'],
+      filters: [],
+      sorts: [{ systemField: 'displayName', direction: 'asc' }],
+      archiveState: 'active',
+    });
+    expect(screen.getByRole('button', { name: 'Preparing current view CSV' })).toBeDisabled();
+    releaseRecordExportPoll();
+    await waitFor(() => expect(downloadClick).toHaveBeenCalledOnce(), { timeout: 2_000 });
+    expect(await screen.findByText('CSV ready · 1 records downloaded.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'New record' })).toHaveClass('engrove-button');
     expect(screen.getByRole('navigation', { name: 'Data navigation' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Table API' }));
+    expect(screen.getByRole('heading', { name: 'Table API quickstart' })).toBeInTheDocument();
+    expect(screen.getByText('t1234567890abcd')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Close table API quickstart' }));
+    expect(screen.queryByRole('heading', { name: 'Table API quickstart' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Schema' }));
     expect(screen.getByRole('heading', { name: 'Schema editor' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Edit Serial' })).toBeInTheDocument();
@@ -422,12 +691,11 @@ describe('DataPage', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Close schema editor' }));
     expect(screen.queryByRole('heading', { name: 'Schema editor' })).not.toBeInTheDocument();
-    const moreTableActions = screen.getByText('⋯').closest('details');
-    expect(moreTableActions).not.toHaveAttribute('open');
-    fireEvent.click(screen.getByText('⋯'));
-    expect(moreTableActions).toHaveAttribute('open');
-    expect(screen.getByRole('heading', { name: 'Import CSV' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Import records' })).toBeInTheDocument();
+    expect(screen.queryByText('⋯')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Import CSV' }));
+    expect(screen.getByRole('heading', { name: 'Review CSV import' })).toBeInTheDocument();
+    expect(screen.getByLabelText(/CSV file/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Confirm import' })).not.toBeInTheDocument();
     const nameCell = screen.getByRole('button', { name: 'Edit Name for Sample Two' }).closest('td');
     const serialCell = screen
       .getByRole('button', { name: 'Edit Serial for Sample Two' })
@@ -435,7 +703,6 @@ describe('DataPage', () => {
     expect(nameCell).not.toBeNull();
     expect(serialCell).not.toBeNull();
     fireEvent.pointerDown(nameCell!, { button: 0, buttons: 1 });
-    expect(moreTableActions).not.toHaveAttribute('open');
     fireEvent.pointerEnter(serialCell!, { buttons: 1 });
     fireEvent.pointerUp(window);
     expect(screen.getByText('2 cells selected')).toBeInTheDocument();
@@ -464,9 +731,52 @@ describe('DataPage', () => {
     expect(screen.getByRole('menu', { name: 'Sample Two' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('menuitem', { name: 'Select row' }));
     expect(screen.getByText('1 selected')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit selected records' }));
+    const bulkEdit = screen.getByRole('region', { name: 'Edit 1 selected records' });
+    fireEvent.change(within(bulkEdit).getByRole('combobox', { name: 'Field for action 1' }), {
+      target: { value: '019fbcf9-e020-71da-935a-6a6a728b3798' },
+    });
+    fireEvent.change(within(bulkEdit).getByRole('combobox', { name: 'Value' }), {
+      target: { value: 'ready' },
+    });
+    fireEvent.click(within(bulkEdit).getByRole('button', { name: 'Add field change' }));
+    fireEvent.change(within(bulkEdit).getByRole('combobox', { name: 'Field for action 2' }), {
+      target: { value: '019fbcf9-e020-71da-935a-6a6a728b3799' },
+    });
+    fireEvent.change(
+      within(bulkEdit).getByRole('combobox', { name: 'Operation for Related sample' }),
+      { target: { value: 'clear' } },
+    );
+    fireEvent.click(within(bulkEdit).getByRole('button', { name: 'Update 1 records' }));
+    await waitFor(() =>
+      expect(bulkFieldUpdateBody).toMatchObject({
+        records: [
+          {
+            id: '019fbcf9-e020-71da-935a-6a6a728b3795',
+            rowVersion: expect.any(Number),
+          },
+        ],
+        changes: [
+          { fieldKey: 'state', operation: 'set', value: 'ready' },
+          { fieldKey: 'related-sample', operation: 'clear' },
+        ],
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Edit 1 selected records' })).toBeNull(),
+    );
 
     const quickViewButton = screen.getByRole('button', { name: 'Quick view Sample Two' });
+    fireEvent.click(quickViewButton);
+    const quickView = screen.getByRole('dialog', { name: 'Sample Two' });
+    expect(within(quickView).getByRole('button', { name: 'Copy Record ID' })).toBeInTheDocument();
+    expect(within(quickView).queryByText('019fbcf9-e020-71da-935a-6a6a728b3795')).toBeNull();
+    expect(within(quickView).getByRole('img', { name: 'Decimal' })).toHaveTextContent('.0');
+    expect(within(quickView).getByRole('img', { name: 'Single select' })).toHaveTextContent('▾');
+    expect(within(quickView).queryByText('single_select')).toBeNull();
+    fireEvent.click(
+      within(quickView).getAllByRole('button', { name: 'Close quick record view' })[0]!,
+    );
     fireEvent.keyDown(quickViewButton, { key: 'F10', shiftKey: true });
     expect(screen.getByRole('menu', { name: 'Sample Two' })).toBeInTheDocument();
     fireEvent.keyDown(screen.getByRole('menuitem', { name: 'Open quick view' }), {
@@ -511,14 +821,20 @@ describe('DataPage', () => {
       expect(recordQueryBodies.some((body) => JSON.stringify(body.sorts) === '[]')).toBe(true),
     );
     await screen.findByRole('button', { name: 'Quick view Sample Two' });
-    fireEvent.click(screen.getByRole('button', { name: 'Column options for Serial' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Filter Serial' }));
+    fireEvent.contextMenu(screen.getByRole('columnheader', { name: 'Serial' }), {
+      clientX: 160,
+      clientY: 120,
+    });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Filter this column' }));
     expect(screen.getByRole('combobox', { name: 'Field' })).toHaveValue(
       '019fbcf9-e020-71da-935a-6a6a728b3794',
     );
     await screen.findByRole('button', { name: 'Quick view Sample Two' });
-    fireEvent.click(screen.getByRole('button', { name: 'Column options for Serial' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Hide Serial column' }));
+    fireEvent.contextMenu(screen.getByRole('columnheader', { name: 'Serial' }), {
+      clientX: 160,
+      clientY: 120,
+    });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Hide column' }));
     expect(screen.queryByRole('columnheader', { name: /Serial/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Columns/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Show all columns' }));
@@ -547,7 +863,7 @@ describe('DataPage', () => {
     expect(screen.getByRole('dialog', { name: 'New record' })).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole('button', { name: 'Close new record panel' })[0]!);
     fireEvent.click(serialVisibility);
-    expect(screen.getByRole('columnheader', { name: /Serial/ })).toBeInTheDocument();
+    expect(await screen.findByRole('columnheader', { name: /Serial/ })).toBeInTheDocument();
 
     const serialOrderHandle = screen.getByRole('button', {
       name: 'Reorder Serial column',
@@ -609,6 +925,7 @@ describe('DataPage', () => {
     await waitFor(() =>
       expect(createViewBody).toMatchObject({
         name: 'Review queue',
+        permissionType: 'collaborative',
         config: {
           visibleFieldIds: [
             '019fbcf9-e020-71da-935a-6a6a728b3794',
@@ -726,16 +1043,41 @@ describe('DataPage', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select Sample Two' }));
     fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
     await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringMatching(/records\/019fbcf9-e020-71da-935a-6a6a728b3795\/archive$/),
-        expect.objectContaining({ method: 'POST' }),
-      ),
+      expect(bulkLifecycleBodies.at(-1)).toMatchObject({
+        path: expect.stringMatching(/records\/bulk\/archive$/),
+        body: {
+          ids: ['019fbcf9-e020-71da-935a-6a6a728b3795'],
+          reason: 'Archived from grid bulk action',
+        },
+      }),
     );
 
     fireEvent.click(await screen.findByRole('button', { name: 'Quick view Sample Two' }));
     expect(screen.getByRole('dialog')).toHaveAccessibleName('Sample Two');
     expect(screen.getByRole('link', { name: 'Full record' })).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole('button', { name: 'Close quick record view' })[0]!);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show archived records' }));
+    await waitFor(() =>
+      expect(recordQueryBodies.at(-1)).toMatchObject({ archiveState: 'archived' }),
+    );
+    expect(screen.queryByRole('button', { name: 'New record' })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: 'Quick view Sample Two' }));
+    expect(
+      screen.getByText('Archived records are read-only. Restore this record to edit it.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save record' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Close quick record view' })[0]!);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select Sample Two' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+    await waitFor(() =>
+      expect(bulkLifecycleBodies.at(-1)).toMatchObject({
+        path: expect.stringMatching(/records\/bulk\/restore$/),
+        body: { ids: ['019fbcf9-e020-71da-935a-6a6a728b3795'] },
+      }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Show active records' }));
+    await waitFor(() => expect(recordQueryBodies.at(-1)).toMatchObject({ archiveState: 'active' }));
 
     fireEvent.click(screen.getByRole('button', { name: 'Schema' }));
     const dataTransfer = {
@@ -791,19 +1133,20 @@ describe('DataPage', () => {
       },
     });
 
-    const tableMenu = screen.getByLabelText('More table actions').closest('details');
-    const viewMenu = screen.getByLabelText('Actions for view Workflow board').closest('details');
-    expect(tableMenu).not.toBeNull();
-    expect(viewMenu).not.toBeNull();
-    fireEvent.click(screen.getByLabelText('More table actions'));
-    expect(tableMenu).toHaveAttribute('open');
-    const viewMenuSummary = screen.getByLabelText('Actions for view Workflow board');
-    fireEvent.pointerDown(viewMenuSummary);
-    fireEvent.click(viewMenuSummary);
-    expect(tableMenu).not.toHaveAttribute('open');
-    expect(viewMenu).toHaveAttribute('open');
-    fireEvent.keyDown(document, { key: 'Escape' });
-    expect(viewMenu).not.toHaveAttribute('open');
+    expect(screen.queryByLabelText('More table actions')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Actions for view Workflow board')).not.toBeInTheDocument();
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Workflow board' }), {
+      clientX: 140,
+      clientY: 180,
+    });
+    expect(screen.getByRole('menu', { name: 'Workflow board' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Rename view' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('menuitem', { name: 'Duplicate as personal view' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Lock view' })).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole('menuitem', { name: 'Rename view' }), { key: 'Escape' });
+    expect(screen.queryByRole('menu', { name: 'Workflow board' })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit table' }));
     const settings = screen.getByRole('button', { name: 'Save table' }).closest('form');
@@ -831,7 +1174,7 @@ describe('DataPage', () => {
       }),
     );
     expect(await screen.findByRole('heading', { name: 'Specimens' })).toBeInTheDocument();
-  });
+  }, 20_000);
 
   it('edits project context alongside rows in a workspace-shared table', async () => {
     const backingProjectId = '019fbcf9-e020-71da-935a-6a6a728b3710';
@@ -859,7 +1202,8 @@ describe('DataPage', () => {
           ],
         });
       }
-      if (url.endsWith('/fields') || url.endsWith('/views')) return json({ items: [] });
+      if (url.endsWith('/fields') || new URL(url).pathname.endsWith('/views'))
+        return json({ items: [] });
       if (url.endsWith('/records/query')) {
         recordQueryBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
         return json({
@@ -934,7 +1278,7 @@ describe('DataPage', () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByRole('heading', { name: 'Workspace data' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Data library' })).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByLabelText('Current location')).toHaveTextContent(
         `/workspaces/${workspaceId}/t1234567890abce`,
@@ -950,17 +1294,24 @@ describe('DataPage', () => {
     );
     expect(screen.getByRole('columnheader', { name: 'Project' })).toBeInTheDocument();
     await screen.findByRole('button', { name: 'Quick view Motor redesign' });
-    fireEvent.change(screen.getByRole('combobox', { name: 'Project filter' }), {
-      target: { value: linkedProjectId },
-    });
+    fireEvent.focus(screen.getByRole('combobox', { name: 'Project filter' }));
+    fireEvent.click(
+      within(await screen.findByRole('listbox')).getByRole('option', {
+        name: 'Motor program',
+      }),
+    );
     await waitFor(() =>
       expect(recordQueryBodies.some((body) => body.contextProjectId === linkedProjectId)).toBe(
         true,
       ),
     );
-    fireEvent.change(screen.getByRole('combobox', { name: 'Project for Motor redesign' }), {
-      target: { value: linkedProjectId },
-    });
+    await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
+    fireEvent.focus(screen.getByRole('combobox', { name: 'Project for Motor redesign' }));
+    fireEvent.click(
+      within(await screen.findByRole('listbox')).getByRole('option', {
+        name: 'Motor program',
+      }),
+    );
     await waitFor(() =>
       expect(patchBody).toMatchObject({
         displayName: 'Motor redesign',
@@ -968,6 +1319,82 @@ describe('DataPage', () => {
         rowVersion: 1,
       }),
     );
+  });
+
+  it('searches and pages the table catalog on the server', async () => {
+    const table = (id: string, publicId: string, name: string) => ({
+      id,
+      publicId,
+      projectId: '019fbcf9-e020-71da-935a-6a6a728b3701',
+      name,
+      pluralName: `${name}s`,
+      key: name.toLowerCase(),
+      icon: 'table',
+      description: '',
+      system: false,
+    });
+    const first = table('019fbcf9-e020-71da-935a-6a6a728b3702', 't1234567890abcd', 'Sample');
+    const second = table('019fbcf9-e020-71da-935a-6a6a728b3703', 't1234567890abce', 'Equipment');
+    const searched = table(
+      '019fbcf9-e020-71da-935a-6a6a728b3704',
+      't1234567890abcf',
+      'Specification',
+    );
+    const requests: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      requests.push(url);
+      if (url.endsWith('/object-types')) {
+        return json({
+          items: [first],
+          pageInfo: { limit: 50, offset: 0, total: 2, hasNext: true },
+        });
+      }
+      if (url.includes('/object-types?limit=50&offset=1')) {
+        return json({
+          items: [second],
+          pageInfo: { limit: 50, offset: 1, total: 2, hasNext: false },
+        });
+      }
+      if (url.includes('/object-types?limit=50&offset=0&query=spec')) {
+        return json({
+          items: [searched],
+          pageInfo: { limit: 50, offset: 0, total: 1, hasNext: false },
+        });
+      }
+      if (url.endsWith('/fields') || new URL(url).pathname.endsWith('/views'))
+        return json({ items: [] });
+      if (url.endsWith('/records/query'))
+        return json({ items: [], page: 1, pageSize: 25, total: 0 });
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+
+    render(
+      <MemoryRouter
+        initialEntries={[
+          '/workspaces/019fbcf9-e020-71da-935a-6a6a728b3700/projects/019fbcf9-e020-71da-935a-6a6a728b3701/data',
+        ]}
+      >
+        <Routes>
+          <Route
+            path="/workspaces/:workspaceId/projects/:projectId/data"
+            element={<DataPageHarness />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more (1 of 2)' }));
+    await waitFor(() =>
+      expect(requests).toEqual(expect.arrayContaining([expect.stringContaining('offset=1')])),
+    );
+    expect(await screen.findByRole('button', { name: /Equipments/ })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search tables' }), {
+      target: { value: 'spec' },
+    });
+    expect(await screen.findByRole('button', { name: /Specifications/ })).toBeInTheDocument();
+    expect(requests.some((url) => url.includes('offset=1'))).toBe(true);
+    expect(requests.some((url) => url.includes('query=spec'))).toBe(true);
   });
 
   it('creates the first table from an accessible empty-state dialog', async () => {
@@ -994,7 +1421,8 @@ describe('DataPage', () => {
         }
         return json({ items: created ? [objectType] : [] });
       }
-      if (url.endsWith('/fields') || url.endsWith('/views')) return json({ items: [] });
+      if (url.endsWith('/fields') || new URL(url).pathname.endsWith('/views'))
+        return json({ items: [] });
       if (url.endsWith('/records/query')) {
         return json({ items: [], page: 1, pageSize: 25, total: 0 });
       }

@@ -170,6 +170,7 @@ elif [[ "$mode" == restore ]]; then
   psql "$database_url" -v ON_ERROR_STOP=1 -c "insert into maintenance_state(singleton,mode,lease_owner,lease_expires_at) values(true,'restore','backup-cli',now()+interval '30 minutes') on conflict(singleton) do update set mode='restore',lease_owner='backup-cli',lease_expires_at=excluded.lease_expires_at" >/dev/null
   sessions_to_revoke="$(psql "$database_url" -Atc "select count(*) from sessions where revoked_at is null")"
   tokens_to_revoke="$(psql "$database_url" -Atc "select count(*) from security_tokens where used_at is null and revoked_at is null")"
+  api_tokens_to_revoke="$(psql "$database_url" -Atc "select count(*) from api_tokens where revoked_at is null")"
   interrupted_jobs="$(psql "$database_url" -Atc "select count(*) from background_jobs where status='running'")"
   jq -c '.objects[]' "$work/manifest.json" | while read -r item; do
     id="$(jq -r '.id' <<<"$item")"; key="$(jq -r '.objectKey' <<<"$item")"; kind="$(jq -r '.kind' <<<"$item")"
@@ -185,11 +186,11 @@ elif [[ "$mode" == restore ]]; then
     updated="$(printf '%s\n' "$remap_sql" | psql "$database_url" -v ON_ERROR_STOP=1 -v item_id="$id" -v item_checksum="$checksum" -v object_version="$version" -At)"
     [[ "$updated" == *1* ]] || { echo "restored metadata did not match: $id" >&2; exit 6; }
   done
-  psql "$database_url" -v ON_ERROR_STOP=1 -c "update sessions set revoked_at=coalesce(revoked_at,now()),revoked_reason=coalesce(revoked_reason,'restore'); update security_tokens set revoked_at=coalesce(revoked_at,now()) where used_at is null; update installation_setup set setup_token_hash=null; update background_job_attempts set status='failed',completed_at=now(),error_code='RESTORE_INTERRUPTED' where status='running'; with interrupted as (update background_jobs set status='queued',lease_owner=null,lease_expires_at=null,scheduled_at=now(),updated_at=now() where status='running' returning id,project_id,entity_type,entity_id) insert into outbox_events(id,project_id,event_type,entity_type,entity_id,payload) select md5(random()::text||clock_timestamp()::text)::uuid,project_id,'job.restore_reconciled',entity_type,entity_id,jsonb_build_object('jobId',id) from interrupted; delete from maintenance_state where singleton=true" >/dev/null
+  psql "$database_url" -v ON_ERROR_STOP=1 -c "update sessions set revoked_at=coalesce(revoked_at,now()),revoked_reason=coalesce(revoked_reason,'restore'); update security_tokens set revoked_at=coalesce(revoked_at,now()) where used_at is null; update api_tokens set revoked_at=coalesce(revoked_at,now()),revoked_reason=coalesce(revoked_reason,'restore'); update installation_setup set setup_token_hash=null; update background_job_attempts set status='failed',completed_at=now(),error_code='RESTORE_INTERRUPTED' where status='running'; update webhook_deliveries set status='queued',lease_owner=null,lease_expires_at=null,next_attempt_at=now(),updated_at=now() where status='sending'; with interrupted as (update background_jobs set status='queued',lease_owner=null,lease_expires_at=null,scheduled_at=now(),updated_at=now() where status='running' returning id,project_id,entity_type,entity_id) insert into outbox_events(id,project_id,event_type,entity_type,entity_id,payload) select md5(random()::text||clock_timestamp()::text)::uuid,project_id,'job.restore_reconciled',entity_type,entity_id,jsonb_build_object('jobId',id) from interrupted; delete from maintenance_state where singleton=true" >/dev/null
   restore_finished=true
   input_bytes="$(stat -c %s "$input")"
   object_count="$(jq '.objects|length' "$work/manifest.json")"
-  report_details="$(jq -nc --argjson sessions "$sessions_to_revoke" --argjson tokens "$tokens_to_revoke" --argjson jobs "$interrupted_jobs" '{sessionsRevoked:$sessions,securityTokensRevoked:$tokens,interruptedJobsRequeued:$jobs}')"
+  report_details="$(jq -nc --argjson sessions "$sessions_to_revoke" --argjson tokens "$tokens_to_revoke" --argjson api_tokens "$api_tokens_to_revoke" --argjson jobs "$interrupted_jobs" '{sessionsRevoked:$sessions,securityTokensRevoked:$tokens,apiTokensRevoked:$api_tokens,interruptedJobsRequeued:$jobs}')"
   write_report restore success "$input_bytes" "$object_count" "$report_details"
   echo 'restore completed; sessions revoked and jobs reconciled'
 else

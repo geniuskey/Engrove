@@ -1,6 +1,11 @@
 import type { Pool, PoolClient } from 'pg';
-import { v7 as uuidv7 } from 'uuid';
+import { v7 as uuidv7, validate as validateUuid } from 'uuid';
 import { appendAudit, RepositoryError, type ActorSession } from './community.js';
+import {
+  claimProjectCreate,
+  hashIdempotencyPayload,
+  rememberProjectCreate,
+} from './project-idempotency.js';
 
 export type MilestoneStatus = 'planned' | 'active' | 'at_risk' | 'completed';
 
@@ -14,9 +19,9 @@ interface MilestoneInput {
   title: string;
   description: string;
   status: MilestoneStatus;
-  startDate?: string | undefined;
   targetDate: string;
-  progress: number;
+  taskIds?: string[] | undefined;
+  idempotencyKey?: string | undefined;
 }
 
 async function transaction<T>(pool: Pool, operation: (client: PoolClient) => Promise<T>) {
@@ -42,8 +47,8 @@ export class ScopedMilestoneRepository {
 
   static async open(pool: Pool, actor: ActorSession, workspaceId: string, projectId: string) {
     const found = await pool.query(
-      'select 1 from projects p join workspaces w on w.id=p.workspace_id where p.id=$1 and p.workspace_id=$2 and w.organization_id=$3 and p.system=false',
-      [projectId, workspaceId, actor.organizationId],
+      'select 1 from projects p join workspaces w on w.id=p.workspace_id where p.id=$1 and p.workspace_id=$2 and w.organization_id=$3 and p.system=false and project_visible_to(p.id,$2,$3,$4,$5)',
+      [projectId, workspaceId, actor.organizationId, actor.actorId, actor.role],
     );
     if (!found.rowCount)
       throw new RepositoryError('PROJECT_NOT_FOUND', 404, 'Project was not found.');
@@ -64,23 +69,164 @@ export class ScopedMilestoneRepository {
     };
   }
 
-  async listMilestones(includeArchived = false) {
-    const result = await this.pool.query(
-      `select m.*,m.start_date::text start_date,m.target_date::text target_date
-       from project_milestones m where m.project_id=$1 and ($2::boolean or m.archived_at is null)
-       order by (m.archived_at is not null),case m.status when 'at_risk' then 0 when 'active' then 1 when 'planned' then 2 else 3 end,
-       m.target_date,m.created_at,m.id`,
-      [this.scope.projectId, includeArchived],
+  private taskVisibilityPredicate(alias = 't') {
+    if (!validateUuid(this.scope.actor.actorId))
+      throw new RepositoryError('ACTOR_INVALID', 401, 'Authenticated user is invalid.');
+    return `task_visible_to(${alias}.id,'${this.scope.actor.actorId}'::uuid,'${this.scope.actor.role}'::text)`;
+  }
+
+  private milestoneSelect(where: string) {
+    return `select m.*,m.target_date::text target_date,
+      coalesce(linked.linked_tasks,'[]'::jsonb) linked_tasks,
+      coalesce(linked.task_count,0)::int task_count,
+      coalesce(linked.completed_task_count,0)::int completed_task_count
+     from project_milestones m
+     left join lateral (
+       select jsonb_agg(jsonb_build_object(
+         'id',t.id,
+         'task_key',p.key||'-'||t.task_number,
+         'title',t.title,
+         'status',t.status,
+         'status_name',workflow.name,
+         'status_category',workflow.category,
+         'archived_at',t.archived_at
+       ) order by t.task_number,t.id) linked_tasks,
+       count(*)::int task_count,
+       count(*) filter (where workflow.category='done')::int completed_task_count
+       from project_milestone_tasks link
+       join tasks t on t.project_id=link.project_id and t.id=link.task_id
+       join projects p on p.id=t.project_id
+       join task_workflow_statuses workflow
+         on workflow.project_id=t.project_id and workflow.key=t.status
+       where link.project_id=m.project_id and link.milestone_id=m.id
+         and ${this.taskVisibilityPredicate('t')}
+     ) linked on true
+     where ${where}`;
+  }
+
+  private async replaceTaskLinks(client: PoolClient, milestoneId: string, taskIds: string[]) {
+    if (taskIds.length > 200)
+      throw new RepositoryError(
+        'MILESTONE_TASKS_LIMIT_EXCEEDED',
+        400,
+        'A key date can link at most 200 tasks.',
+      );
+    const uniqueTaskIds = [...new Set(taskIds)];
+    if (uniqueTaskIds.length !== taskIds.length)
+      throw new RepositoryError('MILESTONE_TASKS_DUPLICATE', 400, 'Linked tasks must be unique.');
+    if (uniqueTaskIds.length > 0) {
+      const available = await client.query<{ id: string }>(
+        `select id from tasks
+         where project_id=$1 and id=any($2::uuid[])
+           and ${this.taskVisibilityPredicate('tasks')}
+           and (archived_at is null or exists(
+             select 1 from project_milestone_tasks link
+             where link.project_id=$1 and link.milestone_id=$3 and link.task_id=tasks.id
+           ))`,
+        [this.scope.projectId, uniqueTaskIds, milestoneId],
+      );
+      if (available.rowCount !== uniqueTaskIds.length)
+        throw new RepositoryError(
+          'MILESTONE_TASK_INVALID',
+          400,
+          'Every linked task must be active and belong to this project.',
+        );
+    }
+    await client.query(
+      'delete from project_milestone_tasks where project_id=$1 and milestone_id=$2',
+      [this.scope.projectId, milestoneId],
     );
-    return result.rows;
+    if (uniqueTaskIds.length > 0)
+      await client.query(
+        `insert into project_milestone_tasks (project_id,milestone_id,task_id,linked_by)
+         select $1,$2,task_id,$4 from unnest($3::uuid[]) task_id`,
+        [this.scope.projectId, milestoneId, uniqueTaskIds, this.scope.actor.actorId],
+      );
+  }
+
+  async listMilestonePage(options: {
+    archiveState: 'active' | 'archived' | 'all';
+    query: string;
+    limit: number;
+    offset: number;
+  }) {
+    const query = options.query.trim().toLocaleLowerCase();
+    const parameters = [
+      this.scope.projectId,
+      options.archiveState,
+      query,
+      options.limit,
+      options.offset,
+    ];
+    const predicate = `m.project_id=$1
+      and ($2='all' or ($2='active' and m.archived_at is null)
+        or ($2='archived' and m.archived_at is not null))
+      and ($3='' or position($3 in lower(concat_ws(' ',m.title,m.description,m.status::text,
+        m.target_date::text)))>0)`;
+    const [items, aggregate, next] = await Promise.all([
+      this.pool.query(
+        `${this.milestoneSelect(predicate)}
+         order by (m.archived_at is not null),m.target_date,m.created_at,m.id limit $4 offset $5`,
+        parameters,
+      ),
+      this.pool.query<{
+        total: string;
+        planned: string;
+        active: string;
+        at_risk: string;
+        completed: string;
+        archived: string;
+      }>(
+        `select count(*)::text total,
+           count(*) filter (where m.archived_at is null and m.status='planned')::text planned,
+           count(*) filter (where m.archived_at is null and m.status='active')::text active,
+           count(*) filter (where m.archived_at is null and m.status='at_risk')::text at_risk,
+           count(*) filter (where m.archived_at is null and m.status='completed')::text completed,
+           count(*) filter (where m.archived_at is not null)::text archived
+         from project_milestones m where ${predicate}`,
+        parameters.slice(0, 3),
+      ),
+      this.pool.query<{ id: string }>(
+        `select m.id from project_milestones m
+         where ${predicate} and m.archived_at is null and m.status<>'completed'
+           and m.target_date>=current_date
+         order by m.target_date,m.created_at,m.id limit 1`,
+        parameters.slice(0, 3),
+      ),
+    ]);
+    const counts = aggregate.rows[0] ?? {
+      total: '0',
+      planned: '0',
+      active: '0',
+      at_risk: '0',
+      completed: '0',
+      archived: '0',
+    };
+    const total = Number(counts.total);
+    return {
+      items: items.rows,
+      pageInfo: {
+        limit: options.limit,
+        offset: options.offset,
+        total,
+        hasNext: options.offset + items.rows.length < total,
+      },
+      summary: {
+        planned: Number(counts.planned),
+        active: Number(counts.active),
+        atRisk: Number(counts.at_risk),
+        completed: Number(counts.completed),
+        archived: Number(counts.archived),
+      },
+      nextMilestoneId: next.rows[0]?.id ?? null,
+    };
   }
 
   async getMilestone(milestoneId: string) {
-    const result = await this.pool.query(
-      `select m.*,m.start_date::text start_date,m.target_date::text target_date
-       from project_milestones m where m.project_id=$1 and m.id=$2`,
-      [this.scope.projectId, milestoneId],
-    );
+    const result = await this.pool.query(this.milestoneSelect('m.project_id=$1 and m.id=$2'), [
+      this.scope.projectId,
+      milestoneId,
+    ]);
     if (!result.rows[0])
       throw new RepositoryError('MILESTONE_NOT_FOUND', 404, 'Milestone was not found.');
     return result.rows[0];
@@ -88,41 +234,66 @@ export class ScopedMilestoneRepository {
 
   async createMilestone(input: MilestoneInput & { requestId: string }) {
     const milestoneId = uuidv7();
-    const progress = input.status === 'completed' ? 100 : input.progress;
-    await transaction(this.pool, async (client) => {
+    const creation = await transaction(this.pool, async (client) => {
+      const idempotencyScope = input.idempotencyKey
+        ? {
+            projectId: this.scope.projectId,
+            actorId: this.scope.actor.actorId,
+            operation: 'milestone.create' as const,
+            idempotencyKey: input.idempotencyKey,
+          }
+        : undefined;
+      const requestHash = hashIdempotencyPayload({
+        title: input.title,
+        description: input.description,
+        status: input.status,
+        targetDate: input.targetDate,
+        taskIds: input.taskIds ?? [],
+      });
+      if (idempotencyScope) {
+        const replayId = await claimProjectCreate(client, idempotencyScope, requestHash);
+        if (replayId) return { resourceId: replayId, idempotentReplay: true };
+      }
       await client.query(
         `insert into project_milestones
-         (id,project_id,title,description,status,start_date,target_date,progress,completed_at,created_by)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,case when $5='completed' then now() else null end,$9)`,
+         (id,project_id,title,description,status,target_date,completed_at,created_by)
+         values ($1,$2,$3,$4,$5::milestone_status,$6,
+                 case when $5::milestone_status='completed'::milestone_status then now() else null end,$7)`,
         [
           milestoneId,
           this.scope.projectId,
           input.title,
           input.description,
           input.status,
-          input.startDate ?? null,
           input.targetDate,
-          progress,
           this.scope.actor.actorId,
         ],
       );
+      await this.replaceTaskLinks(client, milestoneId, input.taskIds ?? []);
       await appendAudit(
         client,
-        this.audit('project_milestone.created', milestoneId, input.requestId),
+        this.audit('project_milestone.created', milestoneId, input.requestId, {
+          taskIds: input.taskIds ?? [],
+        }),
       );
+      if (idempotencyScope)
+        await rememberProjectCreate(client, idempotencyScope, requestHash, milestoneId);
+      return { resourceId: milestoneId, idempotentReplay: false };
     });
-    return this.getMilestone(milestoneId);
+    return {
+      ...(await this.getMilestone(creation.resourceId)),
+      idempotent_replay: creation.idempotentReplay,
+    };
   }
 
   async updateMilestone(
     milestoneId: string,
     input: MilestoneInput & { rowVersion: number; requestId: string },
   ) {
-    const progress = input.status === 'completed' ? 100 : input.progress;
     await transaction(this.pool, async (client) => {
       const changed = await client.query(
-        `update project_milestones set title=$4,description=$5,status=$6,start_date=$7,target_date=$8,progress=$9,
-         completed_at=case when $6='completed' then coalesce(completed_at,now()) else null end,
+        `update project_milestones set title=$4,description=$5,status=$6::milestone_status,target_date=$7,
+         completed_at=case when $6::milestone_status='completed'::milestone_status then coalesce(completed_at,now()) else null end,
          row_version=row_version+1,updated_at=now()
          where project_id=$1 and id=$2 and row_version=$3 and archived_at is null returning id`,
         [
@@ -132,9 +303,7 @@ export class ScopedMilestoneRepository {
           input.title,
           input.description,
           input.status,
-          input.startDate ?? null,
           input.targetDate,
-          progress,
         ],
       );
       if (!changed.rowCount)
@@ -143,9 +312,12 @@ export class ScopedMilestoneRepository {
           409,
           'Milestone changed or is unavailable.',
         );
+      if (input.taskIds) await this.replaceTaskLinks(client, milestoneId, input.taskIds);
       await appendAudit(
         client,
-        this.audit('project_milestone.updated', milestoneId, input.requestId),
+        this.audit('project_milestone.updated', milestoneId, input.requestId, {
+          ...(input.taskIds ? { taskIds: input.taskIds } : {}),
+        }),
       );
     });
     return this.getMilestone(milestoneId);

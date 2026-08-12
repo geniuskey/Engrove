@@ -11,6 +11,7 @@ const focusableSelector = [
 
 let scrollLockCount = 0;
 let savedBodyOverflow = '';
+const modalStack: HTMLElement[] = [];
 
 /**
  * Supplies the interaction contract shared by modal dialogs and drawers:
@@ -56,6 +57,7 @@ export function useModalDialog<T extends HTMLElement>(
       savedBodyOverflow = document.body.style.overflow;
       document.body.style.overflow = 'hidden';
     }
+    modalStack.push(dialog);
 
     const candidates = () =>
       Array.from(dialog.querySelectorAll<HTMLElement>(focusableSelector)).filter(
@@ -65,6 +67,7 @@ export function useModalDialog<T extends HTMLElement>(
     (initial ?? candidates()[0] ?? dialog).focus();
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (modalStack.at(-1) !== dialog) return;
       if (event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
@@ -91,6 +94,8 @@ export function useModalDialog<T extends HTMLElement>(
     window.addEventListener('keydown', handleKeyDown, true);
     return () => {
       window.removeEventListener('keydown', handleKeyDown, true);
+      const stackIndex = modalStack.lastIndexOf(dialog);
+      if (stackIndex >= 0) modalStack.splice(stackIndex, 1);
       for (const { element, inert } of inerted) element.inert = inert;
       scrollLockCount = Math.max(0, scrollLockCount - 1);
       if (scrollLockCount === 0) document.body.style.overflow = savedBodyOverflow;

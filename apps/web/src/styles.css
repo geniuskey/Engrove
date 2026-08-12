@@ -4,6 +4,9 @@
 :root {
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
   color-scheme: dark;
+  --color-slate-500: #7b8ba1;
+  --color-slate-600: #748399;
+  --engrove-primary-foreground: #020617;
   background: var(--color-slate-950);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -16,15 +19,15 @@
   --color-slate-200: #1e293b;
   --color-slate-300: #334155;
   --color-slate-400: #475569;
-  --color-slate-500: #64748b;
-  --color-slate-600: #8796a9;
+  --color-slate-500: #526071;
+  --color-slate-600: #5b687a;
   --color-slate-700: #bdc9d7;
   --color-slate-800: #d9e2ec;
   --color-slate-900: #ffffff;
   --color-slate-950: #f3f6fa;
   --color-sky-200: #075985;
   --color-sky-300: #0369a1;
-  --color-sky-400: #0284c7;
+  --color-sky-400: #0369a1;
   --color-sky-950: #e0f2fe;
   --color-cyan-300: #0e7490;
   --color-emerald-200: #065f46;
@@ -36,6 +39,7 @@
   --color-rose-200: #9f1239;
   --color-rose-300: #be123c;
   --color-rose-950: #ffe4e6;
+  --engrove-primary-foreground: #ffffff;
 }
 
 .engrove-brand-mark-light {
@@ -261,7 +265,6 @@ a {
 .service-sidebar .sidebar-utility-action {
   font-size: 0.75rem;
   line-height: 1rem;
-  letter-spacing: 0;
 }
 
 :root[data-theme='light'] .service-sidebar {

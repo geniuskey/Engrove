@@ -23,13 +23,26 @@ export async function checkMigrationCompatibility(pool: Pool): Promise<void> {
 
 export type { Pool } from 'pg';
 export * from './community.js';
+export * from './api-tokens.js';
+export * from './webhooks.js';
+export * from './notifications.js';
 export * from './configurable-data.js';
+export * from './record-view-shares.js';
 export * from './calculated-fields.js';
 export * from './engineering-types.js';
 export * from './files-datasets.js';
 export * from './visualizations.js';
 export * from './tasks.js';
+export * from './task-automations.js';
+export * from './task-workflows.js';
 export * from './milestones.js';
+export * from './project-idempotency.js';
+export * from './sources.js';
+export * from './record-reviews.js';
 export * from './production-roles.js';
 export * from './public-ids.js';
 export * from './pilot.js';
+export * from './workspace-search.js';
+export * from './workspace-overview.js';
+export * from './workspace-my-work.js';
+export * from './resource-access.js';

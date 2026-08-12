@@ -1,0 +1,3 @@
+ALTER TABLE "task_automation_rules" ADD COLUMN "archived_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "task_automation_rules" ADD COLUMN "archived_by" uuid;--> statement-breakpoint
+ALTER TABLE "task_automation_rules" ADD CONSTRAINT "task_automation_rules_archived_by_users_id_fk" FOREIGN KEY ("archived_by") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;

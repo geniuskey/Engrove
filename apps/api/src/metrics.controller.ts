@@ -1,4 +1,5 @@
 import { Controller, Get, Header, Inject } from '@nestjs/common';
+import { ApiOkResponse, ApiProduces, ApiTags } from '@nestjs/swagger';
 import type { Runtime } from './runtime.js';
 import { RUNTIME } from './runtime.provider.js';
 
@@ -38,12 +39,22 @@ function metric(name: string, value: number | string, help: string, type = 'gaug
   return [`# HELP ${name} ${help}`, `# TYPE ${name} ${type}`, `${name} ${value}`];
 }
 
+@ApiTags('Metrics')
 @Controller()
 export class MetricsController {
   constructor(@Inject(RUNTIME) private readonly runtime: Runtime) {}
 
   @Get('metrics')
   @Header('Content-Type', 'text/plain; version=0.0.4; charset=utf-8')
+  @ApiProduces('text/plain')
+  @ApiOkResponse({
+    description: 'Prometheus exposition format version 0.0.4.',
+    schema: {
+      type: 'string',
+      example:
+        '# HELP engrove_active_jobs Currently running durable jobs.\n# TYPE engrove_active_jobs gauge\nengrove_active_jobs 0\n',
+    },
+  })
   async metrics(): Promise<string> {
     const runtime = this.runtime;
     const result = await runtime.pool.query<Record<string, string>>(`
@@ -52,6 +63,11 @@ export class MetricsController {
         (select count(*) from background_jobs where status='failed') job_failures,
         (select count(*) from outbox_events where dispatched_at is null) outbox_undispatched,
         (select coalesce(extract(epoch from now()-min(created_at)),0) from outbox_events where dispatched_at is null) outbox_lag,
+        (select count(*) from webhook_deliveries where status in ('queued','sending')) webhook_pending,
+        (select count(*) from webhook_deliveries where status='failed') webhook_failures,
+        (select coalesce(extract(epoch from now()-min(created_at)),0) from webhook_deliveries where status in ('queued','sending')) webhook_lag,
+        (select count(*) from notifications where read_at is null) notifications_unread,
+        (select coalesce(extract(epoch from now()-min(created_at)),0) from notifications where read_at is null) notification_oldest_unread,
         (select count(*) from background_jobs where status='running' and lease_expires_at<now()) expired_leases,
         (select count(*) from background_job_attempts where error_code='RESTORE_INTERRUPTED') reconciliations,
         (select count(*) from file_upload_sessions where status in ('finalized','failed','expired') and created_at<now()-interval '1 hour') cleanup_candidates,
@@ -85,6 +101,31 @@ export class MetricsController {
         'engrove_outbox_dispatch_lag_seconds',
         row.outbox_lag ?? 0,
         'Age of the oldest undispatched event.',
+      ),
+      ...metric(
+        'engrove_webhook_deliveries_pending',
+        row.webhook_pending ?? 0,
+        'Queued or sending webhook deliveries.',
+      ),
+      ...metric(
+        'engrove_webhook_delivery_failures',
+        row.webhook_failures ?? 0,
+        'Webhook deliveries in terminal failure state.',
+      ),
+      ...metric(
+        'engrove_webhook_delivery_lag_seconds',
+        row.webhook_lag ?? 0,
+        'Age of the oldest pending webhook delivery.',
+      ),
+      ...metric(
+        'engrove_notifications_unread',
+        row.notifications_unread ?? 0,
+        'Unread in-app task notifications.',
+      ),
+      ...metric(
+        'engrove_notification_oldest_unread_age_seconds',
+        row.notification_oldest_unread ?? 0,
+        'Age of the oldest unread in-app task notification.',
       ),
       ...metric(
         'engrove_expired_job_leases',
@@ -195,6 +236,12 @@ export class MetricsController {
         'engrove_cross_project_rejections_total',
         errors.get('CROSS_PROJECT_ACCESS_REJECTED') ?? 0,
         'Rejected cross-project access attempts.',
+        'counter',
+      ),
+      ...metric(
+        'engrove_client_render_errors_total',
+        errors.get('CLIENT_RENDER_ERROR') ?? 0,
+        'Authenticated browser render and lazy-chunk failures reported to the API.',
         'counter',
       ),
     ];

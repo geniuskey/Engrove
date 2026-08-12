@@ -1,0 +1,1 @@
+CREATE INDEX "tasks_project_lifecycle_board_idx" ON "tasks" USING btree ("project_id","archived_at","status","priority");

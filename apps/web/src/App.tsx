@@ -2,14 +2,15 @@ import { can, type Action, type Role } from '@engrove/permissions';
 import type { HealthResponse } from '@engrove/shared';
 import { Button } from '@engrove/ui';
 import {
+  Component,
   type DragEvent,
+  type ErrorInfo,
   type FormEvent,
   lazy,
   type PropsWithChildren,
   Suspense,
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -23,10 +24,13 @@ import {
   useSearchParams,
 } from 'react-router';
 import type { WorkspaceDataContext } from './DataPageTypes.js';
+import { ActionDialogProvider, useActionDialog } from './ActionDialogProvider.js';
 import { BrandMark } from './BrandMark.js';
+import { FormFieldLabel } from './FormFieldLabel.js';
 import { I18nProvider, useI18n } from './i18n.js';
 import { ServiceShell } from './ServiceSidebar.js';
 import { useModalDialog } from './useModalDialog.js';
+import { WebhookSettings } from './WebhookSettings.js';
 
 const DataPage = lazy(() =>
   import('./DataPage.js').then((module) => ({ default: module.DataPage })),
@@ -34,14 +38,46 @@ const DataPage = lazy(() =>
 const RecordDetailPage = lazy(() =>
   import('./DataPage.js').then((module) => ({ default: module.RecordDetailPage })),
 );
-const FilesDatasetsPage = lazy(() =>
-  import('./FilesDatasetsPage.js').then((module) => ({ default: module.FilesDatasetsPage })),
+const SourcesPage = lazy(() =>
+  import('./SourcesPage.js').then((module) => ({ default: module.SourcesPage })),
 );
 const TasksPage = lazy(() =>
   import('./TasksPage.js').then((module) => ({ default: module.TasksPage })),
 );
+const TaskAutomationSettings = lazy(() =>
+  import('./TaskAutomationSettings.js').then((module) => ({
+    default: module.TaskAutomationSettings,
+  })),
+);
+const TaskWorkflowSettings = lazy(() =>
+  import('./TaskWorkflowSettings.js').then((module) => ({
+    default: module.TaskWorkflowSettings,
+  })),
+);
 const MilestonesPage = lazy(() =>
   import('./MilestonesPage.js').then((module) => ({ default: module.MilestonesPage })),
+);
+const ReviewInboxPage = lazy(() =>
+  import('./ReviewInboxPage.js').then((module) => ({ default: module.ReviewInboxPage })),
+);
+const AuditPage = lazy(() =>
+  import('./AuditPage.js').then((module) => ({ default: module.AuditPage })),
+);
+const WorkspaceOverviewPage = lazy(() =>
+  import('./WorkspaceOverviewPage.js').then((module) => ({
+    default: module.WorkspaceOverviewPage,
+  })),
+);
+const MyWorkPage = lazy(() =>
+  import('./MyWorkPage.js').then((module) => ({ default: module.MyWorkPage })),
+);
+const ResourceAccessEditor = lazy(() =>
+  import('./ResourceAccessEditor.js').then((module) => ({
+    default: module.ResourceAccessEditor,
+  })),
+);
+const SharedViewPage = lazy(() =>
+  import('./SharedViewPage.js').then((module) => ({ default: module.SharedViewPage })),
 );
 
 const VisualizationsPage = lazy(() =>
@@ -68,6 +104,127 @@ function PageLoader({ children, label }: PropsWithChildren<{ label: string }>) {
 const apiBase = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000';
 type Theme = 'light' | 'dark';
 
+interface ErrorBoundaryLabels {
+  body: string;
+  chunkBody: string;
+  heading: string;
+  home: string;
+  reference: string;
+  reload: string;
+  retry: string;
+}
+
+interface ErrorBoundaryState {
+  errorId: string;
+  failed: boolean;
+  reloadRequired: boolean;
+}
+
+function clientErrorKind(error: Error): 'chunk_load_error' | 'render_error' {
+  return error.name === 'ChunkLoadError' ||
+    /dynamically imported module|loading chunk|failed to fetch module/i.test(error.message)
+    ? 'chunk_load_error'
+    : 'render_error';
+}
+
+async function reportClientRenderError(errorId: string, error: Error, info: ErrorInfo) {
+  const componentStack = info.componentStack?.trim().slice(0, 4_000);
+  const kind = clientErrorKind(error);
+  try {
+    const csrf = csrfToken();
+    await fetch(`${apiBase}/api/v1/client-errors`, {
+      method: 'POST',
+      credentials: 'include',
+      keepalive: true,
+      headers: {
+        'content-type': 'application/json',
+        ...(csrf ? { 'x-csrf-token': decodeURIComponent(csrf) } : {}),
+      },
+      body: JSON.stringify({
+        errorId,
+        kind,
+        route: window.location.pathname.slice(0, 512),
+        errorName: (error.name || 'Error').slice(0, 80),
+        ...(componentStack ? { componentStack } : {}),
+      }),
+    });
+  } catch {
+    // Recovery must remain available when diagnostics cannot be delivered.
+  }
+}
+
+export class ApplicationErrorBoundary extends Component<
+  PropsWithChildren<{ labels: ErrorBoundaryLabels }>,
+  ErrorBoundaryState
+> {
+  override state: ErrorBoundaryState = { errorId: '', failed: false, reloadRequired: false };
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return {
+      errorId: crypto.randomUUID(),
+      failed: true,
+      reloadRequired: clientErrorKind(error) === 'chunk_load_error',
+    };
+  }
+
+  override componentDidCatch(error: Error, info: ErrorInfo) {
+    void reportClientRenderError(this.state.errorId, error, info);
+  }
+
+  override render() {
+    if (!this.state.failed) return this.props.children;
+    const { labels } = this.props;
+    return (
+      <main className="product-grid grid min-h-screen place-items-center bg-slate-950 p-4 text-slate-100 sm:p-8">
+        <section
+          aria-labelledby="application-error-title"
+          className="w-full max-w-xl rounded-2xl border border-amber-400/20 bg-slate-900/90 p-6 shadow-2xl shadow-slate-950/40 sm:p-8"
+          role="alert"
+        >
+          <BrandMark className="size-10" />
+          <p className="mt-5 font-mono text-[11px] uppercase tracking-[0.18em] text-amber-300">
+            Engrove
+          </p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight" id="application-error-title">
+            {labels.heading}
+          </h1>
+          <p className="mt-3 text-sm leading-relaxed text-slate-400">
+            {this.state.reloadRequired ? labels.chunkBody : labels.body}
+          </p>
+          <p className="mt-4 rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2 text-xs text-slate-500">
+            {labels.reference}{' '}
+            <code className="select-all font-mono text-slate-300">{this.state.errorId}</code>
+          </p>
+          <div className="mt-6 flex flex-wrap gap-2">
+            {!this.state.reloadRequired && (
+              <button
+                className="min-h-10 rounded-lg bg-sky-400 px-4 text-sm font-semibold text-slate-950 hover:bg-sky-300"
+                onClick={() => this.setState({ errorId: '', failed: false, reloadRequired: false })}
+                type="button"
+              >
+                {labels.retry}
+              </button>
+            )}
+            <button
+              className={`min-h-10 rounded-lg px-4 text-sm font-semibold ${this.state.reloadRequired ? 'bg-sky-400 text-slate-950 hover:bg-sky-300' : 'border border-slate-700 text-slate-300 hover:bg-slate-800'}`}
+              onClick={() => window.location.reload()}
+              type="button"
+            >
+              {labels.reload}
+            </button>
+            <a
+              className="inline-flex min-h-10 items-center rounded-lg px-4 text-sm font-medium text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+              href="/workspaces"
+            >
+              {labels.home}
+            </a>
+          </div>
+        </section>
+      </main>
+    );
+  }
+}
+
 export interface User {
   id: string;
   email: string;
@@ -85,6 +242,14 @@ interface Workspace {
   archivedAt: string | null;
 }
 
+interface WorkspacePageInfo {
+  limit: number;
+  offset: number;
+  total: number;
+  overallTotal: number;
+  hasNext: boolean;
+}
+
 interface Project {
   id: string;
   publicId?: string;
@@ -99,36 +264,31 @@ interface Project {
 
 interface ProjectOverviewMetrics {
   total_samples: number;
-  dataset_count: number;
   failed_evaluations: number;
   pass_rate: string | null;
+  chart_count: number;
+  dashboard_count: number;
+  object_type_count: number;
   overdue_tasks: number;
-  recent_datasets: ProjectOverviewDataset[];
+  active_task_count: number;
+  completed_task_count: number;
+  blocked_task_count: number;
 }
 
-interface ProjectOverviewTask {
+interface ProjectOverviewSource {
   id: string;
-  status: 'todo' | 'in_progress' | 'blocked' | 'done';
+  title: string;
+  provider: string;
+  url: string;
+  version: string;
+  observed_on: string;
   archived_at: string | null;
-}
-
-interface ProjectOverviewDataset {
-  id: string;
-  name: string;
-  status: string;
-  row_count?: number;
-  created_at?: string;
-  archived_at?: string | null;
 }
 
 interface ProjectOverview {
   metrics: ProjectOverviewMetrics | undefined;
-  tasks: ProjectOverviewTask[];
-  files: Array<{ archived_at: string | null }>;
-  datasets: ProjectOverviewDataset[];
-  charts: Array<{ archived_at: string | null }>;
-  dashboards: Array<{ archived_at: string | null }>;
-  objectTypes: Array<{ id: string }>;
+  sources: ProjectOverviewSource[];
+  sourceTotal: number;
 }
 
 interface Member {
@@ -157,7 +317,7 @@ const memberGroupColors: Array<{ value: MemberGroupColor; label: string; hex: st
   { value: 'rose', label: 'Rose', hex: '#fb7185' },
   { value: 'violet', label: 'Violet', hex: '#a78bfa' },
 ];
-const memberRoles: Role[] = ['owner', 'admin', 'engineer', 'contributor', 'viewer'];
+const memberRoles: Role[] = ['owner', 'admin', 'engineer', 'contributor', 'reviewer', 'viewer'];
 const formLabelClass = 'text-sm text-slate-300';
 const blockFormLabelClass = `block ${formLabelClass}`;
 const sectionEyebrowClass = 'font-mono text-xs uppercase tracking-widest text-sky-400';
@@ -185,6 +345,30 @@ export class ApiError extends Error {
   }
 }
 
+export const authenticationRequiredEvent = 'engrove:authentication-required';
+
+function safeProtectedReturnTo(value: string): string | undefined {
+  if (
+    value.length > 2048 ||
+    !value.startsWith('/') ||
+    value.startsWith('//') ||
+    value.includes('\\')
+  )
+    return undefined;
+  try {
+    const parsed = new URL(value, window.location.origin);
+    if (parsed.origin !== window.location.origin) return undefined;
+    const path = `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    return parsed.pathname === '/' ||
+      /^\/workspaces(?:\/|$)/.test(parsed.pathname) ||
+      ['/members', '/audit', '/get-started', '/pilot'].includes(parsed.pathname)
+      ? path
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function csrfToken(): string | undefined {
   return document.cookie
     .split('; ')
@@ -192,9 +376,9 @@ function csrfToken(): string | undefined {
     ?.split('=')[1];
 }
 
-export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function apiResponse(path: string, init: RequestInit = {}): Promise<Response> {
   const method = init.method ?? 'GET';
-  const response = await fetch(`${apiBase}/api/v1${path}`, {
+  return fetch(`${apiBase}/api/v1${path}`, {
     ...init,
     signal: init.signal ?? AbortSignal.timeout(15_000),
     credentials: 'include',
@@ -206,45 +390,96 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...init.headers,
     },
   });
-  const body = (await response.json().catch(() => ({}))) as {
-    error?: { code?: string; message?: string };
-  };
-  if (!response.ok) {
-    throw new ApiError(
-      body.error?.code ?? 'REQUEST_FAILED',
-      body.error?.message ?? 'Request failed.',
-    );
+}
+
+function apiError(
+  response: Response,
+  body: { error?: { code?: string; message?: string } },
+): ApiError | undefined {
+  if (response.ok) return undefined;
+  const error = new ApiError(
+    body.error?.code ?? 'REQUEST_FAILED',
+    body.error?.message ?? 'Request failed.',
+  );
+  if (response.status === 401 && error.code === 'AUTHENTICATION_REQUIRED') {
+    window.dispatchEvent(new CustomEvent(authenticationRequiredEvent));
   }
+  return error;
+}
+
+export async function api<T>(
+  path: string,
+  init: RequestInit = {},
+  responseType: 'json' | 'blob' = 'json',
+): Promise<T> {
+  const response = await apiResponse(path, init);
+  const body =
+    response.ok && responseType === 'blob'
+      ? await response.blob()
+      : await response.json().catch(() => ({}));
+  const error = apiError(response, body as { error?: { code?: string; message?: string } });
+  if (error) throw error;
   return body as T;
 }
 
-function useAsyncList<T>(load: () => Promise<{ items: T[] }>, dependencies: unknown[]) {
+interface PagedListInfo {
+  limit: number;
+  offset: number;
+  total: number;
+  hasNext: boolean;
+}
+
+function usePagedList<T>(path: string, query: string) {
   const [items, setItems] = useState<T[]>([]);
+  const [pageInfo, setPageInfo] = useState<PagedListInfo>({
+    limit: 50,
+    offset: 0,
+    total: 0,
+    hasNext: false,
+  });
+  const [overallTotal, setOverallTotal] = useState(0);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const requestId = useRef(0);
-  const refresh = useCallback(async () => {
-    const currentRequestId = ++requestId.current;
-    setLoading(true);
-    try {
-      const result = await load();
-      if (currentRequestId !== requestId.current) return;
-      setItems(result.items);
-      setError('');
-    } catch (cause) {
-      if (currentRequestId !== requestId.current) return;
-      setError(cause instanceof Error ? cause.message : 'Request failed.');
-    } finally {
-      if (currentRequestId === requestId.current) setLoading(false);
-    }
-  }, dependencies);
+  const load = useCallback(
+    async (offset = 0, append = false) => {
+      const currentRequestId = ++requestId.current;
+      setLoading(true);
+      try {
+        const search = query ? `&query=${encodeURIComponent(query)}` : '';
+        const result = await api<{ items: T[]; pageInfo: PagedListInfo; overallTotal: number }>(
+          `${path}?limit=50&offset=${offset}${search}`,
+        );
+        if (currentRequestId !== requestId.current) return;
+        setItems((current) => (append ? [...current, ...result.items] : result.items));
+        setPageInfo(result.pageInfo);
+        setOverallTotal(result.overallTotal);
+        setError('');
+      } catch (cause) {
+        if (currentRequestId !== requestId.current) return;
+        setError(cause instanceof Error ? cause.message : 'Request failed.');
+      } finally {
+        if (currentRequestId === requestId.current) setLoading(false);
+      }
+    },
+    [path, query],
+  );
+  const refresh = useCallback(() => load(), [load]);
   useEffect(() => {
     void refresh();
     return () => {
       requestId.current += 1;
     };
   }, [refresh]);
-  return { items, error, loading, refresh };
+  return {
+    items,
+    error,
+    loading,
+    pageInfo,
+    overallTotal,
+    refresh,
+    loadMore: () => load(items.length, true),
+  };
 }
 
 export function ApiStatus() {
@@ -440,9 +675,16 @@ function SetupPage() {
   );
 }
 
-function SignInPage({ onSignedIn }: { onSignedIn: (user: User) => void }) {
+function SignInPage({
+  notice,
+  onSignedIn,
+  returnTo,
+}: {
+  notice?: string | undefined;
+  onSignedIn: (user: User) => void;
+  returnTo?: string | undefined;
+}) {
   const { t } = useI18n();
-  const navigate = useNavigate();
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [oidcEnabled, setOidcEnabled] = useState(false);
@@ -461,7 +703,6 @@ function SignInPage({ onSignedIn }: { onSignedIn: (user: User) => void }) {
         body: JSON.stringify({ email: data.get('email'), password: data.get('password') }),
       });
       onSignedIn(result.user);
-      navigate('/workspaces', { replace: true });
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : t('auth.signInFailed'));
     } finally {
@@ -471,10 +712,19 @@ function SignInPage({ onSignedIn }: { onSignedIn: (user: User) => void }) {
   return (
     <AuthCard title={t('auth.signIn')}>
       <form className="space-y-4" onSubmit={(event) => void submit(event)}>
+        {notice && (
+          <p
+            aria-live="polite"
+            className="rounded-lg border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-sm leading-relaxed text-amber-200"
+            role="status"
+          >
+            {notice}
+          </p>
+        )}
         {oidcEnabled && (
           <a
             className="block rounded-lg border border-sky-500 px-4 py-2 text-center text-sky-300"
-            href={`${apiBase}/api/v1/auth/oidc/start`}
+            href={`${apiBase}/api/v1/auth/oidc/start${returnTo ? `?returnTo=${encodeURIComponent(returnTo)}` : ''}`}
           >
             {t('auth.oidc')}
           </a>
@@ -609,9 +859,36 @@ function NotFoundPage() {
   );
 }
 
+function AccessDeniedPage() {
+  const { t } = useI18n();
+  return (
+    <section className="mx-auto max-w-2xl py-16 text-center sm:py-24">
+      <p className={sectionEyebrowClass}>403</p>
+      <h1 className="mt-4 text-3xl font-semibold tracking-tight sm:text-4xl">
+        {t('accessDenied.heading')}
+      </h1>
+      <p className="mt-3 text-sm text-slate-500">{t('accessDenied.body')}</p>
+      <Button asChild className="mt-7">
+        <Link to="/workspaces">{t('accessDenied.back')}</Link>
+      </Button>
+    </section>
+  );
+}
+
 function WorkspacesPage({ user }: { user: User }) {
   const { locale, t } = useI18n();
-  const { items, error, loading, refresh } = useAsyncList<Workspace>(() => api('/workspaces'), []);
+  const [items, setItems] = useState<Workspace[]>([]);
+  const [pageInfo, setPageInfo] = useState<WorkspacePageInfo>({
+    limit: 24,
+    offset: 0,
+    total: 0,
+    overallTotal: 0,
+    hasNext: false,
+  });
+  const [error, setError] = useState('');
+  const [pageError, setPageError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [formError, setFormError] = useState('');
   const [creating, setCreating] = useState(false);
   const [editingWorkspaceId, setEditingWorkspaceId] = useState('');
@@ -619,20 +896,64 @@ function WorkspacesPage({ user }: { user: User }) {
   const [savingEdit, setSavingEdit] = useState(false);
   const [showCreateWorkspace, setShowCreateWorkspace] = useState(false);
   const [workspaceSearch, setWorkspaceSearch] = useState('');
+  const [workspaceQuery, setWorkspaceQuery] = useState('');
+  const workspaceRequestId = useRef(0);
   const createWorkspaceDialogRef = useModalDialog<HTMLDivElement>(showCreateWorkspace, () => {
     if (!creating) setShowCreateWorkspace(false);
   });
   const openWorkspaceLabel = locale === 'ko' ? '워크스페이스 열기' : 'Open workspace';
   const editingWorkspace = items.find((workspace) => workspace.id === editingWorkspaceId);
-  const filteredItems = useMemo(() => {
-    const query = workspaceSearch.trim().toLocaleLowerCase(locale);
-    if (!query) return items;
-    return items.filter((workspace) =>
-      [workspace.name, workspace.slug, workspace.description].some((value) =>
-        (value ?? '').toLocaleLowerCase(locale).includes(query),
-      ),
-    );
-  }, [items, locale, workspaceSearch]);
+  const loadWorkspaces = useCallback(
+    async (offset = 0, append = false) => {
+      const currentRequest = ++workspaceRequestId.current;
+      if (append) setLoadingMore(true);
+      else setLoading(true);
+      setPageError('');
+      if (!append) setError('');
+      const parameters = new URLSearchParams({ limit: '24', offset: String(offset) });
+      if (workspaceQuery) parameters.set('query', workspaceQuery);
+      try {
+        const result = await api<{
+          items: Workspace[];
+          pageInfo?: WorkspacePageInfo;
+        }>(`/workspaces?${parameters.toString()}`);
+        if (currentRequest !== workspaceRequestId.current) return;
+        const nextPageInfo = result.pageInfo ?? {
+          limit: 24,
+          offset,
+          total: result.items.length,
+          overallTotal: result.items.length,
+          hasNext: false,
+        };
+        setItems((current) => {
+          if (!append) return result.items;
+          const known = new Set(current.map((workspace) => workspace.id));
+          return [...current, ...result.items.filter((workspace) => !known.has(workspace.id))];
+        });
+        setPageInfo(nextPageInfo);
+      } catch (cause) {
+        if (currentRequest !== workspaceRequestId.current) return;
+        const message = cause instanceof Error ? cause.message : t('workspaces.loadFailed');
+        if (append) setPageError(message);
+        else {
+          setItems([]);
+          setPageInfo({ limit: 24, offset: 0, total: 0, overallTotal: 0, hasNext: false });
+          setError(message);
+        }
+      } finally {
+        if (currentRequest === workspaceRequestId.current) {
+          if (append) setLoadingMore(false);
+          else setLoading(false);
+        }
+      }
+    },
+    [t, workspaceQuery],
+  );
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setWorkspaceQuery(workspaceSearch.trim()), 250);
+    return () => window.clearTimeout(timeout);
+  }, [workspaceSearch]);
+  useEffect(() => void loadWorkspaces(0, false), [loadWorkspaces]);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (creating) return;
@@ -646,12 +967,13 @@ function WorkspacesPage({ user }: { user: User }) {
           name: data.get('name'),
           slug: data.get('slug'),
           description: data.get('description'),
+          visibility: data.get('visibility'),
         }),
       });
       form.reset();
       setFormError('');
       setShowCreateWorkspace(false);
-      await refresh();
+      await loadWorkspaces(0, false);
     } catch (cause) {
       setFormError(cause instanceof Error ? cause.message : t('workspaces.creationFailed'));
     } finally {
@@ -672,7 +994,7 @@ function WorkspacesPage({ user }: { user: User }) {
           description: data.get('description'),
         }),
       });
-      await refresh();
+      await loadWorkspaces(0, false);
       setEditingWorkspaceId('');
       setEditError('');
     } catch (cause) {
@@ -718,7 +1040,7 @@ function WorkspacesPage({ user }: { user: User }) {
               </Button>
               <span className="inline-flex items-center gap-2 rounded-full border border-slate-800/80 bg-slate-950/35 px-2.5 py-1 text-[11px] text-slate-400">
                 <span className="status-dot size-1.5 rounded-full bg-emerald-400" />
-                {t('workspaces.activeCount', { count: items.length })}
+                {t('workspaces.activeCount', { count: pageInfo.overallTotal })}
               </span>
             </div>
           </div>
@@ -764,9 +1086,12 @@ function WorkspacesPage({ user }: { user: User }) {
             {t('workspaces.yourWorkspaces')}
           </h2>
           <p aria-live="polite" className="text-[11px] text-slate-500">
-            {workspaceSearch
-              ? t('workspaces.results', { count: filteredItems.length, total: items.length })
-              : t('workspaces.count', { count: items.length })}
+            {workspaceSearch.trim()
+              ? t('workspaces.results', {
+                  count: pageInfo.total,
+                  total: pageInfo.overallTotal,
+                })
+              : t('workspaces.count', { count: pageInfo.total })}
           </p>
         </div>
         <div className="relative w-full sm:max-w-xs">
@@ -789,6 +1114,7 @@ function WorkspacesPage({ user }: { user: User }) {
               aria-label={t('workspaces.clearSearch')}
               className="absolute right-1.5 top-1/2 grid size-7 -translate-y-1/2 place-items-center rounded-md text-slate-500 hover:bg-slate-800 hover:text-slate-200"
               onClick={() => setWorkspaceSearch('')}
+              title={t('workspaces.clearSearch')}
               type="button"
             >
               ×
@@ -810,7 +1136,7 @@ function WorkspacesPage({ user }: { user: User }) {
               <div className="mt-4 h-8 rounded bg-slate-800/60" />
             </div>
           ))}
-        {filteredItems.map((workspace, index) => (
+        {items.map((workspace, index) => (
           <article
             className="workspace-card group relative rounded-xl border border-slate-800/90 bg-slate-900/85 shadow-lg shadow-slate-950/10 hover:border-sky-500/55"
             data-accent={['sky', 'teal', 'amber'][index % 3]}
@@ -843,9 +1169,10 @@ function WorkspacesPage({ user }: { user: User }) {
                   setEditingWorkspaceId(workspace.id);
                   setEditError('');
                 }}
+                title={`${t('workspaces.edit')} ${workspace.name}`}
                 type="button"
               >
-                ⋯
+                ✎
               </button>
             )}
           </article>
@@ -871,12 +1198,12 @@ function WorkspacesPage({ user }: { user: User }) {
               </span>
             </button>
           )}
-        {!loading && items.length === 0 && !error && (
+        {!loading && items.length === 0 && !error && !workspaceQuery && (
           <p className="rounded-2xl border border-dashed border-slate-700 p-8 text-slate-400">
             {t('workspaces.empty')}
           </p>
         )}
-        {!loading && items.length > 0 && filteredItems.length === 0 && (
+        {!loading && workspaceQuery && items.length === 0 && !error && (
           <div className="col-span-full rounded-2xl border border-dashed border-slate-700 bg-slate-900/35 px-6 py-12 text-center">
             <span
               aria-hidden="true"
@@ -894,6 +1221,25 @@ function WorkspacesPage({ user }: { user: User }) {
           </div>
         )}
       </div>
+      {!loading && pageInfo.hasNext && (
+        <div className="mt-4 text-center">
+          <Button
+            disabled={loadingMore}
+            onClick={() => void loadWorkspaces(items.length, true)}
+            type="button"
+            variant="quiet"
+          >
+            {loadingMore
+              ? t('common.loading')
+              : t('workspaces.loadMore', { shown: items.length, total: pageInfo.total })}
+          </Button>
+        </div>
+      )}
+      {pageError && (
+        <p aria-live="polite" className="mt-2 text-center text-xs text-rose-300">
+          {pageError}
+        </p>
+      )}
       {editingWorkspace && allowed(user, 'workspace.manage') && (
         <form
           className="mt-6 max-w-2xl rounded-2xl border border-sky-800/50 bg-slate-900/60 p-5 shadow-lg shadow-slate-950/10 sm:p-6"
@@ -906,6 +1252,7 @@ function WorkspacesPage({ user }: { user: User }) {
               aria-label={t('workspaces.closeEditor')}
               className="rounded-md px-2 py-1 text-sm text-slate-500 hover:bg-slate-800 hover:text-slate-200"
               onClick={() => setEditingWorkspaceId('')}
+              title={t('workspaces.closeEditor')}
               type="button"
             >
               ×
@@ -941,6 +1288,17 @@ function WorkspacesPage({ user }: { user: User }) {
               name="description"
             />
           </label>
+          {allowed(user, 'workspace.access.manage') && (
+            <Suspense
+              fallback={<p className="mt-4 text-xs text-slate-500">{t('common.loading')}</p>}
+            >
+              <ResourceAccessEditor
+                endpoint={`/workspaces/${editingWorkspace.publicId ?? editingWorkspace.id}/access`}
+                request={api}
+                scope="workspace"
+              />
+            </Suspense>
+          )}
           <div className="mt-5 flex items-center gap-3">
             <Button disabled={savingEdit} type="submit">
               {savingEdit ? t('common.working') : t('workspaces.save')}
@@ -996,6 +1354,7 @@ function WorkspacesPage({ user }: { user: User }) {
                 className="grid size-9 place-items-center rounded-lg border border-slate-700 text-xl text-slate-400 hover:bg-slate-800 hover:text-slate-100"
                 disabled={creating}
                 onClick={() => setShowCreateWorkspace(false)}
+                title={t('workspaces.closeCreator')}
                 type="button"
               >
                 ×
@@ -1034,6 +1393,21 @@ function WorkspacesPage({ user }: { user: User }) {
                   placeholder={t('workspaces.descriptionPlaceholder')}
                 />
               </label>
+              <label className={`${formLabelClass} sm:col-span-2`}>
+                <FormFieldLabel required>{t('access.visibility')}</FormFieldLabel>
+                <select
+                  className={inputClass}
+                  defaultValue="organization"
+                  name="visibility"
+                  required
+                >
+                  <option value="organization">{t('access.organization')}</option>
+                  <option value="restricted">{t('access.restricted')}</option>
+                </select>
+                <span className="mt-1 block text-xs text-slate-500">
+                  {t('access.createRestrictedHint')}
+                </span>
+              </label>
               {formError && (
                 <div className="sm:col-span-2">
                   <ErrorText>{formError}</ErrorText>
@@ -1060,136 +1434,6 @@ function WorkspacesPage({ user }: { user: User }) {
   );
 }
 
-function WorkspacePage({ user }: { user: User }) {
-  const { t } = useI18n();
-  const id = useParams().workspaceId!;
-  const { items, error, loading, refresh } = useAsyncList<Project>(
-    () => api(`/workspaces/${id}/projects`),
-    [id],
-  );
-  const [formError, setFormError] = useState('');
-  const [showCreateProject, setShowCreateProject] = useState(false);
-  const [creating, setCreating] = useState(false);
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (creating) return;
-    const form = event.currentTarget;
-    const data = new FormData(form);
-    setCreating(true);
-    try {
-      await api(`/workspaces/${id}/projects`, {
-        method: 'POST',
-        body: JSON.stringify({ name: data.get('name'), key: data.get('key'), description: '' }),
-      });
-      form.reset();
-      setShowCreateProject(false);
-      setFormError('');
-      await refresh();
-    } catch (cause) {
-      setFormError(cause instanceof Error ? cause.message : t('projects.creationFailed'));
-    } finally {
-      setCreating(false);
-    }
-  }
-  const createProjectOpen = showCreateProject || (!loading && items.length === 0);
-  return (
-    <>
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
-            {t('projects.heading')}
-          </h1>
-          <HelpTip label={t('projects.about')}>{t('projects.description')}</HelpTip>
-        </div>
-        {allowed(user, 'project.create') && !createProjectOpen && (
-          <Button onClick={() => setShowCreateProject(true)} type="button">
-            <span aria-hidden="true" className="mr-1 text-base leading-none">
-              +
-            </span>
-            {t('projects.create')}
-          </Button>
-        )}
-      </div>
-      <ErrorText>{error}</ErrorText>
-      <div className="mt-8 divide-y divide-slate-800 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/50 shadow-xl shadow-slate-950/10">
-        {loading && (
-          <div aria-label={t('common.loading')} className="space-y-4 p-6">
-            {Array.from({ length: 3 }, (_, index) => (
-              <div className="animate-pulse" key={index}>
-                <div className="h-5 w-1/3 rounded bg-slate-800" />
-                <div className="mt-2 h-3 w-1/5 rounded bg-slate-800/70" />
-              </div>
-            ))}
-          </div>
-        )}
-        {items.map((project) => (
-          <Link
-            className="group flex items-center justify-between gap-4 p-5 hover:bg-slate-800/60 sm:p-6"
-            key={project.id}
-            to={`/workspaces/${id}/projects/${project.publicId ?? project.id}`}
-          >
-            <span className="min-w-0">
-              <strong className="block truncate text-base group-hover:text-sky-200">
-                {project.name}
-              </strong>
-              <span className="mt-1 block font-mono text-xs text-slate-500">
-                {project.key} · {project.publicId ?? project.id}
-              </span>
-            </span>
-            <span
-              className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium ${project.archivedAt ? 'bg-amber-500/10 text-amber-300' : 'bg-emerald-500/10 text-emerald-300'}`}
-            >
-              {project.archivedAt ? t('projects.archived') : project.status}
-            </span>
-          </Link>
-        ))}
-        {!loading && items.length === 0 && !error && (
-          <p className="p-8 text-slate-400">{t('projects.empty')}</p>
-        )}
-      </div>
-      {allowed(user, 'project.create') && createProjectOpen && (
-        <form
-          className="mt-10 max-w-2xl rounded-2xl border border-slate-800 bg-slate-900/40 p-5 sm:p-6"
-          onSubmit={(event) => void submit(event)}
-        >
-          <div className="flex items-center justify-between gap-4">
-            <h2 className="text-lg font-semibold">{t('projects.create')}</h2>
-            {items.length > 0 && (
-              <button
-                aria-label={t('common.close')}
-                className="grid size-8 place-items-center rounded-lg text-lg text-slate-500 hover:bg-slate-800 hover:text-slate-200"
-                onClick={() => setShowCreateProject(false)}
-                type="button"
-              >
-                ×
-              </button>
-            )}
-          </div>
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <label className={formLabelClass}>
-              {t('projects.name')}
-              <input
-                className={inputClass}
-                name="name"
-                placeholder="Force characterization"
-                required
-              />
-            </label>
-            <label className={formLabelClass}>
-              {t('projects.key')}
-              <input className={inputClass} name="key" placeholder="FORCE" required />
-            </label>
-          </div>
-          <Button className="mt-5" disabled={creating} type="submit">
-            {creating ? t('common.working') : t('projects.create')}
-          </Button>
-          <ErrorText>{formError}</ErrorText>
-        </form>
-      )}
-    </>
-  );
-}
-
 function WorkspaceDataPage({ user }: { user: User }) {
   const { t } = useI18n();
   const workspaceId = useParams().workspaceId!;
@@ -1199,7 +1443,7 @@ function WorkspaceDataPage({ user }: { user: User }) {
   const load = useCallback(async () => {
     const currentRequestId = ++requestId.current;
     try {
-      const [dataContext, projectResult] = await Promise.all([
+      const [dataContext, projectOptions] = await Promise.all([
         api<{ projectId: string; legacyProjectIds?: string[] }>(
           `/workspaces/${workspaceId}/data-context`,
           {
@@ -1207,21 +1451,35 @@ function WorkspaceDataPage({ user }: { user: User }) {
             body: JSON.stringify({}),
           },
         ),
-        api<{ items: Project[] }>(`/workspaces/${workspaceId}/projects`),
+        api<{ items: Project[] }>(`/workspaces/${workspaceId}/project-options?limit=20`),
       ]);
+      const legacyProjectIds = dataContext.legacyProjectIds ?? [];
+      const legacyBatches = await Promise.all(
+        Array.from({ length: Math.ceil(legacyProjectIds.length / 500) }, (_, index) =>
+          api<{ items: Project[] }>(`/workspaces/${workspaceId}/project-references/query`, {
+            method: 'POST',
+            body: JSON.stringify({ ids: legacyProjectIds.slice(index * 500, (index + 1) * 500) }),
+          }),
+        ),
+      );
       if (currentRequestId !== requestId.current) return;
+      const legacyProjects = legacyBatches.flatMap((batch) => batch.items);
+      const knownProjects = [
+        ...projectOptions.items,
+        ...legacyProjects.filter(
+          (project) => !projectOptions.items.some((option) => option.id === project.id),
+        ),
+      ];
       setContext({
         workspaceId,
         backingProjectId: dataContext.projectId,
-        projects: projectResult.items.map(({ id, name, key, archivedAt }) => ({
+        projects: knownProjects.map(({ id, name, key, archivedAt }) => ({
           id,
           name,
           key,
           archivedAt,
         })),
-        legacyProjects: projectResult.items
-          .filter((project) => dataContext.legacyProjectIds?.includes(project.id))
-          .map(({ id, name }) => ({ id, name })),
+        legacyProjects: legacyProjects.map(({ id, name }) => ({ id, name })),
       });
       setError(undefined);
     } catch (cause) {
@@ -1272,23 +1530,203 @@ function ProjectDataPage({ user }: { user: User }) {
   return <DataPage key={`${workspaceId}:${projectId}`} user={user} />;
 }
 
-function WorkspaceIndexPage() {
-  const workspaceId = useParams().workspaceId!;
-  return <Navigate replace to={`/workspaces/${workspaceId}/data`} />;
+export function LegacyFilesDatasetsRedirect() {
+  const { workspaceId = '', projectId = '' } = useParams();
+  return <Navigate replace to={`/workspaces/${workspaceId}/projects/${projectId}/sources`} />;
+}
+
+export function WorkspaceProjectsRedirect() {
+  const { workspaceId = '' } = useParams();
+  return <Navigate replace to={`/workspaces/${workspaceId}`} />;
+}
+
+export function ProjectSettingsPage({ user }: { user: User }) {
+  const { t } = useI18n();
+  const { confirmAction } = useActionDialog();
+  const { workspaceId = '', projectId = '' } = useParams();
+  const [project, setProject] = useState<Project>();
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [message, setMessage] = useState('');
+  const [messageTone, setMessageTone] = useState<'success' | 'error'>('success');
+  const [busyAction, setBusyAction] = useState<'save' | 'archive' | 'restore' | ''>('');
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const nextProject = await api<Project>(`/workspaces/${workspaceId}/projects/${projectId}`);
+      setProject(nextProject);
+      setLoadError('');
+    } catch (cause) {
+      setProject(undefined);
+      setLoadError(cause instanceof Error ? cause.message : t('projects.loadFailed'));
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId, t, workspaceId]);
+  useEffect(() => void load(), [load]);
+
+  async function update(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!project || busyAction) return;
+    const data = new FormData(event.currentTarget);
+    setBusyAction('save');
+    try {
+      const updated = await api<Project>(`/workspaces/${workspaceId}/projects/${projectId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: data.get('name'),
+          description: data.get('description'),
+          status: data.get('status'),
+          rowVersion: project.rowVersion,
+        }),
+      });
+      setProject(updated);
+      setMessageTone('success');
+      setMessage(t('projects.settingsSaved'));
+    } catch (cause) {
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : t('projects.updateFailed'));
+    } finally {
+      setBusyAction('');
+    }
+  }
+
+  async function archive(archived: boolean) {
+    if (busyAction) return;
+    if (archived && !(await confirmAction(t('projects.archiveConfirm'), { tone: 'danger' })))
+      return;
+    setBusyAction(archived ? 'archive' : 'restore');
+    try {
+      await api(
+        `/workspaces/${workspaceId}/projects/${projectId}/${archived ? 'archive' : 'restore'}`,
+        {
+          method: 'POST',
+          body: JSON.stringify(archived ? { reason: 'Archived from project settings' } : {}),
+        },
+      );
+      await load();
+      setMessageTone('success');
+      setMessage(archived ? t('projects.archived') : t('projects.restored'));
+    } catch (cause) {
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : t('projects.updateFailed'));
+    } finally {
+      setBusyAction('');
+    }
+  }
+
+  if (loading) return <p>{t('projects.loading')}</p>;
+  if (loadError || !project)
+    return (
+      <section className="mx-auto max-w-xl py-12 text-center">
+        <ErrorText>{loadError || t('projects.loadFailed')}</ErrorText>
+        <Button className="mt-4" onClick={() => void load()} type="button">
+          {t('common.retry')}
+        </Button>
+      </section>
+    );
+  const projectBase = `/workspaces/${workspaceId}/projects/${projectId}`;
+  return (
+    <>
+      <Link className="text-sm text-slate-400 hover:text-sky-300" to={projectBase}>
+        ← {t('common.overview')}
+      </Link>
+      <section className="mt-4 max-w-3xl rounded-2xl border border-slate-800 bg-slate-900/45 p-5 sm:p-6">
+        <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-sky-400">
+          {project.key}
+        </p>
+        <h1 className="mt-2 text-3xl font-semibold tracking-tight">{t('projects.settings')}</h1>
+        <p className="mt-2 text-sm text-slate-500">{t('projects.settingsHint')}</p>
+        {allowed(user, 'project.update') && !project.archivedAt && (
+          <form className="mt-6 grid gap-4" onSubmit={(event) => void update(event)}>
+            <label className={formLabelClass}>
+              <FormFieldLabel required>{t('projects.name')}</FormFieldLabel>
+              <input className={inputClass} defaultValue={project.name} name="name" required />
+            </label>
+            <label className={formLabelClass}>
+              <FormFieldLabel>{t('projects.descriptionLabel')}</FormFieldLabel>
+              <textarea
+                className={inputClass}
+                defaultValue={project.description}
+                name="description"
+                rows={3}
+              />
+            </label>
+            <label className={formLabelClass}>
+              <FormFieldLabel required>{t('projects.status')}</FormFieldLabel>
+              <select className={inputClass} defaultValue={project.status} name="status" required>
+                <option value="active">{t('projects.active')}</option>
+                <option value="on_hold">{t('projects.onHold')}</option>
+                <option value="completed">{t('projects.completed')}</option>
+              </select>
+            </label>
+            <div>
+              <Button disabled={Boolean(busyAction)} type="submit">
+                {busyAction === 'save' ? t('common.working') : t('projects.saveSettings')}
+              </Button>
+            </div>
+          </form>
+        )}
+        {!allowed(user, 'project.update') && <NoticeText>{t('projects.readOnly')}</NoticeText>}
+        {allowed(user, 'project.access.manage') && (
+          <Suspense fallback={<p className="mt-4 text-xs text-slate-500">{t('common.loading')}</p>}>
+            <ResourceAccessEditor
+              endpoint={`${projectBase}/access`}
+              request={api}
+              scope="project"
+            />
+          </Suspense>
+        )}
+        {allowed(user, 'webhook.manage') && !project.archivedAt && (
+          <WebhookSettings projectId={projectId} workspaceId={workspaceId} />
+        )}
+        {allowed(user, 'task.workflow.manage') && !project.archivedAt && (
+          <Suspense fallback={<p className="mt-6 text-xs text-slate-500">{t('common.loading')}</p>}>
+            <TaskWorkflowSettings projectId={projectId} workspaceId={workspaceId} />
+          </Suspense>
+        )}
+        {allowed(user, 'task.automation.manage') && !project.archivedAt && (
+          <Suspense fallback={<p className="mt-6 text-xs text-slate-500">{t('common.loading')}</p>}>
+            <TaskAutomationSettings projectId={projectId} workspaceId={workspaceId} />
+          </Suspense>
+        )}
+        <div className="mt-6 border-t border-slate-800 pt-5">
+          <h2 className="text-sm font-semibold text-slate-200">{t('projects.lifecycle')}</h2>
+          <p className="mt-1 text-xs text-slate-500">{t('projects.lifecycleHint')}</p>
+          <div className="mt-3">
+            {project.archivedAt
+              ? allowed(user, 'project.restore') && (
+                  <Button disabled={Boolean(busyAction)} onClick={() => void archive(false)}>
+                    {busyAction === 'restore' ? t('common.working') : t('projects.restore')}
+                  </Button>
+                )
+              : allowed(user, 'project.archive') && (
+                  <Button
+                    disabled={Boolean(busyAction)}
+                    variant="quiet"
+                    onClick={() => void archive(true)}
+                  >
+                    {busyAction === 'archive' ? t('common.working') : t('projects.archive')}
+                  </Button>
+                )}
+          </div>
+        </div>
+      </section>
+      <NoticeText tone={messageTone}>{message}</NoticeText>
+    </>
+  );
 }
 
 function ProjectPage({ user }: { user: User }) {
   const { formatDate, formatNumber, t } = useI18n();
   const { workspaceId: wid, projectId: pid } = useParams();
   const [project, setProject] = useState<Project>();
+  const [projectLoading, setProjectLoading] = useState(true);
+  const [projectLoadError, setProjectLoadError] = useState('');
   const [overview, setOverview] = useState<ProjectOverview>({
     metrics: undefined,
-    tasks: [],
-    files: [],
-    datasets: [],
-    charts: [],
-    dashboards: [],
-    objectTypes: [],
+    sources: [],
+    sourceTotal: 0,
   });
   const [overviewLoading, setOverviewLoading] = useState(true);
   const [overviewWarning, setOverviewWarning] = useState('');
@@ -1300,9 +1738,18 @@ function ProjectPage({ user }: { user: User }) {
   }>();
   const [installingDemo, setInstallingDemo] = useState(false);
   const load = useCallback(async () => {
-    const result = await api<{ items: Project[] }>(`/workspaces/${wid}/projects`);
-    setProject(result.items.find((item) => (item.publicId ?? item.id) === pid || item.id === pid));
-  }, [wid, pid]);
+    setProjectLoading(true);
+    try {
+      const nextProject = await api<Project>(`/workspaces/${wid}/projects/${pid}`);
+      setProject(nextProject);
+      setProjectLoadError('');
+    } catch (cause) {
+      setProject(undefined);
+      setProjectLoadError(cause instanceof Error ? cause.message : t('projects.loadFailed'));
+    } finally {
+      setProjectLoading(false);
+    }
+  }, [pid, t, wid]);
   useEffect(() => void load(), [load]);
   useEffect(() => {
     void api<{ installed: boolean; installation?: Record<string, unknown> }>(
@@ -1316,16 +1763,6 @@ function ProjectPage({ user }: { user: User }) {
     let partialFailure = false;
     const base = `/workspaces/${wid}/projects/${pid}`;
 
-    async function safeItems<T>(path: string, enabled: boolean): Promise<T[]> {
-      if (!enabled) return [];
-      try {
-        return (await api<{ items: T[] }>(path)).items;
-      } catch {
-        partialFailure = true;
-        return [];
-      }
-    }
-
     async function safeMetrics(): Promise<ProjectOverviewMetrics | undefined> {
       if (!allowed(user, 'dataset.read')) return undefined;
       try {
@@ -1336,33 +1773,28 @@ function ProjectPage({ user }: { user: User }) {
       }
     }
 
+    async function safeSources(): Promise<{ items: ProjectOverviewSource[]; total: number }> {
+      if (!allowed(user, 'project.read')) return { items: [], total: 0 };
+      try {
+        const result = await api<{
+          items: ProjectOverviewSource[];
+          pageInfo: { total: number };
+        }>(`${base}/sources?archiveState=active&limit=4&offset=0`);
+        return { items: result.items, total: result.pageInfo.total };
+      } catch {
+        partialFailure = true;
+        return { items: [], total: 0 };
+      }
+    }
+
     setOverviewLoading(true);
-    void Promise.all([
-      safeMetrics(),
-      safeItems<ProjectOverviewTask>(
-        `${base}/tasks?includeArchived=true`,
-        allowed(user, 'task.read'),
-      ),
-      safeItems<{ archived_at: string | null }>(
-        `${base}/files?includeArchived=true`,
-        allowed(user, 'file.read'),
-      ),
-      safeItems<ProjectOverviewDataset>(
-        `${base}/datasets?includeArchived=true`,
-        allowed(user, 'dataset.read'),
-      ),
-      safeItems<{ archived_at: string | null }>(
-        `${base}/charts?includeArchived=true`,
-        allowed(user, 'dataset.read'),
-      ),
-      safeItems<{ archived_at: string | null }>(
-        `${base}/dashboards?includeArchived=true`,
-        allowed(user, 'dataset.read'),
-      ),
-      safeItems<{ id: string }>(`${base}/object-types`, allowed(user, 'schema.read')),
-    ]).then(([metrics, tasks, files, datasets, charts, dashboards, objectTypes]) => {
+    void Promise.all([safeMetrics(), safeSources()]).then(([metrics, sourcePage]) => {
       if (cancelled) return;
-      setOverview({ metrics, tasks, files, datasets, charts, dashboards, objectTypes });
+      setOverview({
+        metrics,
+        sources: sourcePage.items,
+        sourceTotal: sourcePage.total,
+      });
       setOverviewWarning(partialFailure ? t('projects.overviewLoadPartial') : '');
       setOverviewLoading(false);
     });
@@ -1371,67 +1803,98 @@ function ProjectPage({ user }: { user: User }) {
       cancelled = true;
     };
   }, [pid, t, user, wid]);
-  if (!project) return <p>{t('projects.loading')}</p>;
+  if (projectLoading) return <p>{t('projects.loading')}</p>;
+  if (projectLoadError || !project)
+    return (
+      <section className="mx-auto max-w-xl py-12 text-center">
+        <ErrorText>{projectLoadError || t('projects.loadFailed')}</ErrorText>
+        <Button className="mt-4" onClick={() => void load()} type="button">
+          {t('common.retry')}
+        </Button>
+      </section>
+    );
 
-  const activeTasks = overview.tasks.filter((task) => !task.archived_at);
-  const openTasks = activeTasks.filter((task) => task.status !== 'done');
-  const completedTasks = activeTasks.filter((task) => task.status === 'done');
-  const blockedTasks = activeTasks.filter((task) => task.status === 'blocked');
-  const taskProgress = activeTasks.length
-    ? Math.round((completedTasks.length / activeTasks.length) * 100)
+  const activeTaskCount = overview.metrics?.active_task_count ?? 0;
+  const completedTaskCount = overview.metrics?.completed_task_count ?? 0;
+  const openTaskCount = Math.max(0, activeTaskCount - completedTaskCount);
+  const blockedTaskCount = overview.metrics?.blocked_task_count ?? 0;
+  const taskProgress = activeTaskCount
+    ? Math.round((completedTaskCount / activeTaskCount) * 100)
     : 0;
-  const activeFiles = overview.files.filter((file) => !file.archived_at);
-  const activeDatasets = overview.datasets.filter((dataset) => !dataset.archived_at);
-  const readyDatasets = activeDatasets.filter((dataset) => dataset.status === 'ready');
-  const activeCharts = overview.charts.filter((chart) => !chart.archived_at);
-  const activeDashboards = overview.dashboards.filter((dashboard) => !dashboard.archived_at);
+  const activeSources = overview.sources.filter((source) => !source.archived_at);
   const passRateValue = overview.metrics?.pass_rate
     ? Number(overview.metrics.pass_rate)
     : undefined;
   const passRate = Number.isFinite(passRateValue) ? Math.min(100, Math.max(0, passRateValue!)) : 0;
   const failedEvaluations = overview.metrics?.failed_evaluations ?? 0;
   const overdueTasks = overview.metrics?.overdue_tasks ?? 0;
-  const recentDatasets = overview.metrics?.recent_datasets.length
-    ? overview.metrics.recent_datasets
-    : activeDatasets.slice(0, 4);
-  const needsAttention = failedEvaluations + overdueTasks + blockedTasks.length > 0;
+  const recentSources = activeSources;
+  const needsAttention = failedEvaluations + overdueTasks + blockedTaskCount > 0;
   const basePath = `/workspaces/${wid}/projects/${pid}`;
+  const quickLinks = [
+    {
+      key: 'milestones',
+      visible: true,
+      to: `${basePath}/milestones`,
+      title: t('milestones.nav'),
+      summary: t('projects.milestoneSummary'),
+      icon: '◆',
+      cardTone: 'hover:border-cyan-500/50 hover:bg-cyan-500/5',
+      iconTone: 'bg-cyan-500/10 text-cyan-300',
+      arrowTone: 'text-cyan-400',
+    },
+    {
+      key: 'tasks',
+      visible: allowed(user, 'task.read'),
+      to: `${basePath}/tasks`,
+      title: t('common.tasks'),
+      summary: t('projects.taskCount', {
+        open: formatNumber(openTaskCount),
+        blocked: formatNumber(blockedTaskCount),
+      }),
+      icon: '✓',
+      cardTone: 'hover:border-amber-500/50 hover:bg-amber-500/5',
+      iconTone: 'bg-amber-500/10 text-amber-300',
+      arrowTone: 'text-amber-400',
+    },
+    {
+      key: 'records',
+      visible: allowed(user, 'record.read'),
+      to: `${basePath}/data`,
+      title: t('data.projectRecords'),
+      summary: `${t('projects.tableCount', { count: formatNumber(overview.metrics?.object_type_count ?? 0) })} · ${t('projects.recordCount', { count: formatNumber(overview.metrics?.total_samples ?? 0) })}`,
+      icon: '▦',
+      cardTone: 'hover:border-sky-500/50 hover:bg-sky-500/5',
+      iconTone: 'bg-sky-500/10 text-sky-300',
+      arrowTone: 'text-sky-400',
+    },
+    {
+      key: 'sources',
+      visible: allowed(user, 'project.read'),
+      to: `${basePath}/sources`,
+      title: t('sources.nav'),
+      summary: t('projects.sourceSummary', { count: formatNumber(overview.sourceTotal) }),
+      icon: '◫',
+      cardTone: 'hover:border-emerald-500/50 hover:bg-emerald-500/5',
+      iconTone: 'bg-emerald-500/10 text-emerald-300',
+      arrowTone: 'text-emerald-400',
+    },
+    {
+      key: 'dashboards',
+      visible: allowed(user, 'dataset.read'),
+      to: `${basePath}/visualizations`,
+      title: t('visualizations.nav'),
+      summary: t('projects.chartDashboardCount', {
+        charts: formatNumber(overview.metrics?.chart_count ?? 0),
+        dashboards: formatNumber(overview.metrics?.dashboard_count ?? 0),
+      }),
+      icon: '⌁',
+      cardTone: 'hover:border-violet-500/50 hover:bg-violet-500/5',
+      iconTone: 'bg-violet-500/10 text-violet-300',
+      arrowTone: 'text-violet-400',
+    },
+  ].filter((item) => item.visible);
 
-  async function archive(archived: boolean) {
-    try {
-      await api(`/workspaces/${wid}/projects/${pid}/${archived ? 'archive' : 'restore'}`, {
-        method: 'POST',
-        body: JSON.stringify(archived ? { reason: 'Archived from project settings' } : {}),
-      });
-      await load();
-      setMessageTone('success');
-      setMessage(archived ? t('projects.archived') : t('projects.restored'));
-    } catch (cause) {
-      setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : t('projects.updateFailed'));
-    }
-  }
-  async function update(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    try {
-      const updated = await api<Project>(`/workspaces/${wid}/projects/${pid}`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          name: data.get('name'),
-          description: data.get('description'),
-          status: data.get('status'),
-          rowVersion: project!.rowVersion,
-        }),
-      });
-      setProject(updated);
-      setMessageTone('success');
-      setMessage(t('projects.settingsSaved'));
-    } catch (cause) {
-      setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : t('projects.updateFailed'));
-    }
-  }
   async function installDemo() {
     setInstallingDemo(true);
     setMessageTone('info');
@@ -1468,92 +1931,54 @@ function ProjectPage({ user }: { user: User }) {
   }
   return (
     <>
-      <Link
-        className="text-sm text-slate-400 hover:text-sky-300"
-        to={`/workspaces/${wid}/projects`}
-      >
-        ← {t('common.projects')}
-      </Link>
-      <section className="relative mt-5 overflow-hidden rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-900/90 to-sky-950/70 p-6 shadow-2xl shadow-slate-950/20 sm:p-8">
-        <div
-          aria-hidden="true"
-          className="absolute -right-20 -top-24 size-72 rounded-full bg-sky-500/10 blur-3xl"
-        />
-        <div className="relative">
-          <div className="grid items-center gap-8 lg:grid-cols-[1fr_auto]">
-            <div>
-              <div className="flex flex-wrap items-center gap-3">
-                <p className="font-mono text-xs uppercase tracking-[0.18em] text-sky-400">
-                  {t('projects.dashboardEyebrow')} · {project.key}
-                </p>
-                <span
-                  className={`rounded-full px-2.5 py-1 text-xs font-medium ${project.archivedAt ? 'bg-amber-500/10 text-amber-300' : 'bg-emerald-500/10 text-emerald-300'}`}
-                >
-                  {project.archivedAt
-                    ? t('common.archived')
-                    : project.status === 'active'
-                      ? t('projects.active')
-                      : project.status === 'on_hold'
-                        ? t('projects.onHold')
-                        : t('projects.completed')}
-                </span>
-              </div>
-              <h1 className="mt-3 text-4xl font-semibold tracking-tight sm:text-5xl">
+      <section className="rounded-2xl border border-slate-800 bg-gradient-to-r from-slate-900 to-sky-950/55 p-4 sm:p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex min-w-0 items-start gap-3">
+            <Link
+              aria-label={t('projects.backToWorkspace')}
+              className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg border border-slate-700 text-slate-400 transition hover:border-sky-500/50 hover:bg-sky-500/10 hover:text-sky-300"
+              title={t('projects.backToWorkspace')}
+              to={`/workspaces/${wid}`}
+            >
+              <span aria-hidden="true">←</span>
+            </Link>
+            <div className="min-w-0">
+              <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-sky-400">
+                {t('projects.dashboardEyebrow')} · {project.key}
+              </p>
+              <h1 className="mt-1 truncate text-2xl font-semibold tracking-tight sm:text-3xl">
                 {project.name}
               </h1>
-              <p className="mt-4 max-w-2xl text-slate-400">
+              <p className="mt-1 max-w-3xl text-sm text-slate-400">
                 {project.description || t('projects.noDescription')}
               </p>
-              {allowed(user, 'record.read') && (
-                <Link
-                  className="mt-6 inline-flex items-center gap-2 rounded-xl bg-sky-400 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-lg shadow-sky-950/30 transition hover:bg-sky-300"
-                  to={`${basePath}/data`}
-                >
-                  {t('projects.openData')} <span aria-hidden="true">→</span>
-                </Link>
-              )}
             </div>
-            {allowed(user, 'dataset.read') && (
-              <div className="flex items-center gap-5 rounded-2xl border border-white/10 bg-slate-950/35 p-4 backdrop-blur">
-                <div
-                  aria-label={`${t('projects.passRate')} ${passRateValue === undefined ? t('projects.noQualityData') : `${passRate}%`}`}
-                  className="grid size-28 shrink-0 place-items-center rounded-full"
-                  style={{
-                    background: `conic-gradient(rgb(56 189 248) ${passRate}%, rgb(30 41 59) ${passRate}% 100%)`,
-                  }}
-                >
-                  <div className="grid size-20 place-items-center rounded-full bg-slate-950 text-center">
-                    <span className="text-xl font-semibold">
-                      {overviewLoading || passRateValue === undefined
-                        ? '—'
-                        : `${formatNumber(passRate)}%`}
-                    </span>
-                  </div>
-                </div>
-                <div>
-                  <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
-                    {t('projects.health')}
-                  </p>
-                  <p className="mt-1 text-sm font-medium text-slate-200">
-                    {t('projects.passRate')}
-                  </p>
-                  {passRateValue === undefined && !overviewLoading && (
-                    <p className="mt-1 text-xs text-slate-500">{t('projects.noQualityData')}</p>
-                  )}
-                </div>
-              </div>
-            )}
           </div>
-          <div
-            aria-hidden="true"
-            className="absolute -bottom-28 left-1/3 size-64 rounded-full bg-indigo-500/10 blur-3xl"
-          />
+          <div className="flex shrink-0 items-center gap-2">
+            <span
+              className={`rounded-full px-2.5 py-1 text-xs font-medium ${project.archivedAt ? 'bg-amber-500/10 text-amber-300' : 'bg-emerald-500/10 text-emerald-300'}`}
+            >
+              {project.archivedAt
+                ? t('common.archived')
+                : project.status === 'active'
+                  ? t('projects.active')
+                  : project.status === 'on_hold'
+                    ? t('projects.onHold')
+                    : t('projects.completed')}
+            </span>
+            <Link
+              className="inline-flex min-h-8 items-center gap-1.5 rounded-lg bg-sky-400 px-3 text-xs font-semibold text-slate-950 transition hover:bg-sky-300"
+              to={`${basePath}/milestones`}
+            >
+              {t('projects.openSchedule')} <span aria-hidden="true">→</span>
+            </Link>
+          </div>
         </div>
       </section>
 
       <section
         aria-label={t('projects.health')}
-        className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
+        className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4"
       >
         {[
           {
@@ -1564,31 +1989,29 @@ function ProjectPage({ user }: { user: User }) {
           },
           {
             label: t('projects.openTasks'),
-            value: overviewLoading ? '—' : formatNumber(openTasks.length),
+            value: overviewLoading ? '—' : formatNumber(openTaskCount),
             accent: 'bg-amber-400',
           },
           {
-            label: t('projects.readyDatasets'),
-            value: overviewLoading
-              ? '—'
-              : formatNumber(overview.metrics?.dataset_count ?? readyDatasets.length),
+            label: t('sources.nav'),
+            value: overviewLoading ? '—' : formatNumber(activeSources.length),
             accent: 'bg-emerald-400',
           },
           {
             label: t('projects.dataTables'),
-            value: overviewLoading ? '—' : formatNumber(overview.objectTypes.length),
+            value: overviewLoading ? '—' : formatNumber(overview.metrics?.object_type_count ?? 0),
             accent: 'bg-violet-400',
           },
         ].map((metric) => (
           <article
-            className="relative overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/55 p-5"
+            className="relative overflow-hidden rounded-xl border border-slate-800 bg-slate-900/55 px-4 py-3"
             key={metric.label}
           >
             <span className={`absolute inset-y-0 left-0 w-1 ${metric.accent}`} />
             <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
               {metric.label}
             </p>
-            <p className="mt-2 text-3xl font-semibold tracking-tight text-slate-100">
+            <p className="mt-1 text-2xl font-semibold tracking-tight text-slate-100">
               {metric.value}
             </p>
           </article>
@@ -1597,8 +2020,8 @@ function ProjectPage({ user }: { user: User }) {
 
       {overviewWarning && <NoticeText tone="error">{overviewWarning}</NoticeText>}
 
-      <div className="mt-5 grid gap-5 xl:grid-cols-[1.15fr_0.85fr_1fr]">
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/45 p-5">
+      <div className="mt-3 grid gap-3 xl:grid-cols-[1.15fr_0.85fr_1fr]">
+        <section className="rounded-xl border border-slate-800 bg-slate-900/45 p-4">
           <div className="flex items-center justify-between gap-4">
             <h2 className="text-lg font-semibold">{t('projects.needsAttention')}</h2>
             <span
@@ -1606,7 +2029,7 @@ function ProjectPage({ user }: { user: User }) {
             />
           </div>
           {overviewLoading ? (
-            <div className="mt-5 space-y-3" aria-hidden="true">
+            <div className="mt-3 space-y-2" aria-hidden="true">
               <div className="h-11 animate-pulse rounded-xl bg-slate-800/70" />
               <div className="h-11 animate-pulse rounded-xl bg-slate-800/70" />
             </div>
@@ -1615,7 +2038,7 @@ function ProjectPage({ user }: { user: User }) {
               {[
                 [t('projects.failedEvaluations'), failedEvaluations],
                 [t('projects.overdueTasks'), overdueTasks],
-                [t('projects.blockedTasks'), blockedTasks.length],
+                [t('projects.blockedTasks'), blockedTaskCount],
               ].map(([label, value]) => (
                 <div className="flex items-center justify-between py-3 text-sm" key={String(label)}>
                   <span className="text-slate-400">{label}</span>
@@ -1630,24 +2053,24 @@ function ProjectPage({ user }: { user: User }) {
               ))}
             </div>
           ) : (
-            <div className="mt-5 rounded-xl border border-emerald-500/15 bg-emerald-500/5 p-4">
+            <div className="mt-3 rounded-lg border border-emerald-500/15 bg-emerald-500/5 p-3">
               <p className="font-medium text-emerald-300">{t('projects.allClear')}</p>
               <p className="mt-1 text-sm text-slate-500">{t('projects.allClearBody')}</p>
             </div>
           )}
         </section>
 
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/45 p-5">
+        <section className="rounded-xl border border-slate-800 bg-slate-900/45 p-4">
           <h2 className="text-lg font-semibold">{t('projects.taskProgress')}</h2>
-          <div className="mt-5 flex items-end justify-between gap-4">
-            <p className="text-4xl font-semibold tracking-tight">
+          <div className="mt-3 flex items-end justify-between gap-4">
+            <p className="text-3xl font-semibold tracking-tight">
               {overviewLoading ? '—' : `${taskProgress}%`}
             </p>
             <p className="text-right text-xs text-slate-500">
-              {activeTasks.length
+              {activeTaskCount
                 ? t('projects.tasksCompleted', {
-                    done: formatNumber(completedTasks.length),
-                    total: formatNumber(activeTasks.length),
+                    done: formatNumber(completedTaskCount),
+                    total: formatNumber(activeTaskCount),
                   })
                 : t('projects.noTasksYet')}
             </p>
@@ -1667,7 +2090,7 @@ function ProjectPage({ user }: { user: User }) {
           </div>
           {allowed(user, 'task.read') && (
             <Link
-              className="mt-6 inline-flex text-sm font-medium text-sky-300 hover:text-sky-200"
+              className="mt-4 inline-flex text-sm font-medium text-sky-300 hover:text-sky-200"
               to={`${basePath}/tasks`}
             >
               {t('common.tasks')}{' '}
@@ -1678,15 +2101,15 @@ function ProjectPage({ user }: { user: User }) {
           )}
         </section>
 
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/45 p-5">
+        <section className="rounded-xl border border-slate-800 bg-slate-900/45 p-4">
           <div className="flex items-center justify-between gap-4">
-            <h2 className="text-lg font-semibold">{t('projects.recentDatasets')}</h2>
-            {allowed(user, 'file.read') && (
+            <h2 className="text-lg font-semibold">{t('projects.recentSources')}</h2>
+            {allowed(user, 'project.read') && (
               <Link
                 className="text-xs font-medium text-sky-300 hover:text-sky-200"
-                to={`${basePath}/files-datasets`}
+                to={`${basePath}/sources`}
               >
-                {t('common.filesDatasets')} →
+                {t('sources.nav')} →
               </Link>
             )}
           </div>
@@ -1695,32 +2118,32 @@ function ProjectPage({ user }: { user: User }) {
               <div className="h-10 animate-pulse rounded-lg bg-slate-800/70" />
               <div className="h-10 animate-pulse rounded-lg bg-slate-800/70" />
             </div>
-          ) : recentDatasets.length ? (
+          ) : recentSources.length ? (
             <div className="mt-3 divide-y divide-slate-800">
-              {recentDatasets.slice(0, 4).map((dataset) => (
-                <div className="flex items-center justify-between gap-3 py-3" key={dataset.id}>
+              {recentSources.map((source) => (
+                <div className="flex items-center justify-between gap-3 py-3" key={source.id}>
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-slate-200">{dataset.name}</p>
+                    <p className="truncate text-sm font-medium text-slate-200">{source.title}</p>
                     <p className="mt-0.5 text-xs text-slate-600">
-                      {dataset.row_count === undefined
-                        ? dataset.status
-                        : t('projects.rows', { count: formatNumber(dataset.row_count) })}
+                      {source.provider}
+                      {source.version ? ` · ${source.version}` : ''}
                     </p>
                   </div>
-                  {dataset.created_at && (
-                    <time className="shrink-0 text-xs text-slate-600" dateTime={dataset.created_at}>
-                      {formatDate(dataset.created_at, { month: 'short', day: 'numeric' })}
-                    </time>
-                  )}
+                  <time className="shrink-0 text-xs text-slate-600" dateTime={source.observed_on}>
+                    {formatDate(`${source.observed_on}T00:00:00`, {
+                      month: 'short',
+                      day: 'numeric',
+                    })}
+                  </time>
                 </div>
               ))}
             </div>
           ) : (
-            <p className="mt-5 text-sm text-slate-500">{t('projects.noDatasetsYet')}</p>
+            <p className="mt-3 text-sm text-slate-500">{t('projects.noSourcesYet')}</p>
           )}
         </section>
       </div>
-      <section className="mt-8">
+      <section className="mt-5">
         <p className={sectionEyebrowClass}>{t('projects.continueWorking')}</p>
         <div className="mt-2 flex items-end justify-between gap-4">
           <h2 className="text-2xl font-semibold">{t('projects.quickLinks')}</h2>
@@ -1728,107 +2151,30 @@ function ProjectPage({ user }: { user: User }) {
         </div>
         <nav
           aria-label={t('projects.quickLinks')}
-          className="mt-4 grid gap-4 sm:grid-cols-2 min-[1280px]:grid-cols-5"
+          className="mt-3 grid gap-3 sm:grid-cols-2 min-[1280px]:grid-cols-5"
         >
-          {allowed(user, 'record.read') && (
+          {quickLinks.map((item) => (
             <Link
-              className="group rounded-2xl border border-slate-800 bg-slate-900/45 p-5 transition hover:-translate-y-0.5 hover:border-sky-500/50 hover:bg-sky-500/5"
-              to={`${basePath}/data`}
+              className={`group rounded-xl border border-slate-800 bg-slate-900/45 p-4 transition hover:-translate-y-0.5 ${item.cardTone}`}
+              key={item.key}
+              to={item.to}
             >
-              <span className="grid size-10 place-items-center rounded-xl bg-sky-500/10 text-lg text-sky-300">
-                ▦
+              <span
+                className={`grid size-10 place-items-center rounded-xl text-lg ${item.iconTone}`}
+              >
+                {item.icon}
               </span>
-              <span className="mt-5 flex items-center justify-between font-semibold">
-                <span>{t('common.engineeringRecords')}</span>
-                <span className="text-sky-400 transition group-hover:translate-x-1">→</span>
+              <span className="mt-3 flex items-center justify-between font-semibold">
+                <span>{item.title}</span>
+                <span className={`${item.arrowTone} transition group-hover:translate-x-1`}>→</span>
               </span>
-              <span className="mt-2 block text-sm text-slate-500">
-                {t('projects.tableCount', { count: formatNumber(overview.objectTypes.length) })} ·{' '}
-                {t('projects.recordCount', {
-                  count: formatNumber(overview.metrics?.total_samples ?? 0),
-                })}
-              </span>
+              <span className="mt-2 block text-sm text-slate-500">{item.summary}</span>
             </Link>
-          )}
-          {allowed(user, 'file.read') && (
-            <Link
-              className="group rounded-2xl border border-slate-800 bg-slate-900/45 p-5 transition hover:-translate-y-0.5 hover:border-emerald-500/50 hover:bg-emerald-500/5"
-              to={`${basePath}/files-datasets`}
-            >
-              <span className="grid size-10 place-items-center rounded-xl bg-emerald-500/10 text-lg text-emerald-300">
-                ◫
-              </span>
-              <span className="mt-5 flex items-center justify-between font-semibold">
-                <span>{t('common.filesDatasets')}</span>
-                <span className="text-emerald-400 transition group-hover:translate-x-1">→</span>
-              </span>
-              <span className="mt-2 block text-sm text-slate-500">
-                {t('projects.fileDatasetCount', {
-                  files: formatNumber(activeFiles.length),
-                  datasets: formatNumber(activeDatasets.length),
-                })}
-              </span>
-            </Link>
-          )}
-          {allowed(user, 'dataset.read') && (
-            <Link
-              className="group rounded-2xl border border-slate-800 bg-slate-900/45 p-5 transition hover:-translate-y-0.5 hover:border-violet-500/50 hover:bg-violet-500/5"
-              to={`${basePath}/visualizations`}
-            >
-              <span className="grid size-10 place-items-center rounded-xl bg-violet-500/10 text-lg text-violet-300">
-                ⌁
-              </span>
-              <span className="mt-5 flex items-center justify-between font-semibold">
-                <span>{t('common.visualizations')}</span>
-                <span className="text-violet-400 transition group-hover:translate-x-1">→</span>
-              </span>
-              <span className="mt-2 block text-sm text-slate-500">
-                {t('projects.chartDashboardCount', {
-                  charts: formatNumber(activeCharts.length),
-                  dashboards: formatNumber(activeDashboards.length),
-                })}
-              </span>
-            </Link>
-          )}
-          {allowed(user, 'task.read') && (
-            <Link
-              className="group rounded-2xl border border-slate-800 bg-slate-900/45 p-5 transition hover:-translate-y-0.5 hover:border-amber-500/50 hover:bg-amber-500/5"
-              to={`${basePath}/tasks`}
-            >
-              <span className="grid size-10 place-items-center rounded-xl bg-amber-500/10 text-lg text-amber-300">
-                ✓
-              </span>
-              <span className="mt-5 flex items-center justify-between font-semibold">
-                <span>{t('common.tasks')}</span>
-                <span className="text-amber-400 transition group-hover:translate-x-1">→</span>
-              </span>
-              <span className="mt-2 block text-sm text-slate-500">
-                {t('projects.taskCount', {
-                  open: formatNumber(openTasks.length),
-                  blocked: formatNumber(blockedTasks.length),
-                })}
-              </span>
-            </Link>
-          )}
-          <Link
-            className="group rounded-2xl border border-slate-800 bg-slate-900/45 p-5 transition hover:-translate-y-0.5 hover:border-cyan-500/50 hover:bg-cyan-500/5"
-            to={`${basePath}/milestones`}
-          >
-            <span className="grid size-10 place-items-center rounded-xl bg-cyan-500/10 text-lg text-cyan-300">
-              ◆
-            </span>
-            <span className="mt-5 flex items-center justify-between font-semibold">
-              <span>{t('milestones.nav')}</span>
-              <span className="text-cyan-400 transition group-hover:translate-x-1">→</span>
-            </span>
-            <span className="mt-2 block text-sm text-slate-500">
-              {t('projects.milestoneSummary')}
-            </span>
-          </Link>
+          ))}
         </nav>
       </section>
 
-      <section className="mt-6 flex flex-col gap-4 rounded-2xl border border-sky-500/20 bg-gradient-to-r from-sky-500/10 to-transparent p-5 sm:flex-row sm:items-center sm:justify-between">
+      <section className="mt-4 flex flex-col gap-3 rounded-xl border border-sky-500/20 bg-gradient-to-r from-sky-500/10 to-transparent p-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="font-medium text-slate-200">
             {demo?.installed ? t('projects.demoReady') : t('projects.setupWorkspace')}
@@ -1842,7 +2188,7 @@ function ProjectPage({ user }: { user: User }) {
             <Link className="text-sky-300 hover:text-sky-200" to={`${basePath}/visualizations`}>
               {t('projects.inspectChart')}
             </Link>
-            <Link className="text-sky-300 hover:text-sky-200" to={`${basePath}/files-datasets`}>
+            <Link className="text-sky-300 hover:text-sky-200" to={`${basePath}/sources`}>
               {t('projects.inspectRaw')}
             </Link>
           </div>
@@ -1855,71 +2201,6 @@ function ProjectPage({ user }: { user: User }) {
         )}
       </section>
 
-      {(allowed(user, 'project.update') ||
-        allowed(user, 'project.archive') ||
-        allowed(user, 'project.restore')) && (
-        <details className="group mt-6 rounded-2xl border border-slate-800 bg-slate-900/35">
-          <summary className="flex cursor-pointer list-none items-center justify-between gap-4 p-5 marker:content-none">
-            <span>
-              <span className="block font-medium text-slate-200">
-                {t('projects.settingsSummary')}
-              </span>
-              <span className="mt-1 block text-sm text-slate-500">
-                {t('projects.settingsHint')}
-              </span>
-            </span>
-            <span aria-hidden="true" className="text-slate-500 transition group-open:rotate-180">
-              ⌄
-            </span>
-          </summary>
-          <div className="border-t border-slate-800 p-5">
-            {allowed(user, 'project.update') && !project.archivedAt && (
-              <form className="grid max-w-2xl gap-4" onSubmit={(event) => void update(event)}>
-                <h2 className="text-xl font-semibold">{t('projects.settings')}</h2>
-                <label className={formLabelClass}>
-                  {t('projects.name')}
-                  <input className={inputClass} defaultValue={project.name} name="name" required />
-                </label>
-                <label className={formLabelClass}>
-                  {t('workspaces.descriptionLabel')}
-                  <textarea
-                    className={inputClass}
-                    defaultValue={project.description}
-                    name="description"
-                    rows={3}
-                  />
-                </label>
-                <label className={formLabelClass}>
-                  {t('projects.status')}
-                  <select className={inputClass} defaultValue={project.status} name="status">
-                    <option value="active">{t('projects.active')}</option>
-                    <option value="on_hold">{t('projects.onHold')}</option>
-                    <option value="completed">{t('projects.completed')}</option>
-                  </select>
-                </label>
-                <Button type="submit">{t('projects.saveSettings')}</Button>
-              </form>
-            )}
-            <div
-              className={
-                allowed(user, 'project.update') && !project.archivedAt
-                  ? 'mt-6 border-t border-slate-800 pt-6'
-                  : ''
-              }
-            >
-              {project.archivedAt
-                ? allowed(user, 'project.restore') && (
-                    <Button onClick={() => void archive(false)}>{t('projects.restore')}</Button>
-                  )
-                : allowed(user, 'project.archive') && (
-                    <Button variant="quiet" onClick={() => void archive(true)}>
-                      {t('projects.archive')}
-                    </Button>
-                  )}
-            </div>
-          </div>
-        </details>
-      )}
       <NoticeText tone={messageTone}>{message}</NoticeText>
     </>
   );
@@ -2134,12 +2415,29 @@ function PilotPage({ user }: { user: User }) {
 
 export function MembersPage() {
   const { t } = useI18n();
-  const { items, error, refresh } = useAsyncList<Member>(() => api('/members'), []);
+  const { confirmAction } = useActionDialog();
+  const [memberSearch, setMemberSearch] = useState('');
+  const [groupSearch, setGroupSearch] = useState('');
+  const [memberQuery, setMemberQuery] = useState('');
+  const [groupQuery, setGroupQuery] = useState('');
+  const {
+    items,
+    error,
+    loading,
+    pageInfo: memberPageInfo,
+    overallTotal: memberTotal,
+    refresh,
+    loadMore: loadMoreMembers,
+  } = usePagedList<Member>('/members', memberQuery);
   const {
     items: groups,
     error: groupsError,
+    loading: groupsLoading,
+    pageInfo: groupPageInfo,
+    overallTotal: groupTotal,
     refresh: refreshGroups,
-  } = useAsyncList<MemberGroup>(() => api('/member-groups'), []);
+    loadMore: loadMoreGroups,
+  } = usePagedList<MemberGroup>('/member-groups', groupQuery);
   const [generatedUrl, setGeneratedUrl] = useState('');
   const [message, setMessage] = useState('');
   const [messageTone, setMessageTone] = useState<'success' | 'error'>('success');
@@ -2147,26 +2445,21 @@ export function MembersPage() {
   const [groupMemberDraft, setGroupMemberDraft] = useState<Set<string>>(() => new Set());
   const [selectedMemberIds, setSelectedMemberIds] = useState<Set<string>>(() => new Set());
   const [bulkRole, setBulkRole] = useState<Role>('contributor');
-  const [memberSearch, setMemberSearch] = useState('');
-  const [groupSearch, setGroupSearch] = useState('');
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [busy, setBusy] = useState(false);
   const selectedGroup = groups.find((group) => group.id === selectedGroupId);
-  const normalizedMemberSearch = memberSearch.trim().toLowerCase();
-  const normalizedGroupSearch = groupSearch.trim().toLowerCase();
-  const filteredMembers = items.filter(
-    (member) =>
-      !normalizedMemberSearch ||
-      member.displayName.toLowerCase().includes(normalizedMemberSearch) ||
-      member.email.toLowerCase().includes(normalizedMemberSearch) ||
-      member.role.toLowerCase().includes(normalizedMemberSearch),
-  );
-  const filteredGroups = groups.filter(
-    (group) =>
-      !normalizedGroupSearch ||
-      group.name.toLowerCase().includes(normalizedGroupSearch) ||
-      group.description.toLowerCase().includes(normalizedGroupSearch),
-  );
+  const filteredMembers = items;
+  const filteredGroups = groups;
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setMemberQuery(memberSearch.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [memberSearch]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setGroupQuery(groupSearch.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [groupSearch]);
 
   useEffect(() => {
     if (selectedGroupId && groups.some((group) => group.id === selectedGroupId)) return;
@@ -2318,7 +2611,9 @@ export function MembersPage() {
   }
 
   async function archiveGroup(group: MemberGroup) {
-    if (!window.confirm(t('groups.archiveConfirm', { name: group.name }))) {
+    if (
+      !(await confirmAction(t('groups.archiveConfirm', { name: group.name }), { tone: 'danger' }))
+    ) {
       return;
     }
     setBusy(true);
@@ -2349,10 +2644,10 @@ export function MembersPage() {
         </div>
         <div className="flex gap-2 text-xs text-slate-400">
           <span className="rounded-full border border-slate-800 px-3 py-1.5">
-            {t('members.count', { count: items.length })}
+            {loading ? '—' : t('members.count', { count: memberTotal })}
           </span>
           <span className="rounded-full border border-slate-800 px-3 py-1.5">
-            {t('members.groupCount', { count: groups.length })}
+            {groupsLoading ? '—' : t('members.groupCount', { count: groupTotal })}
           </span>
         </div>
       </div>
@@ -2507,8 +2802,24 @@ export function MembersPage() {
                 </article>
               );
             })}
-            {filteredMembers.length === 0 && (
-              <p className="p-8 text-center text-xs text-slate-500">{t('members.noMatch')}</p>
+            {filteredMembers.length === 0 && !error && (
+              <p className="p-8 text-center text-xs text-slate-500">
+                {loading
+                  ? t('common.loading')
+                  : memberSearch
+                    ? t('members.noMatch')
+                    : t('members.none')}
+              </p>
+            )}
+            {memberPageInfo.hasNext && (
+              <div className="p-3 text-center">
+                <Button onClick={() => void loadMoreMembers()} type="button" variant="quiet">
+                  {t('workspaceOverview.loadMoreProjects', {
+                    shown: items.length,
+                    total: memberPageInfo.total,
+                  })}
+                </Button>
+              </div>
             )}
           </div>
         </section>
@@ -2621,8 +2932,24 @@ export function MembersPage() {
                   </span>
                 </button>
               ))}
-              {filteredGroups.length === 0 && (
-                <p className="p-5 text-center text-xs text-slate-500">{t('groups.none')}</p>
+              {filteredGroups.length === 0 && !groupsError && (
+                <p className="p-5 text-center text-xs text-slate-500">
+                  {groupsLoading
+                    ? t('common.loading')
+                    : groupSearch
+                      ? t('groups.noMatch')
+                      : t('groups.none')}
+                </p>
+              )}
+              {groupPageInfo.hasNext && (
+                <div className="p-2 text-center">
+                  <Button onClick={() => void loadMoreGroups()} type="button" variant="quiet">
+                    {t('workspaceOverview.loadMoreProjects', {
+                      shown: groups.length,
+                      total: groupPageInfo.total,
+                    })}
+                  </Button>
+                </div>
               )}
             </nav>
 
@@ -2737,31 +3064,6 @@ export function MembersPage() {
   );
 }
 
-function AuditPage() {
-  const { t } = useI18n();
-  const { items, error } = useAsyncList<Record<string, unknown>>(
-    () => api('/audit-events?limit=100'),
-    [],
-  );
-  return (
-    <>
-      <h1 className="text-4xl font-semibold">{t('audit.heading')}</h1>
-      <ErrorText>{error}</ErrorText>
-      <div className="mt-8 space-y-2 font-mono text-sm">
-        {items.map((event) => (
-          <div
-            className="rounded-lg border border-slate-800 bg-slate-900/60 p-4"
-            key={String(event.id)}
-          >
-            <span className="text-sky-300">{String(event.action)}</span>
-            <span className="ml-4 text-slate-500">{String(event.createdAt)}</span>
-          </div>
-        ))}
-      </div>
-    </>
-  );
-}
-
 function AppContent() {
   const { locale, setLocale, t } = useI18n();
   const [theme, setTheme] = useState<Theme>(() => {
@@ -2773,6 +3075,31 @@ function AppContent() {
   });
   const [user, setUser] = useState<User>();
   const [state, setState] = useState<'loading' | 'setup' | 'signed-out' | 'signed-in'>('loading');
+  const [returnTo, setReturnTo] = useState<string>();
+  const [sessionExpired, setSessionExpired] = useState(false);
+  const authState = useRef(state);
+
+  useEffect(() => {
+    authState.current = state;
+  }, [state]);
+
+  useEffect(() => {
+    const handleAuthenticationRequired = () => {
+      if (authState.current !== 'signed-in') return;
+      authState.current = 'signed-out';
+      setReturnTo(
+        safeProtectedReturnTo(
+          `${window.location.pathname}${window.location.search}${window.location.hash}`,
+        ),
+      );
+      setSessionExpired(true);
+      setUser(undefined);
+      setState('signed-out');
+    };
+    window.addEventListener(authenticationRequiredEvent, handleAuthenticationRequired);
+    return () =>
+      window.removeEventListener(authenticationRequiredEvent, handleAuthenticationRequired);
+  }, []);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -2796,6 +3123,11 @@ function AppContent() {
         setUser(auth.user);
         setState('signed-in');
       } catch {
+        setReturnTo(
+          safeProtectedReturnTo(
+            `${window.location.pathname}${window.location.search}${window.location.hash}`,
+          ),
+        );
         setState('signed-out');
       }
     })();
@@ -2819,7 +3151,12 @@ function AppContent() {
         request={api}
         user={user}
         theme={theme}
-        onSignedOut={() => setState('signed-out')}
+        onSignedOut={() => {
+          setUser(undefined);
+          setReturnTo(undefined);
+          setSessionExpired(false);
+          setState('signed-out');
+        }}
         onToggleTheme={toggleTheme}
       >
         {content}
@@ -2860,11 +3197,14 @@ function AppContent() {
           path="/sign-in"
           element={
             state === 'signed-in' ? (
-              <Navigate replace to="/workspaces" />
+              <Navigate replace to={safeProtectedReturnTo(returnTo ?? '') ?? '/workspaces'} />
             ) : (
               <SignInPage
+                notice={sessionExpired ? t('auth.sessionExpired') : undefined}
+                returnTo={returnTo}
                 onSignedIn={(next) => {
                   setUser(next);
+                  setSessionExpired(false);
                   setState('signed-in');
                 }}
               />
@@ -2874,15 +3214,42 @@ function AppContent() {
         <Route path="/accept-invitation" element={<TokenPasswordPage invitation />} />
         <Route path="/reset-password" element={<TokenPasswordPage invitation={false} />} />
         <Route
+          path="/share/:shareToken"
+          element={
+            <PageLoader label="shared view">
+              <SharedViewPage />
+            </PageLoader>
+          }
+        />
+        <Route
           path="/workspaces"
           element={protectedElement(user && <WorkspacesPage user={user} />)}
         />
         <Route path="/get-started" element={protectedElement(<GetStartedPage />)} />
         <Route path="/pilot" element={protectedElement(user && <PilotPage user={user} />)} />
-        <Route path="/workspaces/:workspaceId" element={protectedElement(<WorkspaceIndexPage />)} />
+        <Route
+          path="/workspaces/:workspaceId"
+          element={protectedElement(
+            user && (
+              <PageLoader label="workspace overview">
+                <WorkspaceOverviewPage canAccess={allowed} request={api} user={user} />
+              </PageLoader>
+            ),
+          )}
+        />
         <Route
           path="/workspaces/:workspaceId/data"
           element={protectedElement(user && <WorkspaceDataPage user={user} />)}
+        />
+        <Route
+          path="/workspaces/:workspaceId/my-work"
+          element={protectedElement(
+            user && (
+              <PageLoader label="my work">
+                <MyWorkPage request={api} />
+              </PageLoader>
+            ),
+          )}
         />
         <Route
           path="/workspaces/:workspaceId/:objectTypeId"
@@ -2890,11 +3257,15 @@ function AppContent() {
         />
         <Route
           path="/workspaces/:workspaceId/projects"
-          element={protectedElement(user && <WorkspacePage user={user} />)}
+          element={protectedElement(<WorkspaceProjectsRedirect />)}
         />
         <Route
           path="/workspaces/:workspaceId/projects/:projectId"
           element={protectedElement(user && <ProjectPage user={user} />)}
+        />
+        <Route
+          path="/workspaces/:workspaceId/projects/:projectId/settings"
+          element={protectedElement(user && <ProjectSettingsPage user={user} />)}
         />
         <Route
           path="/workspaces/:workspaceId/projects/:projectId/data"
@@ -2908,10 +3279,14 @@ function AppContent() {
         />
         <Route
           path="/workspaces/:workspaceId/projects/:projectId/files-datasets"
+          element={protectedElement(<LegacyFilesDatasetsRedirect />)}
+        />
+        <Route
+          path="/workspaces/:workspaceId/projects/:projectId/sources"
           element={protectedElement(
             user && (
-              <PageLoader label="files and datasets">
-                <FilesDatasetsPage user={user} />
+              <PageLoader label="external materials">
+                <SourcesPage user={user} />
               </PageLoader>
             ),
           )}
@@ -2920,7 +3295,7 @@ function AppContent() {
           path="/workspaces/:workspaceId/projects/:projectId/visualizations"
           element={protectedElement(
             user && (
-              <PageLoader label="chart studio">
+              <PageLoader label="dashboards">
                 <VisualizationsPage user={user} />
               </PageLoader>
             ),
@@ -2932,6 +3307,16 @@ function AppContent() {
             user && (
               <PageLoader label="tasks">
                 <TasksPage user={user} />
+              </PageLoader>
+            ),
+          )}
+        />
+        <Route
+          path="/workspaces/:workspaceId/projects/:projectId/reviews"
+          element={protectedElement(
+            user && (
+              <PageLoader label="reviews">
+                <ReviewInboxPage />
               </PageLoader>
             ),
           )}
@@ -2956,8 +3341,25 @@ function AppContent() {
             ),
           )}
         />
-        <Route path="/members" element={protectedElement(<MembersPage />)} />
-        <Route path="/audit" element={protectedElement(<AuditPage />)} />
+        <Route
+          path="/members"
+          element={protectedElement(
+            user && (allowed(user, 'member.manage') ? <MembersPage /> : <AccessDeniedPage />),
+          )}
+        />
+        <Route
+          path="/audit"
+          element={protectedElement(
+            user &&
+              (allowed(user, 'audit.read') ? (
+                <PageLoader label="audit events">
+                  <AuditPage request={api} />
+                </PageLoader>
+              ) : (
+                <AccessDeniedPage />
+              )),
+          )}
+        />
         <Route path="*" element={protectedElement(<NotFoundPage />)} />
       </Routes>
     </>
@@ -2967,7 +3369,30 @@ function AppContent() {
 export function App() {
   return (
     <I18nProvider>
-      <AppContent />
+      <ApplicationErrorBoundaryWithI18n>
+        <ActionDialogProvider>
+          <AppContent />
+        </ActionDialogProvider>
+      </ApplicationErrorBoundaryWithI18n>
     </I18nProvider>
+  );
+}
+
+function ApplicationErrorBoundaryWithI18n({ children }: PropsWithChildren) {
+  const { t } = useI18n();
+  return (
+    <ApplicationErrorBoundary
+      labels={{
+        body: t('app.errorBody'),
+        chunkBody: t('app.errorChunkBody'),
+        heading: t('app.errorHeading'),
+        home: t('app.errorHome'),
+        reference: t('app.errorReference'),
+        reload: t('app.errorReload'),
+        retry: t('app.errorRetry'),
+      }}
+    >
+      {children}
+    </ApplicationErrorBoundary>
   );
 }

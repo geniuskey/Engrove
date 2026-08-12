@@ -53,6 +53,7 @@ pnpm units:check
 pnpm lint
 pnpm typecheck
 pnpm test
+pnpm production:preflight:test
 pnpm audit --audit-level low
 bash scripts/database-integration.sh
 pnpm --filter @engrove/web test:e2e

@@ -79,6 +79,70 @@ describe('configurable record canonicalization', () => {
   });
 });
 
+describe('saved record view pages', () => {
+  it('applies literal search before returning an exact bounded page', async () => {
+    const createdAt = new Date('2026-08-11T00:00:00.000Z');
+    const query = vi.fn(async (statement: string) => {
+      if (statement.includes('select p.system')) return { rowCount: 1, rows: [{ system: false }] };
+      if (statement.includes(' visible,') && statement.includes('from object_types o'))
+        return { rowCount: 1, rows: [{ visible: true, allowed: true }] };
+      if (statement.startsWith('select count(*)')) return { rows: [{ count: '2' }] };
+      if (statement.includes('from record_views where'))
+        return {
+          rows: [
+            {
+              id: 'view-1',
+              public_id: 'v1234567890abcd',
+              project_id: 'project-1',
+              object_type_id: 'object-1',
+              name: 'Release readiness',
+              view_type: 'grid',
+              permission_type: 'collaborative',
+              owner_id: null,
+              lock_reason: null,
+              config: {
+                visibleFieldIds: [],
+                fieldWidths: {},
+                filters: [],
+                sorts: [],
+                rowDensity: 'compact',
+                pageSize: 50,
+              },
+              row_version: 1,
+              created_by: actor.actorId,
+              updated_by: actor.actorId,
+              archived_at: null,
+              created_at: createdAt,
+              updated_at: createdAt,
+            },
+          ],
+        };
+      throw new Error(`Unexpected query: ${statement}`);
+    });
+    const repository = await ScopedProjectRepository.open(
+      { query } as unknown as Pool,
+      actor,
+      'workspace-1',
+      'project-1',
+    );
+
+    await expect(
+      repository.listRecordViewPage('object-1', { query: ' RELEASE ', limit: 1 }),
+    ).resolves.toEqual({
+      items: [expect.objectContaining({ id: 'view-1', name: 'Release readiness' })],
+      pageInfo: { limit: 1, offset: 0, total: 2, hasNext: true },
+    });
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('limit $5 offset $6'), [
+      'project-1',
+      'object-1',
+      'release',
+      false,
+      1,
+      0,
+    ]);
+  });
+});
+
 describe('calculated field formulas', () => {
   it('evaluates arithmetic, references, conditions, and text without dynamic code execution', () => {
     expect(
@@ -97,8 +161,58 @@ describe('calculated field formulas', () => {
 });
 
 describe('workspace configurable data boundaries', () => {
+  it('pages and searches the table catalog without wildcard semantics', async () => {
+    const query = vi.fn(async (sql: string, parameters?: unknown[]) => {
+      if (sql.includes('join workspaces')) return { rowCount: 1, rows: [{ system: false }] };
+      if (sql.includes('count(*)')) return { rowCount: 1, rows: [{ count: '3' }] };
+      return {
+        rowCount: 1,
+        rows: [
+          {
+            id: 'object-1',
+            public_id: 't1234567890abcd',
+            project_id: 'project-1',
+            name: 'Specification',
+            plural_name: 'Specifications',
+            key: 'specification',
+            icon: 'table',
+            description: 'Controlled requirements',
+            system: false,
+          },
+        ],
+        parameters,
+      };
+    });
+    const repository = await ScopedProjectRepository.open(
+      { query } as unknown as Pool,
+      actor,
+      'workspace-1',
+      'project-1',
+    );
+
+    await expect(
+      repository.listObjectTypePage({ query: ' SPEC% ', limit: 1, offset: 1 }),
+    ).resolves.toEqual({
+      items: [expect.objectContaining({ name: 'Specification', publicId: 't1234567890abcd' })],
+      pageInfo: { limit: 1, offset: 1, total: 3, hasNext: true },
+    });
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('position($5 in lower'), [
+      'project-1',
+      'owner',
+      'actor-1',
+      'organization-1',
+      'spec%',
+      1,
+      1,
+    ]);
+  });
+
   it('rejects project-scoped resource fields in the workspace system project', async () => {
-    const query = vi.fn().mockResolvedValue({ rowCount: 1, rows: [{ system: true }] });
+    const query = vi.fn(async (sql: string) =>
+      sql.includes('join workspaces')
+        ? { rowCount: 1, rows: [{ system: true }] }
+        : { rowCount: 1, rows: [{ visible: true, allowed: true }] },
+    );
     const repository = await ScopedProjectRepository.open(
       { query } as unknown as Pool,
       actor,
@@ -115,11 +229,15 @@ describe('workspace configurable data boundaries', () => {
         requestId: 'request-1',
       }),
     ).rejects.toMatchObject({ code: 'WORKSPACE_FIELD_TYPE_UNSUPPORTED' });
-    expect(query).toHaveBeenCalledTimes(1);
+    expect(query).toHaveBeenCalledTimes(2);
   });
 
   it('rejects defaults for fields whose values use dedicated reference storage', async () => {
-    const query = vi.fn().mockResolvedValue({ rowCount: 1, rows: [{ system: false }] });
+    const query = vi.fn(async (sql: string) =>
+      sql.includes('join workspaces')
+        ? { rowCount: 1, rows: [{ system: false }] }
+        : { rowCount: 1, rows: [{ visible: true, allowed: true }] },
+    );
     const repository = await ScopedProjectRepository.open(
       { query } as unknown as Pool,
       actor,
@@ -138,11 +256,15 @@ describe('workspace configurable data boundaries', () => {
         requestId: 'request-1',
       }),
     ).rejects.toMatchObject({ code: 'FIELD_DEFAULT_UNSUPPORTED' });
-    expect(query).toHaveBeenCalledTimes(1);
+    expect(query).toHaveBeenCalledTimes(2);
   });
 
   it('rejects empty defaults before they can bypass required-field backfills', async () => {
-    const query = vi.fn().mockResolvedValue({ rowCount: 1, rows: [{ system: false }] });
+    const query = vi.fn(async (sql: string) =>
+      sql.includes('join workspaces')
+        ? { rowCount: 1, rows: [{ system: false }] }
+        : { rowCount: 1, rows: [{ visible: true, allowed: true }] },
+    );
     const repository = await ScopedProjectRepository.open(
       { query } as unknown as Pool,
       actor,
@@ -161,7 +283,7 @@ describe('workspace configurable data boundaries', () => {
         requestId: 'request-1',
       }),
     ).rejects.toMatchObject({ code: 'FIELD_DEFAULT_INVALID' });
-    expect(query).toHaveBeenCalledTimes(1);
+    expect(query).toHaveBeenCalledTimes(2);
   });
 
   it('rejects form views that hide a required field without a default', async () => {
@@ -176,7 +298,11 @@ describe('workspace configurable data boundaries', () => {
     });
     const client = { query: clientQuery, release: vi.fn() };
     const pool = {
-      query: vi.fn().mockResolvedValue({ rowCount: 1, rows: [{ system: false }] }),
+      query: vi.fn(async (sql: string) =>
+        sql.includes('join workspaces')
+          ? { rowCount: 1, rows: [{ system: false }] }
+          : { rowCount: 1, rows: [{ visible: true, allowed: true }] },
+      ),
       connect: vi.fn().mockResolvedValue(client),
     } as unknown as Pool;
     const repository = await ScopedProjectRepository.open(pool, actor, 'workspace-1', 'project-1');
@@ -210,7 +336,11 @@ describe('workspace configurable data boundaries', () => {
     });
     const client = { query: clientQuery, release: vi.fn() };
     const pool = {
-      query: vi.fn().mockResolvedValue({ rowCount: 1, rows: [{ system: true }] }),
+      query: vi.fn(async (sql: string) =>
+        sql.includes('join workspaces')
+          ? { rowCount: 1, rows: [{ system: true }] }
+          : { rowCount: 1, rows: [{ visible: true, allowed: true }] },
+      ),
       connect: vi.fn().mockResolvedValue(client),
     } as unknown as Pool;
     const repository = await ScopedProjectRepository.open(pool, actor, 'workspace-1', 'project-1');
@@ -233,5 +363,91 @@ describe('workspace configurable data boundaries', () => {
       }),
     ).rejects.toMatchObject({ code: 'PROJECT_NOT_FOUND' });
     expect(clientQuery).toHaveBeenCalledWith('rollback');
+  });
+});
+
+describe('scoped record CSV export', () => {
+  it('exports every matching row with only the requested visible fields', async () => {
+    const auditQuery = vi.fn().mockResolvedValue({ rowCount: 1, rows: [] });
+    const client = { query: auditQuery, release: vi.fn() };
+    const pool = {
+      query: vi.fn().mockResolvedValue({ rowCount: 1, rows: [{ system: false }] }),
+      connect: vi.fn().mockResolvedValue(client),
+    } as unknown as Pool;
+    const repository = await ScopedProjectRepository.open(pool, actor, 'workspace-1', 'project-1');
+    vi.spyOn(repository, 'listFields').mockResolvedValue([
+      {
+        id: 'field-serial',
+        key: 'serial',
+        fieldType: 'text',
+        projectionStatus: 'ready',
+      },
+      {
+        id: 'field-internal',
+        key: 'internal-note',
+        fieldType: 'text',
+        projectionStatus: 'ready',
+      },
+    ] as never);
+    const record = (id: string, displayName: string, serial: string) =>
+      ({
+        id,
+        displayName,
+        values: { serial, 'internal-note': 'not exported' },
+        relations: {},
+        fileReferences: {},
+        datasetReferences: {},
+        measurements: {},
+      }) as never;
+    const queryRecords = vi
+      .spyOn(repository, 'queryRecords')
+      .mockResolvedValueOnce({
+        items: [record('record-1', 'First, sample', 'A-1')],
+        page: 1,
+        pageSize: 500,
+        total: 2,
+      })
+      .mockResolvedValueOnce({
+        items: [record('record-2', 'Second sample', 'A-2')],
+        page: 2,
+        pageSize: 500,
+        total: 2,
+      });
+
+    const csv = await repository.exportRecordsCsv('object-1', 'request-1', {
+      fields: ['serial'],
+      filters: [{ fieldId: 'field-serial', operator: 'eq', value: 'A-1' }],
+      sorts: [{ systemField: 'displayName', direction: 'asc' }],
+      search: 'sample',
+      archiveState: 'all',
+    });
+
+    expect(csv).toBe('displayName,serial\r\n"First, sample",A-1\r\nSecond sample,A-2\r\n');
+    expect(queryRecords).toHaveBeenNthCalledWith(
+      1,
+      'object-1',
+      expect.objectContaining({
+        filters: [{ fieldId: 'field-serial', operator: 'eq', value: 'A-1' }],
+        sorts: [{ systemField: 'displayName', direction: 'asc' }],
+        search: 'sample',
+        archiveState: 'all',
+        page: 1,
+        pageSize: 500,
+      }),
+    );
+    expect(queryRecords).toHaveBeenNthCalledWith(
+      2,
+      'object-1',
+      expect.objectContaining({ page: 2, pageSize: 500 }),
+    );
+    const auditParameters = auditQuery.mock.calls.find(([sql]) =>
+      String(sql).includes('insert into audit_events'),
+    )?.[1] as unknown[];
+    expect(JSON.parse(String(auditParameters[9]))).toEqual({
+      rowCount: 2,
+      fieldCount: 1,
+      archiveState: 'all',
+      scoped: true,
+    });
   });
 });

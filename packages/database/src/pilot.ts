@@ -101,8 +101,9 @@ export class PilotRepository {
     if (input.projectId) {
       const scoped = await this.pool.query(
         `select 1 from projects p join workspaces w on w.id=p.workspace_id
-         where p.id=$1 and w.organization_id=$2`,
-        [input.projectId, this.actor.organizationId],
+         where p.id=$1 and w.organization_id=$2
+           and project_visible_to(p.id,p.workspace_id,w.organization_id,$3,$4)`,
+        [input.projectId, this.actor.organizationId, this.actor.actorId, this.actor.role],
       );
       if (!scoped.rowCount)
         throw new RepositoryError('PROJECT_NOT_FOUND', 404, 'Project was not found.');

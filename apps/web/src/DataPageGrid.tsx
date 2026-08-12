@@ -9,10 +9,15 @@ import {
   useState,
 } from 'react';
 import { ErrorText, inputClass } from './App.js';
+import { AssigneePicker } from './AssigneePicker.js';
 import { CellValuePreview } from './DataPageCharts.js';
 import { isImageField } from './DataPageImages.js';
+import { fieldTypeMeta, fieldTypeTranslationKeys } from './DataPageSchema.js';
+import { EngineeringReferencePicker } from './EngineeringReferencePicker.js';
+import { FormFieldLabel } from './FormFieldLabel.js';
 import type {
   DynamicRecord,
+  BulkRecordFieldChange,
   FieldDefinition,
   FieldType,
   GridColumn,
@@ -20,10 +25,13 @@ import type {
   GridSelectionBounds,
   WorkspaceDataContext,
   RecordViewConfig,
+  RecordReference,
 } from './DataPageTypes.js';
 import { displayFieldValue, displayValue } from './DataPageViews.js';
 import { IconAction } from './IconAction.js';
 import { useI18n } from './i18n.js';
+import { ProjectReferencePicker } from './ProjectReferencePicker.js';
+import { RecordRelationPicker, RelationValue } from './RecordRelationPicker.js';
 
 const calculatedFieldTypeSet = new Set<FieldType>(['formula', 'lookup', 'rollup']);
 
@@ -300,6 +308,8 @@ export function GridCell({
   field,
   label,
   recordName,
+  relationReferences,
+  referenceLabels,
   value,
   onSave,
 }: {
@@ -308,6 +318,8 @@ export function GridCell({
   field?: FieldDefinition;
   label: string;
   recordName: string;
+  relationReferences?: RecordReference[] | undefined;
+  referenceLabels?: RecordReference[] | undefined;
   value: unknown;
   onSave: (value: unknown) => Promise<void>;
 }) {
@@ -352,6 +364,7 @@ export function GridCell({
   }
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
+    if ((event.target as HTMLElement).getAttribute('role') === 'combobox') return;
     if (event.key === 'Escape') {
       event.preventDefault();
       cancelEditing();
@@ -365,6 +378,7 @@ export function GridCell({
   }
 
   function handleBlur(event: FocusEvent<HTMLDivElement>) {
+    if (field && ['relation', 'user', 'file', 'dataset'].includes(field.fieldType)) return;
     if (!event.currentTarget.contains(event.relatedTarget)) void commit();
   }
 
@@ -384,8 +398,19 @@ export function GridCell({
         title={t('data.editCell', { label, record: recordName })}
         type="button"
       >
-        {field ? (
-          <CellValuePreview base={base} field={field} label={label} value={value} />
+        {field?.fieldType === 'relation' ? (
+          <RelationValue
+            ids={Array.isArray(value) ? (value as string[]) : []}
+            references={relationReferences}
+          />
+        ) : field ? (
+          <CellValuePreview
+            base={base}
+            field={field}
+            label={label}
+            references={referenceLabels}
+            value={value}
+          />
         ) : (
           <span className="block max-w-64 truncate text-slate-300">{displayValue(value)}</span>
         )}
@@ -420,7 +445,40 @@ export function GridCell({
       onKeyDown={handleKeyDown}
     >
       <div className="grid min-w-0 gap-1">
-        {field?.fieldType === 'boolean' ? (
+        {field?.fieldType === 'relation' && base ? (
+          <RecordRelationPicker
+            base={base}
+            className={common.className}
+            compact
+            disabled={saving}
+            field={field}
+            initialIds={Array.isArray(value) ? (value as string[]) : []}
+            initialReferences={relationReferences}
+            onChange={(ids) => setDraft({ ...draft, primary: ids.join(';') })}
+          />
+        ) : field?.fieldType === 'user' && base ? (
+          <AssigneePicker
+            ariaLabel={t('data.valueLabel', { label })}
+            base={base}
+            className={common.className}
+            disabled={saving}
+            initialOptions={[]}
+            value={draft.primary}
+            onChange={(value) => setDraft({ ...draft, primary: value })}
+            specialOptions={[{ value: '', label: t('common.unset') }]}
+          />
+        ) : field && (field.fieldType === 'file' || field.fieldType === 'dataset') && base ? (
+          <EngineeringReferencePicker
+            ariaLabel={t('data.valueLabel', { label })}
+            base={base}
+            className={common.className}
+            disabled={saving}
+            fieldType={field.fieldType}
+            value={draft.primary}
+            onChange={(value) => setDraft({ ...draft, primary: value })}
+            specialOptions={[{ value: '', label: t('common.unset') }]}
+          />
+        ) : field?.fieldType === 'boolean' ? (
           <select
             {...common}
             aria-label={t('data.valueLabel', { label })}
@@ -534,11 +592,13 @@ export function GridCell({
 }
 
 function InlineDraftInput({
+  base,
   draft,
   field,
   onChange,
   saving,
 }: {
+  base: string;
   draft: GridEditorDraft;
   field: FieldDefinition;
   onChange: (draft: GridEditorDraft) => void;
@@ -575,6 +635,51 @@ function InlineDraftInput({
 
   const common =
     'min-h-8 w-full border-0 bg-transparent px-2.5 py-1 text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:bg-sky-500/10 focus:ring-1 focus:ring-inset focus:ring-sky-400 disabled:opacity-50';
+  if (field.fieldType === 'relation') {
+    const ids = draft.primary
+      .split(';')
+      .map((value) => value.trim())
+      .filter(Boolean);
+    return (
+      <RecordRelationPicker
+        base={base}
+        className={common}
+        compact
+        disabled={saving}
+        field={field}
+        initialIds={ids}
+        onChange={(nextIds) => onChange({ ...draft, primary: nextIds.join(';') })}
+      />
+    );
+  }
+  if (field.fieldType === 'user') {
+    return (
+      <AssigneePicker
+        ariaLabel={`New record ${field.name}`}
+        base={base}
+        className={common}
+        disabled={saving}
+        initialOptions={[]}
+        value={draft.primary}
+        onChange={(value) => onChange({ ...draft, primary: value })}
+        specialOptions={[{ value: '', label: t('common.unset') }]}
+      />
+    );
+  }
+  if (field.fieldType === 'file' || field.fieldType === 'dataset') {
+    return (
+      <EngineeringReferencePicker
+        ariaLabel={`New record ${field.name}`}
+        base={base}
+        className={common}
+        disabled={saving}
+        fieldType={field.fieldType}
+        value={draft.primary}
+        onChange={(value) => onChange({ ...draft, primary: value })}
+        specialOptions={[{ value: '', label: t('common.unset') }]}
+      />
+    );
+  }
   if (field.fieldType === 'boolean') {
     return (
       <select
@@ -647,15 +752,11 @@ function InlineDraftInput({
   }
 
   const placeholder =
-    field.fieldType === 'relation'
-      ? 'Record UUID; …'
-      : field.fieldType === 'file' || field.fieldType === 'dataset'
-        ? `${field.fieldType} UUID`
-        : field.fieldType === 'multi_select'
-          ? 'Value, value'
-          : field.required
-            ? t('data.requiredPlaceholder')
-            : t('data.enterValue');
+    field.fieldType === 'multi_select'
+      ? 'Value, value'
+      : field.required
+        ? t('data.requiredPlaceholder')
+        : t('data.enterValue');
   return (
     <input
       aria-label={`New record ${field.name}`}
@@ -679,14 +780,20 @@ function InlineDraftInput({
 }
 
 export function InlineRecordRow({
+  base,
   fields,
   projects,
+  workspaceId,
+  onProjectResolved,
   onCancel,
   onCreate,
   onOpenFullForm,
 }: {
+  base: string;
   fields: FieldDefinition[];
   projects?: WorkspaceDataContext['projects'] | undefined;
+  workspaceId?: string | undefined;
+  onProjectResolved?: ((project: WorkspaceDataContext['projects'][number]) => void) | undefined;
   onCancel: () => void;
   onCreate: (
     payload: ReturnType<typeof inlineRecordPayload> & { contextProjectId?: string | null },
@@ -734,6 +841,7 @@ export function InlineRecordRow({
       <tr
         className="bg-sky-500/[0.04]"
         onKeyDown={(event) => {
+          if ((event.target as HTMLElement).getAttribute('role') === 'combobox') return;
           if (event.key === 'Escape') {
             event.preventDefault();
             onCancel();
@@ -765,26 +873,23 @@ export function InlineRecordRow({
         </td>
         {projects && (
           <td className="border-b border-r border-sky-500/30">
-            <select
-              aria-label={t('data.newRecordProject')}
+            <ProjectReferencePicker
+              ariaLabel={t('data.newRecordProject')}
               className="min-h-8 w-full border-0 bg-sky-500/10 px-2 py-1 text-xs text-slate-200 outline-none focus:ring-1 focus:ring-inset focus:ring-sky-400"
               disabled={saving}
+              projects={projects}
+              specialOptions={[{ value: '', label: t('data.noProject') }]}
               value={contextProjectId}
-              onChange={(event) => setContextProjectId(event.target.value)}
-            >
-              <option value="">{t('data.noProject')}</option>
-              {projects.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.name}
-                  {project.archivedAt ? ' (archived)' : ''}
-                </option>
-              ))}
-            </select>
+              workspaceId={workspaceId ?? ''}
+              onChange={setContextProjectId}
+              onProjectResolved={onProjectResolved}
+            />
           </td>
         )}
         {fields.map((field) => (
           <td className="border-b border-r border-sky-500/30" key={field.id}>
             <InlineDraftInput
+              base={base}
               draft={drafts[field.id] ?? gridEditorDraft(field, field.defaultValue)}
               field={field}
               saving={saving}
@@ -878,8 +983,9 @@ export function recordPayload(fields: FieldDefinition[], form: FormData) {
   for (const field of fields) {
     if (field.fieldType === 'measurement' || calculatedFieldTypeSet.has(field.fieldType)) continue;
     if (field.fieldType === 'relation') {
-      const targets = String(form.get(`relation:${field.id}`) ?? '')
-        .split(';')
+      const targets = form
+        .getAll(`relation:${field.id}`)
+        .flatMap((entry) => String(entry).split(';'))
         .map((value) => value.trim())
         .filter(Boolean);
       if (targets.length) relations[field.id] = targets;
@@ -903,7 +1009,7 @@ export function recordPayload(fields: FieldDefinition[], form: FormData) {
   };
 }
 
-function FieldInput({ field, value }: { field: FieldDefinition; value?: unknown }) {
+export function FieldInput({ field, value }: { field: FieldDefinition; value?: unknown }) {
   const { t } = useI18n();
   if (calculatedFieldTypeSet.has(field.fieldType))
     return (
@@ -1042,16 +1148,233 @@ function FieldInput({ field, value }: { field: FieldDefinition; value?: unknown 
   );
 }
 
+interface BulkChangeDraft {
+  id: number;
+  fieldId: string;
+  operation: 'set' | 'clear';
+}
+
+export function BulkRecordEditPanel({
+  base,
+  busy,
+  count,
+  fields,
+  onCancel,
+  onSubmit,
+}: {
+  base: string;
+  busy: boolean;
+  count: number;
+  fields: FieldDefinition[];
+  onCancel: () => void;
+  onSubmit: (changes: BulkRecordFieldChange[]) => Promise<void>;
+}) {
+  const { t } = useI18n();
+  const editableFields = fields.filter(
+    (field) => !['measurement', 'formula', 'lookup', 'rollup'].includes(field.fieldType),
+  );
+  const [nextId, setNextId] = useState(2);
+  const [changes, setChanges] = useState<BulkChangeDraft[]>(() =>
+    editableFields[0] ? [{ id: 1, fieldId: editableFields[0].id, operation: 'set' }] : [],
+  );
+  const [error, setError] = useState('');
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    try {
+      const payload = changes.map((change): BulkRecordFieldChange => {
+        const field = editableFields.find((candidate) => candidate.id === change.fieldId);
+        if (!field) throw new Error(t('data.bulkEditFieldRequired'));
+        if (change.operation === 'clear') return { fieldKey: field.key, operation: 'clear' };
+        const parsed = recordPayload([field], form);
+        const value =
+          field.fieldType === 'relation'
+            ? parsed.relations[field.id]
+            : field.fieldType === 'file'
+              ? parsed.fileReferences[field.id]
+              : field.fieldType === 'dataset'
+                ? parsed.datasetReferences[field.id]
+                : parsed.values[field.key];
+        if (value === undefined)
+          throw new Error(t('data.bulkEditValueRequired', { name: field.name }));
+        return { fieldKey: field.key, operation: 'set', value };
+      });
+      await onSubmit(payload);
+      setError('');
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t('data.bulkEditFailed'));
+    }
+  }
+
+  function updateChange(id: number, update: Partial<BulkChangeDraft>) {
+    setChanges((current) =>
+      current.map((change) => {
+        if (change.id !== id) return change;
+        const next = { ...change, ...update };
+        const field = editableFields.find((candidate) => candidate.id === next.fieldId);
+        return field?.required && next.operation === 'clear' ? { ...next, operation: 'set' } : next;
+      }),
+    );
+  }
+
+  return (
+    <section
+      aria-labelledby="bulk-record-edit-title"
+      className="mt-3 rounded-xl border border-sky-800/40 bg-slate-900/65 p-4"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-100" id="bulk-record-edit-title">
+            {t('data.bulkEditTitle', { count })}
+          </h3>
+          <p className="mt-1 text-xs text-slate-500">{t('data.bulkEditHint')}</p>
+        </div>
+        <IconAction icon="×" label={t('common.close')} onClick={onCancel} />
+      </div>
+      <form className="mt-4 grid gap-3" onSubmit={(event) => void submit(event)}>
+        {changes.map((change, index) => {
+          const field = editableFields.find((candidate) => candidate.id === change.fieldId);
+          const used = new Set(
+            changes.filter((candidate) => candidate.id !== change.id).map((item) => item.fieldId),
+          );
+          return (
+            <fieldset
+              className="grid gap-2 rounded-lg border border-slate-800 p-3 md:grid-cols-[minmax(10rem,0.8fr)_9rem_minmax(12rem,1.4fr)_auto]"
+              key={change.id}
+            >
+              <legend className="sr-only">{t('data.bulkEditAction', { number: index + 1 })}</legend>
+              <label className="text-xs text-slate-400">
+                <FormFieldLabel required>{t('data.field')}</FormFieldLabel>
+                <select
+                  aria-label={t('data.bulkEditField', { number: index + 1 })}
+                  className={inputClass}
+                  value={change.fieldId}
+                  onChange={(event) => updateChange(change.id, { fieldId: event.target.value })}
+                >
+                  {editableFields.map((candidate) => (
+                    <option
+                      disabled={used.has(candidate.id)}
+                      key={candidate.id}
+                      value={candidate.id}
+                    >
+                      {candidate.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs text-slate-400">
+                <FormFieldLabel required>{t('data.bulkEditOperation')}</FormFieldLabel>
+                <select
+                  aria-label={t('data.bulkEditOperationFor', { name: field?.name ?? '' })}
+                  className={inputClass}
+                  value={change.operation}
+                  onChange={(event) =>
+                    updateChange(change.id, { operation: event.target.value as 'set' | 'clear' })
+                  }
+                >
+                  <option value="set">{t('data.bulkEditSet')}</option>
+                  <option disabled={field?.required} value="clear">
+                    {t('data.bulkEditClear')}
+                  </option>
+                </select>
+              </label>
+              <label
+                className="text-xs text-slate-400"
+                key={`${change.id}:${field?.id ?? 'none'}:${change.operation}`}
+              >
+                <FormFieldLabel required={change.operation === 'set'}>
+                  {t('data.value')}
+                </FormFieldLabel>
+                {change.operation === 'clear' || !field ? (
+                  <span className="mt-1.5 block min-h-9 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2 text-xs text-slate-500">
+                    {t('data.bulkEditWillClear')}
+                  </span>
+                ) : field.fieldType === 'relation' ? (
+                  <RecordRelationPicker
+                    base={base}
+                    className={inputClass}
+                    field={field}
+                    name={`relation:${field.id}`}
+                  />
+                ) : field.fieldType === 'user' ? (
+                  <AssigneePicker
+                    ariaLabel={field.name}
+                    base={base}
+                    className={inputClass}
+                    initialOptions={[]}
+                    name={`value:${field.key}`}
+                    specialOptions={[{ value: '', label: t('common.unset') }]}
+                  />
+                ) : field.fieldType === 'file' || field.fieldType === 'dataset' ? (
+                  <EngineeringReferencePicker
+                    ariaLabel={field.name}
+                    base={base}
+                    className={inputClass}
+                    fieldType={field.fieldType}
+                    name={`reference:${field.id}`}
+                    specialOptions={[{ value: '', label: t('common.unset') }]}
+                  />
+                ) : (
+                  <FieldInput field={field} />
+                )}
+              </label>
+              <IconAction
+                className="mt-6"
+                disabled={changes.length === 1}
+                icon="−"
+                label={t('data.bulkEditRemoveAction', { number: index + 1 })}
+                onClick={() =>
+                  setChanges((current) => current.filter((item) => item.id !== change.id))
+                }
+              />
+            </fieldset>
+          );
+        })}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            disabled={busy || changes.length >= Math.min(20, editableFields.length)}
+            type="button"
+            variant="quiet"
+            onClick={() => {
+              const used = new Set(changes.map((change) => change.fieldId));
+              const field = editableFields.find((candidate) => !used.has(candidate.id));
+              if (!field) return;
+              setChanges((current) => [
+                ...current,
+                { id: nextId, fieldId: field.id, operation: 'set' },
+              ]);
+              setNextId((current) => current + 1);
+            }}
+          >
+            {t('data.bulkEditAddAction')}
+          </Button>
+          <Button disabled={busy || !changes.length} type="submit">
+            {busy ? t('data.saving') : t('data.bulkEditApply', { count })}
+          </Button>
+          <ErrorText>{error}</ErrorText>
+        </div>
+      </form>
+    </section>
+  );
+}
+
 export function RecordForm({
+  base,
   fields,
   record,
   projects,
+  workspaceId,
+  onProjectResolved,
   onSubmit,
   submitLabel,
 }: {
+  base?: string;
   fields: FieldDefinition[];
   record?: DynamicRecord;
   projects?: WorkspaceDataContext['projects'] | undefined;
+  workspaceId?: string | undefined;
+  onProjectResolved?: ((project: WorkspaceDataContext['projects'][number]) => void) | undefined;
   onSubmit: (form: FormData) => Promise<void>;
   submitLabel: string;
 }) {
@@ -1062,7 +1385,25 @@ export function RecordForm({
     event.preventDefault();
     setBusy(true);
     try {
-      await onSubmit(new FormData(event.currentTarget));
+      const form = new FormData(event.currentTarget);
+      const missingRelation = fields.find(
+        (field) =>
+          field.fieldType === 'relation' &&
+          field.required &&
+          !form.getAll(`relation:${field.id}`).length,
+      );
+      if (missingRelation)
+        throw new Error(t('data.requiredRelation', { name: missingRelation.name }));
+      const missingReference = fields.find((field) => {
+        if (!field.required) return false;
+        if (field.fieldType === 'user') return !String(form.get(`value:${field.key}`) ?? '');
+        if (field.fieldType === 'file' || field.fieldType === 'dataset')
+          return !String(form.get(`reference:${field.id}`) ?? '');
+        return false;
+      });
+      if (missingReference)
+        throw new Error(t('data.requiredField', { name: missingReference.name }));
+      await onSubmit(form);
       setError('');
       if (!record) event.currentTarget.reset();
     } catch (cause) {
@@ -1074,7 +1415,7 @@ export function RecordForm({
   return (
     <form className="grid gap-4 md:grid-cols-2" onSubmit={(event) => void submit(event)}>
       <label className="block text-sm text-slate-300 md:col-span-2">
-        {t('data.displayName')}
+        <FormFieldLabel required>{t('data.displayName')}</FormFieldLabel>
         <input
           className={inputClass}
           defaultValue={record?.displayName ?? ''}
@@ -1084,74 +1425,112 @@ export function RecordForm({
       </label>
       {projects && (
         <label className="block text-sm text-slate-300 md:col-span-2">
-          {t('data.project')}
-          <select
+          <FormFieldLabel>{t('data.project')}</FormFieldLabel>
+          <ProjectReferencePicker
+            ariaLabel={t('data.project')}
             className={inputClass}
             defaultValue={record?.contextProjectId ?? ''}
             name="contextProjectId"
-          >
-            <option value="">{t('data.noProject')}</option>
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>
-                {project.name}
-                {project.archivedAt ? ' (archived)' : ''}
-              </option>
-            ))}
-          </select>
+            projects={projects}
+            specialOptions={[{ value: '', label: t('data.noProject') }]}
+            workspaceId={workspaceId ?? ''}
+            onProjectResolved={onProjectResolved}
+          />
           <span className="mt-1 block text-xs text-slate-500">{t('data.projectContextHint')}</span>
         </label>
       )}
-      {fields.map((field) => (
-        <label className="block text-sm text-slate-300" key={field.id}>
-          <span className="flex items-center justify-between gap-2">
-            <span>
-              {field.name} {field.required && <span className="text-rose-300">*</span>}
-            </span>
-            <span className="font-mono text-[10px] uppercase text-slate-500">
-              {field.fieldType}
-            </span>
-          </span>
-          {field.fieldType === 'relation' ? (
-            <input
-              className={inputClass}
-              defaultValue={(record?.relations[field.id] ?? []).join(';')}
-              name={`relation:${field.id}`}
-              placeholder={t('data.recordUuids')}
-              required={field.required}
-            />
-          ) : field.fieldType === 'file' && isImageField(field.config) ? (
-            <>
-              <input
-                name={`reference:${field.id}`}
-                type="hidden"
-                value={record?.fileReferences[field.id]?.[0] ?? ''}
-              />
-              <span className="mt-1.5 block min-h-9 rounded-lg border border-slate-800 bg-slate-900/55 px-3 py-2 text-xs text-slate-400">
-                {record?.fileReferences[field.id]?.length
-                  ? '이미지는 그리드 셀에서 미리보기·교체·제거할 수 있습니다.'
-                  : '레코드를 저장한 뒤 그리드 셀에서 이미지를 첨부하세요.'}
+      {fields.map((field) => {
+        const typeLabel = t(
+          field.fieldType === 'file' && isImageField(field.config)
+            ? 'data.fieldTypeImage'
+            : fieldTypeTranslationKeys[field.fieldType],
+        );
+        const typeIcon =
+          field.fieldType === 'file' && isImageField(field.config)
+            ? '▧'
+            : fieldTypeMeta[field.fieldType].icon;
+        return (
+          <label className="block text-sm text-slate-300" key={field.id}>
+            <span className="flex items-center justify-between gap-2">
+              <span className="min-w-0 flex-1">
+                <FormFieldLabel required={field.required}>{field.name}</FormFieldLabel>
               </span>
-            </>
-          ) : field.fieldType === 'file' || field.fieldType === 'dataset' ? (
-            <input
-              className={inputClass}
-              defaultValue={
-                (field.fieldType === 'file'
-                  ? record?.fileReferences[field.id]
-                  : record?.datasetReferences[field.id])?.[0] ?? ''
-              }
-              name={`reference:${field.id}`}
-              placeholder={t('data.exactReference', { type: field.fieldType })}
-              required={field.required}
-            />
-          ) : (
-            <FieldInput
-              field={field}
-              value={record ? record.values[field.key] : field.defaultValue}
-            />
-          )}
-        </label>
-      ))}
+              <span
+                aria-label={typeLabel}
+                className="grid size-5 shrink-0 place-items-center rounded border border-slate-700 text-[10px] font-semibold text-slate-500"
+                role="img"
+                title={typeLabel}
+              >
+                {typeIcon}
+              </span>
+            </span>
+            {field.fieldType === 'relation' ? (
+              base ? (
+                <RecordRelationPicker
+                  base={base}
+                  className={inputClass}
+                  field={field}
+                  initialIds={record?.relations[field.id] ?? []}
+                  initialReferences={record?.relationLabels?.[field.id] ?? []}
+                  name={`relation:${field.id}`}
+                />
+              ) : (
+                <input
+                  className={inputClass}
+                  defaultValue={(record?.relations[field.id] ?? []).join(';')}
+                  name={`relation:${field.id}`}
+                  placeholder={t('data.recordUuids')}
+                  required={field.required}
+                />
+              )
+            ) : field.fieldType === 'user' && base ? (
+              <AssigneePicker
+                ariaLabel={field.name}
+                base={base}
+                className={inputClass}
+                defaultValue={String(
+                  record ? (record.values[field.key] ?? '') : (field.defaultValue ?? ''),
+                )}
+                initialOptions={[]}
+                name={`value:${field.key}`}
+                specialOptions={[{ value: '', label: t('common.unset') }]}
+              />
+            ) : field.fieldType === 'file' && isImageField(field.config) ? (
+              <>
+                <input
+                  name={`reference:${field.id}`}
+                  type="hidden"
+                  value={record?.fileReferences[field.id]?.[0] ?? ''}
+                />
+                <span className="mt-1.5 block min-h-9 rounded-lg border border-slate-800 bg-slate-900/55 px-3 py-2 text-xs text-slate-400">
+                  {record?.fileReferences[field.id]?.length
+                    ? '이미지는 그리드 셀에서 미리보기·교체·제거할 수 있습니다.'
+                    : '레코드를 저장한 뒤 그리드 셀에서 이미지를 첨부하세요.'}
+                </span>
+              </>
+            ) : (field.fieldType === 'file' || field.fieldType === 'dataset') && base ? (
+              <EngineeringReferencePicker
+                ariaLabel={field.name}
+                base={base}
+                className={inputClass}
+                defaultValue={
+                  (field.fieldType === 'file'
+                    ? record?.fileReferences[field.id]
+                    : record?.datasetReferences[field.id])?.[0] ?? ''
+                }
+                fieldType={field.fieldType}
+                name={`reference:${field.id}`}
+                specialOptions={[{ value: '', label: t('common.unset') }]}
+              />
+            ) : (
+              <FieldInput
+                field={field}
+                value={record ? record.values[field.key] : field.defaultValue}
+              />
+            )}
+          </label>
+        );
+      })}
       <div className="md:col-span-2">
         <Button type="submit" disabled={busy}>
           {busy ? t('data.saving') : submitLabel}

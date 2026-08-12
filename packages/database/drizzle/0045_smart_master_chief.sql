@@ -1,0 +1,5 @@
+ALTER TABLE "notifications" DROP CONSTRAINT "notifications_type";--> statement-breakpoint
+ALTER TABLE "user_notification_preferences" ADD COLUMN "notify_due_dates" boolean DEFAULT true NOT NULL;--> statement-breakpoint
+ALTER TABLE "user_notification_preferences" ADD COLUMN "due_reminder_days" integer DEFAULT 1 NOT NULL;--> statement-breakpoint
+ALTER TABLE "notifications" ADD CONSTRAINT "notifications_type" CHECK ("notifications"."type" in ('task.assigned','task.updated','task.status_changed','task.commented','task.mentioned','task.archived','task.restored','task.due_soon','task.overdue'));--> statement-breakpoint
+ALTER TABLE "user_notification_preferences" ADD CONSTRAINT "user_notification_preferences_due_reminder_days_check" CHECK ("user_notification_preferences"."due_reminder_days" in (0, 1, 3, 7));

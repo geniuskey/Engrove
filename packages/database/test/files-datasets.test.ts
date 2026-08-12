@@ -175,6 +175,8 @@ describe('project resource scopes', () => {
       'workspace-1',
       'organization-1',
       false,
+      'actor-1',
+      'owner',
     ]);
   });
 
@@ -195,6 +197,188 @@ describe('project resource scopes', () => {
       'workspace-1',
       'organization-1',
       true,
+      'actor-1',
+      'owner',
+    ]);
+  });
+});
+
+describe('dataset catalog', () => {
+  it('searches and pages datasets without loading the full project catalog', async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('from projects p')) return { rowCount: 1, rows: [{ id: 'project-1' }] };
+      if (sql.includes('count(*)::int total from datasets'))
+        return { rowCount: 1, rows: [{ total: 51 }] };
+      if (sql.includes('from datasets d'))
+        return {
+          rowCount: 1,
+          rows: [
+            {
+              id: 'dataset-51',
+              name: 'Thermal sweep',
+              dataset_type: 'xy',
+              status: 'ready',
+              row_count: '24',
+              artifacts: [],
+            },
+          ],
+        };
+      throw new Error(`Unexpected SQL: ${sql}`);
+    });
+    const repository = await ScopedFileDatasetRepository.open(
+      { query } as unknown as Pool,
+      actor,
+      'workspace-1',
+      'project-1',
+    );
+
+    await expect(
+      repository.listDatasetPage({
+        includeArchived: false,
+        query: ' Thermal ',
+        limit: 50,
+        offset: 50,
+      }),
+    ).resolves.toEqual({
+      items: [expect.objectContaining({ id: 'dataset-51', row_count: 24 })],
+      pageInfo: { limit: 50, offset: 50, total: 51, hasNext: false },
+    });
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('limit $4 offset $5'), [
+      'project-1',
+      false,
+      'thermal',
+      50,
+      50,
+    ]);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('count(*)::int total'), [
+      'project-1',
+      false,
+      'thermal',
+    ]);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('d.id::text=$3'), [
+      'project-1',
+      false,
+      'thermal',
+      50,
+      50,
+    ]);
+  });
+});
+
+describe('file and job catalogs', () => {
+  it('searches and pages file evidence without loading the complete project history', async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('from projects p')) return { rowCount: 1, rows: [{ id: 'project-1' }] };
+      if (sql.includes('count(*)::int total') && sql.includes('from file_objects f'))
+        return { rowCount: 1, rows: [{ total: 51 }] };
+      if (sql.includes('select f.*,s.name series_name'))
+        return {
+          rowCount: 1,
+          rows: [
+            {
+              id: 'file-52',
+              series_name: 'Qualification evidence',
+              original_name: 'report.pdf',
+              status: 'available',
+              size_bytes: '2048',
+            },
+          ],
+        };
+      throw new Error(`Unexpected SQL: ${sql}`);
+    });
+    const repository = await ScopedFileDatasetRepository.open(
+      { query } as unknown as Pool,
+      actor,
+      'workspace-1',
+      'project-1',
+    );
+
+    await expect(
+      repository.listFilePage({
+        archiveState: 'all',
+        query: ' Report ',
+        status: 'available',
+        limit: 25,
+        offset: 50,
+      }),
+    ).resolves.toEqual({
+      items: [expect.objectContaining({ id: 'file-52', size_bytes: 2048 })],
+      pageInfo: { limit: 25, offset: 50, total: 51, hasNext: false },
+    });
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('limit $5 offset $6'), [
+      'project-1',
+      'all',
+      'report',
+      'available',
+      25,
+      50,
+    ]);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('count(*)::int total'), [
+      'project-1',
+      'all',
+      'report',
+      'available',
+    ]);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('f.id::text=$3'), [
+      'project-1',
+      'all',
+      'report',
+      'available',
+      25,
+      50,
+    ]);
+  });
+
+  it('searches and pages background jobs while keeping attempts scoped to each page', async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('from projects p')) return { rowCount: 1, rows: [{ id: 'project-1' }] };
+      if (sql.includes('count(*)::int total from background_jobs'))
+        return { rowCount: 1, rows: [{ total: 101 }] };
+      if (sql.includes('select j.*,coalesce'))
+        return {
+          rowCount: 1,
+          rows: [
+            {
+              id: 'job-101',
+              job_type: 'dataset.process',
+              status: 'failed',
+              attempts: [{ attempt_number: 3 }],
+            },
+          ],
+        };
+      throw new Error(`Unexpected SQL: ${sql}`);
+    });
+    const repository = await ScopedFileDatasetRepository.open(
+      { query } as unknown as Pool,
+      actor,
+      'workspace-1',
+      'project-1',
+    );
+
+    await expect(
+      repository.listJobPage({ status: 'failed', query: ' Dataset ', limit: 50, offset: 50 }),
+    ).resolves.toEqual({
+      items: [expect.objectContaining({ id: 'job-101', attempts: [{ attempt_number: 3 }] })],
+      pageInfo: { limit: 50, offset: 50, total: 101, hasNext: true },
+    });
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('limit $4 offset $5'), [
+      'project-1',
+      'failed',
+      'dataset',
+      50,
+      50,
+    ]);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('left join lateral'), [
+      'project-1',
+      'failed',
+      'dataset',
+      50,
+      50,
+    ]);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('count(*)::int total'), [
+      'project-1',
+      'failed',
+      'dataset',
     ]);
   });
 });

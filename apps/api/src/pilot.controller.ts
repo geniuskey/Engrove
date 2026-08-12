@@ -14,15 +14,111 @@ import {
 } from '@engrove/database';
 import { assertPermission } from '@engrove/permissions';
 import { Body, Controller, Get, Inject, Param, Patch, Post, Query, Req } from '@nestjs/common';
+import { ApiCreatedResponse, ApiOkResponse, ApiQuery, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { z } from 'zod';
 import { v7 as uuidv7 } from 'uuid';
 import { requestId, requireActor } from './community.controller.js';
+import { ApiZodBody, openApiSchema } from './openapi.js';
 import type { Runtime } from './runtime.js';
 import { RUNTIME } from './runtime.provider.js';
 
 const id = z.string().uuid();
 const onboardingStep = z.enum(onboardingSteps);
+const onboardingInput = z
+  .object({
+    completedSteps: z.array(onboardingStep).max(onboardingSteps.length),
+    dismissed: z.boolean().default(false),
+  })
+  .strict();
+const onboardingResponse = z
+  .object({
+    completed_steps: z.array(onboardingStep).max(onboardingSteps.length),
+    completed_at: z.iso.datetime().nullable(),
+    dismissed_at: z.iso.datetime().nullable(),
+    created_at: z.iso.datetime().nullable(),
+    updated_at: z.iso.datetime().nullable(),
+  })
+  .strict();
+const feedbackCategory = z.enum(['bug', 'usability', 'workflow', 'idea', 'other']);
+const feedbackStatus = z.enum(['new', 'reviewed', 'resolved']);
+const feedbackInput = z
+  .object({
+    projectId: id.optional(),
+    category: feedbackCategory,
+    rating: z.number().int().min(1).max(5),
+    message: z.string().trim().min(10).max(4_000),
+    context: z
+      .record(z.string().max(80), z.unknown())
+      .refine((value) => JSON.stringify(value).length <= 8_192, 'Context is too large.')
+      .default({}),
+  })
+  .strict();
+const feedbackReceiptResponse = z
+  .object({
+    id,
+    project_id: id.nullable(),
+    category: feedbackCategory,
+    rating: z.number().int().min(1).max(5),
+    status: feedbackStatus,
+    created_at: z.iso.datetime(),
+  })
+  .strict();
+const pilotSummaryResponse = z
+  .object({
+    users: z.number().int().nonnegative(),
+    repeat_users: z.number().int().nonnegative(),
+    records: z.number().int().nonnegative(),
+    datasets: z.number().int().nonnegative(),
+    chart_dataset_links: z.number().int().nonnegative(),
+    task_links: z.number().int().nonnegative(),
+    feedback_items: z.number().int().nonnegative(),
+    demo_projects: z.number().int().nonnegative(),
+    measuredAt: z.iso.datetime(),
+  })
+  .strict();
+const feedbackItemResponse = z
+  .object({
+    id,
+    project_id: id.nullable(),
+    project_name: z.string().nullable(),
+    actor_name: z.string(),
+    category: feedbackCategory,
+    rating: z.number().int().min(1).max(5),
+    message: z.string(),
+    context: z.record(z.string(), z.unknown()),
+    status: feedbackStatus,
+    created_at: z.iso.datetime(),
+  })
+  .strict();
+const pilotFeedbackResponse = z.object({ items: z.array(feedbackItemResponse).max(500) }).strict();
+const demoInstallationResponse = z
+  .object({
+    templateVersion: z.number().int().positive(),
+    fileId: id,
+    datasetId: id,
+    chartId: id,
+    testRunRecordId: id,
+    datasetStatus: z.string().optional(),
+    rowCount: z.number().int().nonnegative().optional(),
+    chartName: z.string().optional(),
+    testRunName: z.string().optional(),
+    installedAt: z.iso.datetime().optional(),
+  })
+  .strict();
+const demoStatusResponse = z
+  .object({ installed: z.boolean(), installation: demoInstallationResponse.nullable() })
+  .strict();
+const demoInstallResponse = demoInstallationResponse
+  .pick({
+    templateVersion: true,
+    fileId: true,
+    datasetId: true,
+    chartId: true,
+    testRunRecordId: true,
+  })
+  .extend({ installed: z.literal(true), idempotent: z.boolean() })
+  .strict();
 const demoCsv = `elapsed_s,force_N,displacement_mm\n0,0,0\n1,12.5,0.08\n2,28.1,0.19\n3,44.7,0.31\n4,61.2,0.46\n5,78.4,0.63\n`;
 
 async function objectBytes(body: unknown): Promise<Uint8Array> {
@@ -31,26 +127,27 @@ async function objectBytes(body: unknown): Promise<Uint8Array> {
   return (body as { transformToByteArray(): Promise<Uint8Array> }).transformToByteArray();
 }
 
+@ApiTags('Pilot')
 @Controller('api/v1')
 export class PilotController {
   constructor(@Inject(RUNTIME) private readonly runtime: Runtime) {}
 
+  @ApiOkResponse({ schema: openApiSchema(onboardingResponse) })
   @Get('onboarding')
   async onboarding(@Req() request: Request) {
     const actor = await requireActor(this.runtime, request);
     return new PilotRepository(this.runtime.pool, actor).onboarding();
   }
 
+  @ApiZodBody(onboardingInput, 'Replace the authenticated member onboarding progress.', {
+    completedSteps: ['create-project', 'install-template'],
+    dismissed: false,
+  })
+  @ApiOkResponse({ schema: openApiSchema(onboardingResponse) })
   @Patch('onboarding')
   async updateOnboarding(@Req() request: Request, @Body() raw: unknown) {
     const actor = await requireActor(this.runtime, request, undefined, true);
-    const body = z
-      .object({
-        completedSteps: z.array(onboardingStep).max(onboardingSteps.length),
-        dismissed: z.boolean().default(false),
-      })
-      .strict()
-      .parse(raw);
+    const body = onboardingInput.parse(raw);
     return new PilotRepository(this.runtime.pool, actor).updateOnboarding({
       completedSteps: body.completedSteps as OnboardingStep[],
       dismissed: body.dismissed,
@@ -58,34 +155,32 @@ export class PilotController {
     });
   }
 
+  @ApiZodBody(feedbackInput, 'Submit bounded product feedback with optional project context.', {
+    category: 'workflow',
+    rating: 4,
+    message: 'Review assignment is clear, but bulk triage needs keyboard shortcuts.',
+    context: { surface: 'review-inbox' },
+  })
+  @ApiCreatedResponse({ schema: openApiSchema(feedbackReceiptResponse) })
   @Post('pilot-feedback')
   async feedback(@Req() request: Request, @Body() raw: unknown) {
     const actor = await requireActor(this.runtime, request, undefined, true);
-    const body = z
-      .object({
-        projectId: id.optional(),
-        category: z.enum(['bug', 'usability', 'workflow', 'idea', 'other']),
-        rating: z.number().int().min(1).max(5),
-        message: z.string().trim().min(10).max(4_000),
-        context: z
-          .record(z.string().max(80), z.unknown())
-          .refine((value) => JSON.stringify(value).length <= 8_192, 'Context is too large.')
-          .default({}),
-      })
-      .strict()
-      .parse(raw);
+    const body = feedbackInput.parse(raw);
     return new PilotRepository(this.runtime.pool, actor).captureFeedback({
       ...body,
       requestId: requestId(request),
     });
   }
 
+  @ApiOkResponse({ schema: openApiSchema(pilotSummaryResponse) })
   @Get('pilot/summary')
   async pilotSummary(@Req() request: Request) {
     const actor = await requireActor(this.runtime, request, 'pilot.manage');
     return new PilotRepository(this.runtime.pool, actor).summary();
   }
 
+  @ApiQuery({ name: 'limit', required: false, type: Number, minimum: 1, maximum: 500 })
+  @ApiOkResponse({ schema: openApiSchema(pilotFeedbackResponse) })
   @Get('pilot/feedback')
   async pilotFeedback(@Req() request: Request, @Query('limit') rawLimit?: string) {
     const actor = await requireActor(this.runtime, request, 'pilot.manage');
@@ -93,6 +188,7 @@ export class PilotController {
     return { items: await new PilotRepository(this.runtime.pool, actor).feedbackItems(limit) };
   }
 
+  @ApiOkResponse({ schema: openApiSchema(demoStatusResponse) })
   @Get('workspaces/:workspaceId/projects/:projectId/demo')
   async demoStatus(
     @Req() request: Request,
@@ -116,9 +212,27 @@ export class PilotController {
        where i.project_id=$1`,
       [resolvedProjectId],
     );
-    return { installed: Boolean(result.rows[0]), installation: result.rows[0] ?? null };
+    const installation = result.rows[0] as Record<string, unknown> | undefined;
+    return {
+      installed: Boolean(installation),
+      installation: installation
+        ? {
+            templateVersion: Number(installation.template_version),
+            fileId: String(installation.file_id),
+            datasetId: String(installation.dataset_id),
+            chartId: String(installation.chart_id),
+            testRunRecordId: String(installation.test_run_record_id),
+            datasetStatus: String(installation.dataset_status),
+            rowCount: Number(installation.row_count),
+            chartName: String(installation.chart_name),
+            testRunName: String(installation.test_run_name),
+            installedAt: (installation.installed_at as Date).toISOString(),
+          }
+        : null,
+    };
   }
 
+  @ApiCreatedResponse({ schema: openApiSchema(demoInstallResponse) })
   @Post('workspaces/:workspaceId/projects/:projectId/demo/install')
   async installDemo(
     @Req() request: Request,
@@ -152,7 +266,16 @@ export class PilotController {
         'select * from project_demo_installations where project_id=$1',
         [pid],
       );
-      if (prior.rows[0]) return { installed: true, idempotent: true, ...prior.rows[0] };
+      if (prior.rows[0])
+        return {
+          installed: true,
+          idempotent: true,
+          templateVersion: Number(prior.rows[0].template_version),
+          fileId: String(prior.rows[0].file_id),
+          datasetId: String(prior.rows[0].dataset_id),
+          chartId: String(prior.rows[0].chart_id),
+          testRunRecordId: String(prior.rows[0].test_run_record_id),
+        };
 
       const template = await data.installTestCharacterizationTemplate(requestId(request));
       const objectTypes = new Map(template.objectTypes.map((item) => [item.key, item]));

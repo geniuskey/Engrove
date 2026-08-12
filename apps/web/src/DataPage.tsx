@@ -1,5 +1,7 @@
 import { Button } from '@engrove/ui';
+import { useActionDialog } from './ActionDialogProvider.js';
 import {
+  Fragment,
   type ClipboardEvent as ReactClipboardEvent,
   type FormEvent,
   type DragEvent as ReactDragEvent,
@@ -33,13 +35,20 @@ import {
   menuFromPointer,
 } from './ContextMenu.js';
 import { CellValuePreview } from './DataPageCharts.js';
+import { CsvImportPanel } from './CsvImportPanel.js';
+import { FormField, FormFieldLabel } from './FormFieldLabel.js';
 import { IconAction } from './IconAction.js';
+import { RecordReviewsPanel } from './RecordReviewsPanel.js';
+import { RecordCommentsPanel } from './RecordCommentsPanel.js';
+import { RecordViewSharePanel } from './RecordViewSharePanel.js';
+import { TableApiPanel } from './TableApiPanel.js';
+import { TablePermissionsPanel } from './TablePermissionsPanel.js';
 import { useI18n } from './i18n.js';
 import type { TranslationKey } from './i18n-types.js';
 import { useServiceSidebarPortal } from './ServiceSidebar.js';
 import { useModalDialog } from './useModalDialog.js';
 import type {
-  CsvResult,
+  BulkRecordFieldChange,
   DynamicRecord,
   FieldDefinition,
   FieldType,
@@ -47,9 +56,14 @@ import type {
   GridColumn,
   GridSelection,
   ObjectType,
+  ProjectReference,
   QueryResult,
+  RecordExportJob,
+  RecordGrouping,
+  RecordSummaryOperation,
   RecordView,
   RecordViewConfig,
+  RecordViewPermissionType,
   RecordViewType,
   SystemFieldWidthKey,
   WorkspaceDataContext,
@@ -57,6 +71,7 @@ import type {
 export type { WorkspaceDataContext } from './DataPageTypes.js';
 import {
   canonicalTableIdentifier,
+  BulkRecordEditPanel,
   clipboardSafeValue,
   GridCell,
   gridEditorDraft,
@@ -72,7 +87,11 @@ import {
   structuredDataText,
   viewConfigsEqual,
 } from './DataPageGrid.js';
+
+const MAX_BULK_RECORDS = 100;
 import { ImageGridCell, isImageField } from './DataPageImages.js';
+import { ProjectReferencePicker } from './ProjectReferencePicker.js';
+import { RelationValue } from './RecordRelationPicker.js';
 import {
   CalendarRecordsView,
   displayFieldValue,
@@ -90,12 +109,12 @@ import {
   calculatedFieldTypeSet,
   checkboxClass,
   checkboxLabelClass,
-  compactMenuItemClass,
   emptyPanelClass,
   fieldSupportsUnique,
   fieldHintClass,
   fieldLabelClass,
   fieldTypeMeta,
+  fieldTypeTranslationKeys,
   fieldTypes,
   schemaFieldConfig,
   schemaFieldKey,
@@ -112,30 +131,25 @@ const DEFAULT_SYSTEM_FIELD_WIDTHS: Record<SystemFieldWidthKey, number> = {
 const MIN_COLUMN_WIDTH = 100;
 const MAX_COLUMN_WIDTH = 480;
 const COLUMN_KEYBOARD_STEP = 8;
+const TABLE_CATALOG_PAGE_SIZE = 50;
+const VIEW_PAGE_SIZE = 50;
+
+interface TableCatalogPageInfo {
+  limit: number;
+  offset: number;
+  total: number;
+  hasNext: boolean;
+}
+
+function mergeObjectTypes(current: ObjectType[], additions: ObjectType[]): ObjectType[] {
+  const merged = new Map(current.map((item) => [item.id, item]));
+  additions.forEach((item) => merged.set(item.id, item));
+  return [...merged.values()].sort((left, right) => left.name.localeCompare(right.name));
+}
 
 type SchemaFieldType = FieldType | 'image';
-const fieldTypeTranslationKeys: Record<SchemaFieldType, TranslationKey> = {
-  text: 'data.fieldTypeText',
-  long_text: 'data.fieldTypeLongText',
-  integer: 'data.fieldTypeInteger',
-  decimal: 'data.fieldTypeDecimal',
-  boolean: 'data.fieldTypeBoolean',
-  date: 'data.fieldTypeDate',
-  datetime: 'data.fieldTypeDatetime',
-  single_select: 'data.fieldTypeSingleSelect',
-  multi_select: 'data.fieldTypeMultiSelect',
-  user: 'data.fieldTypeUser',
-  relation: 'data.fieldTypeRelation',
-  file: 'data.fieldTypeFile',
-  dataset: 'data.fieldTypeDataset',
-  quantity: 'data.fieldTypeQuantity',
-  measurement: 'data.fieldTypeMeasurement',
-  range: 'data.fieldTypeRange',
-  spectral_data: 'data.fieldTypeSpectralData',
-  tabular_data: 'data.fieldTypeTabularData',
-  formula: 'data.fieldTypeFormula',
-  lookup: 'data.fieldTypeLookup',
-  rollup: 'data.fieldTypeRollup',
+const schemaFieldTypeTranslationKeys: Record<SchemaFieldType, TranslationKey> = {
+  ...fieldTypeTranslationKeys,
   image: 'data.fieldTypeImage',
 };
 const fieldGroupTranslationKeys = {
@@ -147,8 +161,6 @@ const fieldGroupTranslationKeys = {
   Calculated: 'data.fieldGroupCalculated',
 } as const satisfies Record<string, TranslationKey>;
 const imageFieldMeta = {
-  label: 'Image',
-  description: 'Upload and preview an image in each cell',
   icon: '▧',
   group: 'Linked' as const,
 };
@@ -169,6 +181,8 @@ interface TableLayoutPreference {
   hiddenFieldIds: string[];
   fieldWidths: Record<string, number>;
   systemFieldWidths: Partial<Record<SystemFieldWidthKey, number>>;
+  groupings: RecordGrouping[];
+  fieldSummaries: Record<string, RecordSummaryOperation>;
 }
 
 function clampColumnWidth(width: number) {
@@ -218,7 +232,46 @@ function readTableLayoutPreference(
           : [];
       }),
     );
-    return { fieldOrderIds, hiddenFieldIds, fieldWidths, systemFieldWidths };
+    const fieldSummaries = Object.fromEntries(
+      Object.entries(parsed.fieldSummaries ?? {}).flatMap(([fieldId, operation]) => {
+        const field = fields.find((candidate) => candidate.id === fieldId);
+        return field &&
+          typeof operation === 'string' &&
+          summaryOperationsForField(field).includes(operation as RecordSummaryOperation)
+          ? [[fieldId, operation as RecordSummaryOperation]]
+          : [];
+      }),
+    );
+    const groupingIds = new Set<string>();
+    const groupings = (Array.isArray(parsed.groupings) ? parsed.groupings : [])
+      .flatMap((grouping) => {
+        const field = fields.find((candidate) => candidate.id === grouping?.fieldId);
+        if (
+          !field ||
+          groupingIds.has(field.id) ||
+          !fieldCanGroup(field) ||
+          !['asc', 'desc'].includes(grouping.direction)
+        ) {
+          return [];
+        }
+        groupingIds.add(field.id);
+        return [
+          {
+            fieldId: field.id,
+            direction: grouping.direction,
+            enabled: grouping.enabled !== false,
+          } satisfies RecordGrouping,
+        ];
+      })
+      .slice(0, 3);
+    return {
+      fieldOrderIds,
+      hiddenFieldIds,
+      fieldWidths,
+      systemFieldWidths,
+      groupings,
+      fieldSummaries,
+    };
   } catch {
     return undefined;
   }
@@ -356,6 +409,48 @@ const viewTypeTranslationKeys: Record<RecordViewType, TranslationKey> = {
   calendar: 'data.viewCalendar',
 };
 
+const summaryTranslationKeys: Record<RecordSummaryOperation, TranslationKey> = {
+  count: 'data.count',
+  sum: 'data.sum',
+  average: 'data.average',
+  min: 'data.minimum',
+  max: 'data.maximum',
+};
+
+function summaryOperationsForField(field: FieldDefinition): RecordSummaryOperation[] {
+  if (['integer', 'decimal', 'quantity', 'measurement'].includes(field.fieldType)) {
+    return ['count', 'sum', 'average', 'min', 'max'];
+  }
+  if (['date', 'datetime'].includes(field.fieldType)) return ['count', 'min', 'max'];
+  if (
+    ['text', 'long_text', 'boolean', 'single_select', 'multi_select', 'user', 'relation'].includes(
+      field.fieldType,
+    )
+  ) {
+    return ['count'];
+  }
+  return [];
+}
+
+function fieldCanGroup(field: FieldDefinition): boolean {
+  return ['text', 'integer', 'decimal', 'boolean', 'date', 'datetime', 'single_select'].includes(
+    field.fieldType,
+  );
+}
+
+function recordGroupValue(record: DynamicRecord, field: FieldDefinition): string | null {
+  const value = recordGridValue(record, field);
+  return value === undefined || value === null || value === '' ? null : String(value);
+}
+
+function groupPathKey(values: Array<string | null>): string {
+  return JSON.stringify(values);
+}
+
+function recordViewPermission(view: RecordView): RecordViewPermissionType {
+  return view.permissionType ?? 'collaborative';
+}
+
 function configuredSorts(
   sortField: string,
   sortDirection: 'asc' | 'desc',
@@ -458,6 +553,7 @@ export function DataPage({
 }) {
   useDismissiblePopoverMenus();
   const { locale, t } = useI18n();
+  const { confirmAction, promptText } = useActionDialog();
   const params = useParams();
   const workspaceId = workspaceData?.workspaceId ?? params.workspaceId ?? '';
   const projectId = workspaceData?.backingProjectId ?? params.projectId ?? '';
@@ -467,14 +563,32 @@ export function DataPage({
   const navigate = useNavigate();
   const base = projectPath(workspaceId, projectId);
   const [objectTypes, setObjectTypes] = useState<ObjectType[]>([]);
+  const [visibleObjectTypes, setVisibleObjectTypes] = useState<ObjectType[]>([]);
+  const [tableSearch, setTableSearch] = useState('');
+  const [tableQuery, setTableQuery] = useState('');
+  const [tablePage, setTablePage] = useState<TableCatalogPageInfo>({
+    limit: TABLE_CATALOG_PAGE_SIZE,
+    offset: 0,
+    total: 0,
+    hasNext: false,
+  });
+  const [tablesLoadingMore, setTablesLoadingMore] = useState(false);
   const [fields, setFields] = useState<FieldDefinition[]>([]);
   const [views, setViews] = useState<RecordView[]>([]);
+  const [viewPage, setViewPage] = useState<TableCatalogPageInfo>({
+    limit: VIEW_PAGE_SIZE,
+    offset: 0,
+    total: 0,
+    hasNext: false,
+  });
+  const [viewsLoadingMore, setViewsLoadingMore] = useState(false);
   const [records, setRecords] = useState<QueryResult>({
     items: [],
     page: 1,
     pageSize: 25,
     total: 0,
   });
+  const [recordsObjectTypeId, setRecordsObjectTypeId] = useState('');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<25 | 50 | 100 | 250 | 500>(25);
   const [gridScrollTop, setGridScrollTop] = useState(0);
@@ -491,7 +605,7 @@ export function DataPage({
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
   });
-  const [activeTool, setActiveTool] = useState<'fields' | 'filter' | 'sort' | null>(null);
+  const [activeTool, setActiveTool] = useState<'fields' | 'filter' | 'sort' | 'group' | null>(null);
   const [hiddenFieldIds, setHiddenFieldIds] = useState<Set<string>>(() => new Set());
   const [fieldOrderIds, setFieldOrderIds] = useState<string[]>([]);
   const [fieldWidths, setFieldWidths] = useState<Record<string, number>>({});
@@ -505,14 +619,23 @@ export function DataPage({
   }>();
   const [layoutAnnouncement, setLayoutAnnouncement] = useState('');
   const [rowDensity, setRowDensity] = useState<'compact' | 'comfortable'>('compact');
+  const [groupings, setGroupings] = useState<RecordGrouping[]>([]);
+  const [collapsedGroupPaths, setCollapsedGroupPaths] = useState<Set<string>>(() => new Set());
+  const [fieldSummaries, setFieldSummaries] = useState<Record<string, RecordSummaryOperation>>({});
   const [gridSelection, setGridSelection] = useState<GridSelection>();
   const [dragSelectingCells, setDragSelectingCells] = useState(false);
   const [clipboardBusy, setClipboardBusy] = useState(false);
   const [selectedRows, setSelectedRows] = useState<Set<string>>(() => new Set());
+  const [archiveState, setArchiveState] = useState<'active' | 'archived'>('active');
   const [selectedRecord, setSelectedRecord] = useState<DynamicRecord>();
+  const [quickRecordTab, setQuickRecordTab] = useState<'fields' | 'comments' | 'history'>('fields');
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [showBulkEdit, setShowBulkEdit] = useState(false);
   const [showSchema, setShowSchema] = useState(false);
   const [showTableSettings, setShowTableSettings] = useState(false);
+  const [showTablePermissions, setShowTablePermissions] = useState(false);
+  const [showApiPanel, setShowApiPanel] = useState(false);
+  const [showImportCsv, setShowImportCsv] = useState(false);
   const [showCreateTable, setShowCreateTable] = useState(false);
   const [createTableBusy, setCreateTableBusy] = useState(false);
   const [createTableError, setCreateTableError] = useState('');
@@ -532,13 +655,20 @@ export function DataPage({
   const [contextObjectTypeId, setContextObjectTypeId] = useState('');
   const [viewBusy, setViewBusy] = useState(false);
   const [showCreateView, setShowCreateView] = useState(false);
+  const [showShareView, setShowShareView] = useState(false);
   const [newViewType, setNewViewType] = useState<RecordViewType>('grid');
+  const [newViewPermission, setNewViewPermission] =
+    useState<RecordViewPermissionType>('collaborative');
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [messageTone, setMessageTone] = useState<'info' | 'success' | 'error'>('info');
+  const [projectReferences, setProjectReferences] = useState<ProjectReference[]>(
+    () => workspaceData?.projects ?? [],
+  );
   const [contextMenu, setContextMenu] = useState<ContextMenuModel>();
-  const [csvResult, setCsvResult] = useState<CsvResult>();
+  const [recordExport, setRecordExport] = useState<RecordExportJob>();
   const createTableTriggerRef = useRef<HTMLButtonElement>(null);
+  const projectReferencesRequestId = useRef(0);
   const newRecordDialogRef = useModalDialog<HTMLElement>(showNewRecord, () =>
     setShowNewRecord(false),
   );
@@ -553,11 +683,25 @@ export function DataPage({
   const appliedViewKey = useRef('');
   const pendingViewId = useRef('');
   const layoutPreferenceReadyKey = useRef('');
+  const mergeProjectReferences = useCallback((next: ProjectReference | ProjectReference[]) => {
+    const additions = Array.isArray(next) ? next : [next];
+    setProjectReferences((current) => {
+      const merged = new Map(current.map((project) => [project.id, project]));
+      additions.forEach((project) => merged.set(project.id, project));
+      return [...merged.values()];
+    });
+  }, []);
+  const projectById = useMemo(
+    () => new Map(projectReferences.map((project) => [project.id, project])),
+    [projectReferences],
+  );
   const dataContextRequestId = useRef(0);
   const recordsRequestId = useRef(0);
+  const tableCatalogRequestId = useRef(0);
   const sidebarPortal = useServiceSidebarPortal();
+  const searchObjectTypeId = search.get('type');
   const selectedIdentifier = canonicalTableIdentifier(
-    routeObjectTypeId ?? search.get('type') ?? objectTypes[0]?.publicId ?? objectTypes[0]?.id ?? '',
+    routeObjectTypeId ?? searchObjectTypeId ?? objectTypes[0]?.publicId ?? objectTypes[0]?.id ?? '',
   );
   const requestedViewId = search.get('view') ?? 'all';
   const selected = objectTypes.find(
@@ -565,11 +709,33 @@ export function DataPage({
       (objectType.publicId ?? objectType.id) === selectedIdentifier ||
       objectType.id === selectedIdentifier,
   );
+  const canCreateRecords =
+    allowed(user, 'record.create') && (selected?.recordPermissions?.canCreate ?? true);
+  const canUpdateRecords =
+    allowed(user, 'record.update') && (selected?.recordPermissions?.canUpdate ?? true);
+  const canArchiveRecords =
+    allowed(user, 'record.archive') && (selected?.recordPermissions?.canArchive ?? true);
   const selectedId = selected?.id ?? '';
   const selectedPublicId = selected?.publicId ?? selectedIdentifier;
   const selectedView = views.find(
     (view) => view.id === requestedViewId || view.publicId === requestedViewId,
   );
+  const canManageViews = allowed(user, 'view.manage');
+  const canAdministerViews = allowed(user, 'schema.manage');
+  const viewWritable = (view: RecordView) => {
+    const permission = recordViewPermission(view);
+    return (
+      canManageViews &&
+      permission !== 'locked' &&
+      (permission === 'collaborative' || view.ownerId === user.id || canAdministerViews)
+    );
+  };
+  const viewArchivable = (view: RecordView) =>
+    canManageViews &&
+    (recordViewPermission(view) === 'collaborative' ||
+      view.ownerId === user.id ||
+      canAdministerViews);
+  const selectedViewWritable = Boolean(selectedView && viewWritable(selectedView));
   const selectedViewId = selectedView?.publicId ?? requestedViewId;
   const layoutPreferenceKey = `engrove:table-layout:${workspaceId}:${projectId}:${selectedId}`;
   const activeViewType = selectedView?.viewType ?? 'grid';
@@ -681,24 +847,66 @@ export function DataPage({
       (field) =>
         field.name.toLowerCase().includes(query) ||
         field.key.toLowerCase().includes(query) ||
-        fieldMeta(field).label.toLowerCase().includes(query),
+        t(schemaFieldTypeTranslationKeys[schemaTypeForField(field)]).toLowerCase().includes(query),
     );
-  }, [schemaFields, schemaSearch]);
+  }, [schemaFields, schemaSearch, t]);
   const selectedSchemaField = fields.find((field) => field.id === schemaSelection);
   const visibleFields = useMemo(
     () => orderedFields.filter((field) => !hiddenFieldIds.has(field.id)),
     [hiddenFieldIds, orderedFields],
   );
+  const groupableFields = useMemo(() => fields.filter(fieldCanGroup), [fields]);
+  const activeGroupings = useMemo(
+    () =>
+      groupings.flatMap((grouping) =>
+        grouping.enabled && groupableFields.some((field) => field.id === grouping.fieldId)
+          ? [grouping]
+          : [],
+      ),
+    [groupableFields, groupings],
+  );
+  const groupingFields = useMemo(
+    () =>
+      activeGroupings.flatMap((grouping) => {
+        const field = fields.find((candidate) => candidate.id === grouping.fieldId);
+        return field ? [field] : [];
+      }),
+    [activeGroupings, fields],
+  );
+  const groupResultByPath = useMemo(
+    () =>
+      new Map(
+        (records.groupHierarchy ?? []).map((group) => [
+          groupPathKey(group.path.map((part) => part.value)),
+          group,
+        ]),
+      ),
+    [records.groupHierarchy],
+  );
+  const requestedSummaries = useMemo(
+    () =>
+      visibleFields.flatMap((field) =>
+        fieldSummaries[field.id]
+          ? [{ fieldId: field.id, operation: fieldSummaries[field.id]! }]
+          : [],
+      ),
+    [fieldSummaries, visibleFields],
+  );
   const gridColumns = useMemo<GridColumn[]>(
     () => [
-      { key: 'displayName', label: t('data.name'), kind: 'displayName', editable: true },
+      {
+        key: 'displayName',
+        label: t('data.name'),
+        kind: 'displayName',
+        editable: archiveState === 'active',
+      },
       ...(workspaceMode
         ? ([
             {
               key: 'contextProject',
               label: t('data.project'),
               kind: 'contextProject',
-              editable: true,
+              editable: archiveState === 'active',
             },
           ] satisfies GridColumn[])
         : []),
@@ -706,11 +914,14 @@ export function DataPage({
         key: `field:${field.id}`,
         label: field.name,
         kind: 'field',
-        editable: field.fieldType !== 'measurement' && !calculatedFieldTypeSet.has(field.fieldType),
+        editable:
+          archiveState === 'active' &&
+          field.fieldType !== 'measurement' &&
+          !calculatedFieldTypeSet.has(field.fieldType),
         field,
       })),
     ],
-    [t, visibleFields, workspaceMode],
+    [archiveState, t, visibleFields, workspaceMode],
   );
   const gridSelectionBounds = useMemo(
     () => selectionBounds(gridSelection, records.items, gridColumns),
@@ -721,7 +932,8 @@ export function DataPage({
       (gridSelectionBounds.columnEnd - gridSelectionBounds.columnStart + 1)
     : 0;
   const virtualRowHeight = rowDensity === 'comfortable' ? 45 : 33;
-  const virtualizeGrid = activeViewType === 'grid' && records.items.length > 80;
+  const virtualizeGrid =
+    activeViewType === 'grid' && activeGroupings.length === 0 && records.items.length > 80;
   const virtualStart = virtualizeGrid
     ? Math.max(0, Math.floor(gridScrollTop / virtualRowHeight) - 10)
     : 0;
@@ -729,6 +941,11 @@ export function DataPage({
     ? Math.min(records.items.length, virtualStart + Math.ceil(720 / virtualRowHeight) + 20)
     : records.items.length;
   const virtualRecords = records.items.slice(virtualStart, virtualEnd);
+  const groupingStateKey = groupings
+    .map((grouping) => `${grouping.fieldId}:${grouping.direction}:${grouping.enabled}`)
+    .join('|');
+
+  useEffect(() => setCollapsedGroupPaths(new Set()), [groupingStateKey, selectedId]);
   const displayNameWidth = systemFieldWidths.displayName ?? DEFAULT_SYSTEM_FIELD_WIDTHS.displayName;
   const contextProjectWidth =
     systemFieldWidths.contextProject ?? DEFAULT_SYSTEM_FIELD_WIDTHS.contextProject;
@@ -806,16 +1023,23 @@ export function DataPage({
       sorts: configuredSorts(sortField, sortDirection),
       rowDensity,
       pageSize,
+      ...(activeViewType === 'grid' && groupings.length ? { groupings } : {}),
+      ...(activeViewType === 'grid' && requestedSummaries.length
+        ? { summaries: requestedSummaries }
+        : {}),
       ...(Object.keys(viewOptions).length ? { viewOptions } : {}),
     };
   }, [
+    activeViewType,
     fieldWidths,
     filterField,
     filterOperator,
     filterValue,
+    groupings,
     orderedFields,
     pageSize,
     rowDensity,
+    requestedSummaries,
     contextProjectFilter,
     selectedView?.config.viewOptions,
     sortDirection,
@@ -883,6 +1107,8 @@ export function DataPage({
         setSortDirection('asc');
         setRowDensity('compact');
         setPageSize(25);
+        setGroupings(preference?.groupings ?? []);
+        setFieldSummaries(preference?.fieldSummaries ?? {});
         setContextProjectFilter('all');
         setPage(1);
         return;
@@ -915,6 +1141,25 @@ export function DataPage({
       setSortDirection(sort?.direction ?? 'asc');
       setRowDensity(config.rowDensity);
       setPageSize(config.pageSize);
+      const configuredGroupingIds = new Set<string>();
+      setGroupings(
+        (config.groupings ?? []).flatMap((grouping) => {
+          const field = fields.find((candidate) => candidate.id === grouping.fieldId);
+          if (!field || configuredGroupingIds.has(field.id) || !fieldCanGroup(field)) return [];
+          configuredGroupingIds.add(field.id);
+          return [grouping];
+        }),
+      );
+      setFieldSummaries(
+        Object.fromEntries(
+          (config.summaries ?? []).flatMap((summary) => {
+            const field = fields.find((candidate) => candidate.id === summary.fieldId);
+            return field && summaryOperationsForField(field).includes(summary.operation)
+              ? [[summary.fieldId, summary.operation]]
+              : [];
+          }),
+        ),
+      );
       setContextProjectFilter(
         config.viewOptions && 'contextProjectId' in config.viewOptions
           ? (config.viewOptions.contextProjectId ?? 'none')
@@ -940,6 +1185,8 @@ export function DataPage({
           hiddenFieldIds: [...hiddenFieldIds],
           fieldWidths,
           systemFieldWidths,
+          groupings,
+          fieldSummaries,
         } satisfies TableLayoutPreference),
       );
     } catch {
@@ -948,6 +1195,8 @@ export function DataPage({
   }, [
     fieldOrderIds,
     fieldWidths,
+    fieldSummaries,
+    groupings,
     hiddenFieldIds,
     layoutPreferenceKey,
     selectedId,
@@ -955,29 +1204,95 @@ export function DataPage({
     systemFieldWidths,
   ]);
 
-  const loadTypes = useCallback(async () => {
-    setTypesLoading(true);
-    try {
-      const result = await api<{ items: ObjectType[] }>(`${base}/object-types`);
-      setObjectTypes(result.items);
-      if (!routeObjectTypeId && !search.get('type') && result.items[0])
-        selectDataLocation(result.items[0].publicId ?? result.items[0].id, 'all', true);
-      setMessage('');
-    } catch (cause) {
-      setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : t('data.objectTypesLoadFailed'));
-    } finally {
-      setTypesLoading(false);
-    }
-  }, [base, routeObjectTypeId, search, selectDataLocation]);
+  const loadTypes = useCallback(
+    async (query = tableQuery, offset = 0, append = false) => {
+      const requestId = ++tableCatalogRequestId.current;
+      if (append) setTablesLoadingMore(true);
+      else setTypesLoading(true);
+      try {
+        const parameters = new URLSearchParams({
+          limit: String(TABLE_CATALOG_PAGE_SIZE),
+          offset: String(offset),
+        });
+        if (query.trim()) parameters.set('query', query.trim());
+        const catalogPath =
+          !query.trim() && offset === 0
+            ? `${base}/object-types`
+            : `${base}/object-types?${parameters.toString()}`;
+        const result = await api<{
+          items: ObjectType[];
+          pageInfo?: TableCatalogPageInfo;
+        }>(catalogPath);
+        const nextPage = result.pageInfo ?? {
+          limit: TABLE_CATALOG_PAGE_SIZE,
+          offset,
+          total: result.items.length,
+          hasNext: false,
+        };
+        if (requestId !== tableCatalogRequestId.current) return;
+        setVisibleObjectTypes((current) =>
+          append ? mergeObjectTypes(current, result.items) : result.items,
+        );
+        setObjectTypes((current) => mergeObjectTypes(current, result.items));
+        setTablePage(nextPage);
+        setMessage('');
+      } catch (cause) {
+        if (requestId !== tableCatalogRequestId.current) return;
+        setMessageTone('error');
+        setMessage(cause instanceof Error ? cause.message : t('data.objectTypesLoadFailed'));
+      } finally {
+        if (requestId === tableCatalogRequestId.current) {
+          if (append) setTablesLoadingMore(false);
+          else setTypesLoading(false);
+        }
+      }
+    },
+    [base, tableQuery, t],
+  );
 
   useEffect(() => void loadTypes(), [loadTypes]);
+
+  useEffect(() => {
+    if (routeObjectTypeId || searchObjectTypeId || tableQuery.trim() || !visibleObjectTypes[0])
+      return;
+    selectDataLocation(visibleObjectTypes[0].publicId ?? visibleObjectTypes[0].id, 'all', true);
+  }, [routeObjectTypeId, searchObjectTypeId, selectDataLocation, tableQuery, visibleObjectTypes]);
+
+  useEffect(() => {
+    const requestedIdentifier = routeObjectTypeId ?? searchObjectTypeId;
+    if (
+      !requestedIdentifier ||
+      objectTypes.some(
+        (item) => item.id === requestedIdentifier || item.publicId === requestedIdentifier,
+      )
+    )
+      return;
+    let active = true;
+    void api<ObjectType>(`${base}/object-types/${requestedIdentifier}`)
+      .then((exact) => {
+        if (active) setObjectTypes((current) => mergeObjectTypes(current, [exact]));
+      })
+      .catch((cause: unknown) => {
+        if (!active) return;
+        setMessageTone('error');
+        setMessage(cause instanceof Error ? cause.message : t('data.objectTypesLoadFailed'));
+      });
+    return () => {
+      active = false;
+    };
+  }, [base, objectTypes, routeObjectTypeId, searchObjectTypeId, t]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setTableQuery(tableSearch), 250);
+    return () => window.clearTimeout(timer);
+  }, [tableSearch]);
 
   const loadDataContext = useCallback(async () => {
     const requestId = ++dataContextRequestId.current;
     if (!selectedId) {
       setFields([]);
       setViews([]);
+      setViewPage({ limit: VIEW_PAGE_SIZE, offset: 0, total: 0, hasNext: false });
       setContextObjectTypeId('');
       setViewsLoading(false);
       return;
@@ -986,11 +1301,21 @@ export function DataPage({
     try {
       const [fieldResult, viewResult] = await Promise.all([
         api<{ items: FieldDefinition[] }>(`${base}/object-types/${selectedId}/fields`),
-        api<{ items: RecordView[] }>(`${base}/object-types/${selectedId}/views`),
+        api<{ items: RecordView[]; pageInfo?: TableCatalogPageInfo }>(
+          `${base}/object-types/${selectedId}/views?limit=${VIEW_PAGE_SIZE}&offset=0`,
+        ),
       ]);
       if (requestId === dataContextRequestId.current) {
         setFields(fieldResult.items);
         setViews(viewResult.items);
+        setViewPage(
+          viewResult.pageInfo ?? {
+            limit: VIEW_PAGE_SIZE,
+            offset: 0,
+            total: viewResult.items.length,
+            hasNext: false,
+          },
+        );
         setContextObjectTypeId(selectedId);
       }
     } catch (cause) {
@@ -1006,6 +1331,70 @@ export function DataPage({
   useEffect(() => void loadDataContext(), [loadDataContext]);
 
   useEffect(() => {
+    if (
+      requestedViewId === 'all' ||
+      !selectedId ||
+      contextObjectTypeId !== selectedId ||
+      viewsLoading ||
+      views.some((view) => view.id === requestedViewId || view.publicId === requestedViewId)
+    )
+      return;
+    let active = true;
+    void api<RecordView>(`${base}/object-types/${selectedId}/views/${requestedViewId}`)
+      .then((exact) => {
+        if (!active) return;
+        setViews((current) =>
+          current.some((view) => view.id === exact.id)
+            ? current
+            : [...current, exact].sort((left, right) => left.name.localeCompare(right.name)),
+        );
+      })
+      .catch((cause: unknown) => {
+        if (!active) return;
+        if (cause instanceof ApiError && cause.code === 'RECORD_VIEW_NOT_FOUND') {
+          selectDataLocation(selectedPublicId, 'all', true);
+          return;
+        }
+        setMessageTone('error');
+        setMessage(cause instanceof Error ? cause.message : t('data.tableContextLoadFailed'));
+      });
+    return () => {
+      active = false;
+    };
+  }, [
+    base,
+    contextObjectTypeId,
+    requestedViewId,
+    selectDataLocation,
+    selectedId,
+    selectedPublicId,
+    t,
+    views,
+    viewsLoading,
+  ]);
+
+  async function loadMoreViews() {
+    if (!selectedId || !viewPage.hasNext || viewsLoadingMore) return;
+    setViewsLoadingMore(true);
+    try {
+      const result = await api<{ items: RecordView[]; pageInfo: TableCatalogPageInfo }>(
+        `${base}/object-types/${selectedId}/views?limit=${VIEW_PAGE_SIZE}&offset=${viewPage.offset + viewPage.limit}`,
+      );
+      setViews((current) => {
+        const merged = new Map(current.map((view) => [view.id, view]));
+        result.items.forEach((view) => merged.set(view.id, view));
+        return [...merged.values()].sort((left, right) => left.name.localeCompare(right.name));
+      });
+      setViewPage(result.pageInfo);
+    } catch (cause) {
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : t('data.tableContextLoadFailed'));
+    } finally {
+      setViewsLoadingMore(false);
+    }
+  }
+
+  useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedFilterValue(filterValue), 250);
     return () => window.clearTimeout(timer);
   }, [filterValue]);
@@ -1018,6 +1407,7 @@ export function DataPage({
   useEffect(() => {
     setSelectedRows(new Set());
     setSelectedRecord(undefined);
+    setArchiveState('active');
     setActiveTool(null);
     setShowCreateView(false);
     setShowTableSettings(false);
@@ -1055,7 +1445,7 @@ export function DataPage({
       applyViewConfig(view.config);
       return;
     }
-    selectDataLocation(selectedPublicId, 'all', true);
+    return;
   }, [
     applyViewConfig,
     contextObjectTypeId,
@@ -1067,6 +1457,12 @@ export function DataPage({
     views,
     viewsLoading,
   ]);
+
+  useEffect(() => setQuickRecordTab('fields'), [selectedRecord?.id]);
+
+  useEffect(() => {
+    if (!selectedRows.size) setShowBulkEdit(false);
+  }, [selectedRows]);
 
   useEffect(() => {
     setSelectedRows(new Set());
@@ -1131,6 +1527,7 @@ export function DataPage({
     return {
       filters,
       sorts,
+      archiveState,
       ...(debouncedSearchValue ? { search: debouncedSearchValue } : {}),
       ...(workspaceMode && contextProjectFilter !== 'all'
         ? {
@@ -1138,11 +1535,17 @@ export function DataPage({
           }
         : {}),
       ...(activeViewType === 'kanban' && kanbanField ? { groupByFieldId: kanbanField.id } : {}),
+      ...(activeViewType === 'grid' && activeGroupings.length
+        ? { groupings: activeGroupings }
+        : {}),
+      ...(activeViewType === 'grid' ? { summaries: requestedSummaries } : {}),
       page,
       pageSize: ['kanban', 'calendar'].includes(activeViewType) ? 100 : pageSize,
     };
   }, [
     activeViewType,
+    activeGroupings,
+    archiveState,
     calendarField,
     calendarMonth,
     contextProjectFilter,
@@ -1153,6 +1556,7 @@ export function DataPage({
     kanbanField,
     page,
     pageSize,
+    requestedSummaries,
     sortDirection,
     sortField,
     workspaceMode,
@@ -1172,6 +1576,7 @@ export function DataPage({
       );
       if (requestId === recordsRequestId.current) {
         setRecords(recordResult);
+        setRecordsObjectTypeId(selectedId);
         setMessage('');
       }
     } catch (cause) {
@@ -1186,6 +1591,52 @@ export function DataPage({
 
   useEffect(() => void loadRecords(), [loadRecords]);
 
+  useEffect(() => {
+    projectReferencesRequestId.current += 1;
+    setProjectReferences(workspaceData?.projects ?? []);
+  }, [workspaceData?.projects, workspaceData?.workspaceId]);
+
+  useEffect(() => {
+    if (!workspaceMode || !workspaceData) return;
+    const referencedIds = new Set(
+      records.items.flatMap((record) => (record.contextProjectId ? [record.contextProjectId] : [])),
+    );
+    if (contextProjectFilter !== 'all' && contextProjectFilter !== 'none') {
+      referencedIds.add(contextProjectFilter);
+    }
+    const missingIds = [...referencedIds].filter((id) => !projectById.has(id));
+    if (!missingIds.length) return;
+    const requestId = ++projectReferencesRequestId.current;
+    void Promise.all(
+      Array.from({ length: Math.ceil(missingIds.length / 500) }, (_, index) =>
+        api<{ items: ProjectReference[] }>(
+          `/workspaces/${workspaceData.workspaceId}/project-references/query`,
+          {
+            method: 'POST',
+            body: JSON.stringify({ ids: missingIds.slice(index * 500, (index + 1) * 500) }),
+          },
+        ),
+      ),
+    )
+      .then((responses) => {
+        if (requestId !== projectReferencesRequestId.current) return;
+        mergeProjectReferences(responses.flatMap((response) => response.items));
+      })
+      .catch(() => {
+        if (requestId !== projectReferencesRequestId.current) return;
+        setMessageTone('error');
+        setMessage(t('data.projectReferencesLoadFailed'));
+      });
+  }, [
+    contextProjectFilter,
+    mergeProjectReferences,
+    projectById,
+    records.items,
+    t,
+    workspaceData,
+    workspaceMode,
+  ]);
+
   async function installTemplate() {
     try {
       const result = await api<{ changed: boolean }>(
@@ -1195,7 +1646,7 @@ export function DataPage({
           body: '{}',
         },
       );
-      await loadTypes();
+      await loadTypes('', 0, false);
       setMessageTone('success');
       setMessage(result.changed ? t('data.templateInstalled') : t('data.templateCurrent'));
     } catch (cause) {
@@ -1223,7 +1674,9 @@ export function DataPage({
       });
       form.reset();
       setShowCreateTable(false);
-      await loadTypes();
+      setTableSearch('');
+      setTableQuery('');
+      await loadTypes('', 0, false);
       selectDataLocation(created.publicId ?? created.id);
     } catch (cause) {
       setMessageTone('error');
@@ -1358,47 +1811,71 @@ export function DataPage({
     }
   }
 
-  async function importCsv(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const file = (new FormData(event.currentTarget).get('csv') as File | null) ?? undefined;
-    if (!file?.size) return;
-    try {
-      const result = await api<CsvResult>(`${base}/object-types/${selectedId}/records/import-csv`, {
-        method: 'POST',
-        headers: { 'idempotency-key': crypto.randomUUID() },
-        body: JSON.stringify({ csv: await file.text() }),
-      });
-      setCsvResult(result);
-      await loadRecords();
-    } catch (cause) {
-      setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : t('data.csvImportFailed'));
-    }
-  }
-
   async function exportCsv() {
     try {
-      const response = await fetch(
-        `${apiBaseForDownload()}${base}/object-types/${selectedId}/export.csv`,
-        {
-          credentials: 'include',
-        },
-      );
-      if (!response.ok) {
-        const body = (await response.json()) as { error?: { message?: string } };
-        throw new Error(body.error?.message ?? 'Export failed.');
-      }
-      const url = URL.createObjectURL(await response.blob());
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${selected?.key ?? 'records'}.csv`;
-      link.click();
-      URL.revokeObjectURL(url);
+      const job = await api<RecordExportJob>(`${base}/object-types/${selectedId}/records/exports`, {
+        method: 'POST',
+        headers: { 'idempotency-key': crypto.randomUUID() },
+        body: JSON.stringify({
+          fieldKeys: visibleFields.map((field) => field.key),
+          filters: queryBody.filters,
+          sorts: queryBody.sorts,
+          ...(queryBody.search ? { search: queryBody.search } : {}),
+          ...(queryBody.contextProjectId !== undefined
+            ? { contextProjectId: queryBody.contextProjectId }
+            : {}),
+          archiveState: queryBody.archiveState,
+        }),
+      });
+      setRecordExport(job);
+      setMessageTone('info');
+      setMessage(t('data.csvExportQueued'));
     } catch (cause) {
       setMessageTone('error');
       setMessage(cause instanceof Error ? cause.message : t('data.csvExportFailed'));
     }
   }
+
+  useEffect(() => {
+    if (!recordExport || !['queued', 'running'].includes(recordExport.status)) return;
+    let cancelled = false;
+    const timeout = window.setTimeout(() => {
+      void api<RecordExportJob>(
+        `${base}/object-types/${recordExport.objectTypeId}/records/exports/${recordExport.id}`,
+      )
+        .then(async (job) => {
+          if (cancelled) return;
+          if (job.status === 'succeeded') {
+            const download = await api<{ url: string; expiresIn: 300; fileName: string }>(
+              `${base}/object-types/${job.objectTypeId}/records/exports/${job.id}/download`,
+            );
+            if (cancelled) return;
+            const link = document.createElement('a');
+            link.href = download.url;
+            link.download = download.fileName;
+            link.click();
+            setRecordExport(job);
+            setMessageTone('success');
+            setMessage(t('data.csvExportReady', { count: job.rowCount ?? 0 }));
+          } else if (job.status === 'failed') {
+            setRecordExport(job);
+            setMessageTone('error');
+            setMessage(t('data.csvExportFailed'));
+          } else {
+            setRecordExport(job);
+          }
+        })
+        .catch((cause: unknown) => {
+          if (cancelled) return;
+          setMessageTone('error');
+          setMessage(cause instanceof Error ? cause.message : t('data.csvExportFailed'));
+        });
+    }, 1_000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [base, recordExport, t]);
 
   function beginGridCellSelection(
     event: ReactPointerEvent<HTMLTableCellElement>,
@@ -1441,10 +1918,7 @@ export function DataPage({
   function gridClipboardValue(record: DynamicRecord, column: GridColumn): string {
     if (column.kind === 'displayName') return record.displayName;
     if (column.kind === 'contextProject') {
-      return (
-        workspaceData?.projects.find((project) => project.id === record.contextProjectId)?.name ??
-        ''
-      );
+      return projectById.get(record.contextProjectId ?? '')?.name ?? '';
     }
     const value = recordGridValue(record, column.field);
     if (column.field.fieldType === 'measurement') {
@@ -1510,6 +1984,33 @@ export function DataPage({
     return gridValue(field, { ...draft, primary });
   }
 
+  async function resolveProjectReference(value: string): Promise<ProjectReference> {
+    const normalized = value.trim().toLocaleLowerCase();
+    const known = projectReferences.find(
+      (project) =>
+        project.id.toLocaleLowerCase() === normalized ||
+        project.publicId?.toLocaleLowerCase() === normalized ||
+        project.name.toLocaleLowerCase() === normalized ||
+        project.key.toLocaleLowerCase() === normalized,
+    );
+    if (known) return known;
+    if (!workspaceData) throw new Error(`Project “${value.trim()}” was not found.`);
+    const parameters = new URLSearchParams({ limit: '20', query: value.trim() });
+    const response = await api<{ items: ProjectReference[] }>(
+      `/workspaces/${workspaceData.workspaceId}/project-options?${parameters.toString()}`,
+    );
+    const resolved = response.items.find(
+      (project) =>
+        project.id.toLocaleLowerCase() === normalized ||
+        project.publicId?.toLocaleLowerCase() === normalized ||
+        project.name.toLocaleLowerCase() === normalized ||
+        project.key.toLocaleLowerCase() === normalized,
+    );
+    if (!resolved) throw new Error(`Project “${value.trim()}” was not found.`);
+    mergeProjectReferences(resolved);
+    return resolved;
+  }
+
   function handleGridCopy(event: ReactClipboardEvent<HTMLTableElement>) {
     if (!gridSelectionBounds) return;
     const singleRecord = records.items[gridSelectionBounds.rowStart];
@@ -1537,7 +2038,7 @@ export function DataPage({
   }
 
   async function pasteGridText(text: string) {
-    if (!gridSelection || clipboardBusy || !allowed(user, 'record.update')) return;
+    if (archiveState !== 'active' || !gridSelection || clipboardBusy || !canUpdateRecords) return;
     const matrix = parseClipboardGrid(text);
     if (!matrix.length || !matrix.some((row) => row.length)) return;
     const anchorRow = records.items.findIndex((record) => record.id === gridSelection.anchor.rowId);
@@ -1599,14 +2100,7 @@ export function DataPage({
             ? await updateProjectCellRecord(
                 record,
                 target.value.trim()
-                  ? (workspaceData?.projects.find(
-                      (project) =>
-                        project.id === target.value.trim() ||
-                        project.name.toLowerCase() === target.value.trim().toLowerCase(),
-                    )?.id ??
-                      (() => {
-                        throw new Error(`Project “${target.value.trim()}” was not found.`);
-                      })())
+                  ? (await resolveProjectReference(target.value.trim())).id
                   : null,
               )
             : await updateGridCellRecord(
@@ -1643,7 +2137,7 @@ export function DataPage({
   }
 
   function handleGridPaste(event: ReactClipboardEvent<HTMLTableElement>) {
-    if (!gridSelection || !allowed(user, 'record.update')) return;
+    if (archiveState !== 'active' || !gridSelection || !canUpdateRecords) return;
     event.preventDefault();
     void pasteGridText(event.clipboardData.getData('text/plain'));
   }
@@ -1819,12 +2313,14 @@ export function DataPage({
     setMessage(t('data.recordCreated', { name: created.displayName }));
   }
 
-  function confirmDiscardViewChanges() {
-    return !viewDirty || window.confirm(t('data.discardViewConfirm'));
-  }
-
-  function chooseObjectType(objectTypeId: string) {
-    if (objectTypeId === selectedId || !confirmDiscardViewChanges()) return;
+  function chooseObjectType(objectTypeId: string, force = false) {
+    if (objectTypeId === selectedId) return;
+    if (!force && viewDirty) {
+      void confirmAction(t('data.discardViewConfirm')).then((confirmed) => {
+        if (confirmed) chooseObjectType(objectTypeId, true);
+      });
+      return;
+    }
     const routeObject = objectTypes.find((objectType) => objectType.id === objectTypeId);
     const routeId = routeObject?.publicId ?? routeObject?.id;
     if (!routeId) return;
@@ -1837,7 +2333,13 @@ export function DataPage({
   }
 
   function chooseView(viewId: string, force = false) {
-    if (viewId === selectedViewId || (!force && !confirmDiscardViewChanges())) return;
+    if (viewId === selectedViewId) return;
+    if (!force && viewDirty) {
+      void confirmAction(t('data.discardViewConfirm')).then((confirmed) => {
+        if (confirmed) chooseView(viewId, true);
+      });
+      return;
+    }
     setSelectedRows(new Set());
     setSelectedRecord(undefined);
     const view = views.find(
@@ -1933,10 +2435,14 @@ export function DataPage({
 
   async function createView(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!canManageViews) return;
     const form = event.currentTarget;
     const data = new FormData(form);
     const name = String(data.get('name') ?? '').trim();
     const viewType = String(data.get('viewType') ?? 'grid') as RecordViewType;
+    const permissionType = String(
+      data.get('permissionType') ?? 'collaborative',
+    ) as RecordViewPermissionType;
     if (!name) return;
     const groupFieldId = String(data.get('groupFieldId') ?? '');
     const dateFieldId = String(data.get('dateFieldId') ?? '');
@@ -1950,19 +2456,28 @@ export function DataPage({
       setMessage(t('data.chooseCalendarDate'));
       return;
     }
-    const config: RecordViewConfig = {
-      ...currentViewConfig,
-      ...(viewType === 'kanban'
-        ? { viewOptions: { ...currentViewConfig.viewOptions, groupFieldId } }
-        : viewType === 'calendar'
-          ? { viewOptions: { ...currentViewConfig.viewOptions, dateFieldId } }
-          : {}),
-    };
+    const config: RecordViewConfig = { ...currentViewConfig };
+    if (viewType !== 'grid') {
+      delete config.groupings;
+      delete config.summaries;
+    }
+    if (viewType === 'kanban')
+      config.viewOptions = { ...currentViewConfig.viewOptions, groupFieldId };
+    else if (viewType === 'calendar')
+      config.viewOptions = { ...currentViewConfig.viewOptions, dateFieldId };
     setViewBusy(true);
     try {
       const created = await api<RecordView>(`${base}/object-types/${selectedId}/views`, {
         method: 'POST',
-        body: JSON.stringify({ name, viewType, config }),
+        body: JSON.stringify({
+          name,
+          viewType,
+          permissionType,
+          ...(permissionType === 'locked'
+            ? { lockReason: String(data.get('lockReason') ?? '').trim() }
+            : {}),
+          config,
+        }),
       });
       const createdViewId = created.publicId ?? created.id;
       pendingViewId.current = createdViewId;
@@ -1970,8 +2485,10 @@ export function DataPage({
       setViews((current) =>
         [...current, created].sort((left, right) => left.name.localeCompare(right.name)),
       );
+      setViewPage((current) => ({ ...current, total: current.total + 1 }));
       setShowCreateView(false);
       setNewViewType('grid');
+      setNewViewPermission('collaborative');
       form.reset();
       selectDataLocation(selectedPublicId, createdViewId);
       setMessageTone('success');
@@ -1985,7 +2502,7 @@ export function DataPage({
   }
 
   async function saveView() {
-    if (!selectedView) return;
+    if (!selectedView || !selectedViewWritable) return;
     setViewBusy(true);
     try {
       const updated = await api<RecordView>(
@@ -2013,7 +2530,10 @@ export function DataPage({
   }
 
   async function renameView(view: RecordView) {
-    const name = window.prompt(t('data.renameViewPrompt'), view.name)?.trim();
+    if (!viewWritable(view)) return;
+    const name = (
+      await promptText(t('data.renameViewPrompt'), view.name, { label: t('data.viewName') })
+    )?.trim();
     if (!name || name === view.name) return;
     setViewBusy(true);
     try {
@@ -2046,6 +2566,7 @@ export function DataPage({
   }
 
   async function duplicateView(view: RecordView) {
+    if (!canManageViews) return;
     const names = new Set(views.map((candidate) => candidate.name.toLocaleLowerCase()));
     let name = `${view.name} copy`;
     let copy = 2;
@@ -2054,11 +2575,17 @@ export function DataPage({
     try {
       const created = await api<RecordView>(`${base}/object-types/${selectedId}/views`, {
         method: 'POST',
-        body: JSON.stringify({ name, viewType: view.viewType, config: view.config }),
+        body: JSON.stringify({
+          name,
+          viewType: view.viewType,
+          permissionType: 'personal',
+          config: view.config,
+        }),
       });
       setViews((current) =>
         [...current, created].sort((left, right) => left.name.localeCompare(right.name)),
       );
+      setViewPage((current) => ({ ...current, total: current.total + 1 }));
       chooseView(created.publicId ?? created.id);
       setMessageTone('success');
       setMessage(t('data.viewDuplicated', { name: created.name }));
@@ -2070,9 +2597,62 @@ export function DataPage({
     }
   }
 
+  async function changeViewPermission(view: RecordView, permissionType: RecordViewPermissionType) {
+    if (
+      selectedView?.id === view.id &&
+      viewDirty &&
+      !(await confirmAction(t('data.discardViewForPermissionConfirm')))
+    )
+      return;
+    let lockReason = '';
+    if (permissionType === 'locked') {
+      const answer = await promptText(t('data.lockViewReasonPrompt'), view.lockReason ?? '', {
+        label: t('data.lockReason'),
+      });
+      if (answer === null) return;
+      lockReason = answer.trim();
+    }
+    setViewBusy(true);
+    try {
+      const updated = await api<RecordView>(
+        `${base}/object-types/${selectedId}/views/${view.publicId ?? view.id}/permission`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
+            permissionType,
+            ...(permissionType === 'locked' ? { lockReason } : {}),
+            rowVersion: view.rowVersion,
+          }),
+        },
+      );
+      setViews((current) =>
+        current.map((candidate) => (candidate.id === updated.id ? updated : candidate)),
+      );
+      if (selectedView?.id === view.id) applyViewConfig(updated.config);
+      setMessageTone('success');
+      setMessage(
+        t('data.viewPermissionChanged', {
+          name: updated.name,
+          permission: t(`data.viewPermission.${recordViewPermission(updated)}`),
+        }),
+      );
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.code === 'VERSION_CONFLICT') await loadDataContext();
+      setMessageTone('error');
+      setMessage(cause instanceof Error ? cause.message : t('data.viewPermissionFailed'));
+    } finally {
+      setViewBusy(false);
+    }
+  }
+
   async function archiveView(target = selectedView) {
-    if (!target) return;
-    if (!window.confirm(t('data.archiveViewConfirm', { name: target.name }))) return;
+    if (!target || !viewArchivable(target)) return;
+    if (
+      !(await confirmAction(t('data.archiveViewConfirm', { name: target.name }), {
+        tone: 'danger',
+      }))
+    )
+      return;
     setViewBusy(true);
     try {
       await api(
@@ -2086,6 +2666,11 @@ export function DataPage({
         },
       );
       setViews((current) => current.filter((view) => view.id !== target.id));
+      setViewPage((current) => ({
+        ...current,
+        total: Math.max(0, current.total - 1),
+        hasNext: views.length - 1 < current.total - 1,
+      }));
       if (selectedView?.id === target.id) chooseView('all', true);
       setMessageTone('success');
       setMessage(t('data.viewArchived', { name: target.name }));
@@ -2098,28 +2683,110 @@ export function DataPage({
     }
   }
 
-  async function archiveSelectedRows() {
+  async function changeSelectedRowsLifecycle(archived: boolean) {
     if (!selectedRows.size) return;
-    if (!window.confirm(t('data.archiveSelectedConfirm', { count: selectedRows.size }))) return;
+    if (
+      !(await confirmAction(
+        t(archived ? 'data.archiveSelectedConfirm' : 'data.restoreSelectedConfirm', {
+          count: selectedRows.size,
+        }),
+        archived ? { tone: 'danger' } : undefined,
+      ))
+    )
+      return;
     setBulkBusy(true);
     try {
-      await Promise.all(
-        [...selectedRows].map((recordId) => {
-          const record = records.items.find((candidate) => candidate.id === recordId);
-          if (!record) return Promise.resolve();
-          return api(`${base}/object-types/${record.objectTypeId}/records/${record.id}/archive`, {
-            method: 'POST',
-            body: JSON.stringify({ reason: 'Archived from grid bulk action' }),
-          });
-        }),
+      await api(
+        `${base}/object-types/${selectedId}/records/bulk/${archived ? 'archive' : 'restore'}`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            ids: [...selectedRows],
+            ...(archived ? { reason: 'Archived from grid bulk action' } : {}),
+          }),
+        },
       );
       setSelectedRows(new Set());
       setMessageTone('success');
-      setMessage(t('data.selectedArchived'));
+      setMessage(t(archived ? 'data.selectedArchived' : 'webhooks.record.restored'));
       await loadRecords();
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : t('data.selectedArchiveFailed'));
+      setMessage(
+        cause instanceof Error
+          ? cause.message
+          : t(archived ? 'data.selectedArchiveFailed' : 'data.lifecycleFailed'),
+      );
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  function toggleRecordSelection(recordId: string, selected: boolean) {
+    const next = new Set(selectedRows);
+    if (!selected) next.delete(recordId);
+    else if (!next.has(recordId) && next.size >= MAX_BULK_RECORDS) {
+      setMessageTone('error');
+      setMessage(t('data.bulkSelectionLimit', { count: MAX_BULK_RECORDS }));
+      return;
+    } else next.add(recordId);
+    setSelectedRows(next);
+    if (!next.size) setShowBulkEdit(false);
+  }
+
+  function toggleVisibleRecordSelection(selected: boolean) {
+    if (selected && records.items.length > MAX_BULK_RECORDS) {
+      setMessageTone('error');
+      setMessage(t('data.bulkSelectionLimit', { count: MAX_BULK_RECORDS }));
+      return;
+    }
+    const next = new Set(selectedRows);
+    for (const record of records.items) {
+      if (selected) next.add(record.id);
+      else next.delete(record.id);
+    }
+    setSelectedRows(next);
+    if (!next.size) setShowBulkEdit(false);
+  }
+
+  async function updateSelectedRecordFields(changes: BulkRecordFieldChange[]) {
+    const selected = records.items.filter((record) => selectedRows.has(record.id));
+    if (!selected.length || selected.length !== selectedRows.size) {
+      setMessageTone('error');
+      setMessage(t('data.bulkEditSelectionChanged'));
+      return;
+    }
+    if (
+      !(await confirmAction(
+        t('data.bulkEditConfirm', { count: selected.length, fields: changes.length }),
+      ))
+    )
+      return;
+    setBulkBusy(true);
+    try {
+      await api(`${base}/object-types/${selectedId}/records/bulk/fields`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          records: selected.map((record) => ({ id: record.id, rowVersion: record.rowVersion })),
+          changes,
+        }),
+      });
+      setShowBulkEdit(false);
+      setSelectedRows(new Set());
+      setMessageTone('success');
+      setMessage(t('data.bulkEditSucceeded', { count: selected.length, fields: changes.length }));
+      await loadRecords();
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.code === 'VERSION_CONFLICT') await loadRecords();
+      setMessageTone('error');
+      setMessage(
+        cause instanceof ApiError && cause.code === 'VERSION_CONFLICT'
+          ? t('data.bulkEditConflict')
+          : cause instanceof Error
+            ? cause.message
+            : t('data.bulkEditFailed'),
+      );
+      throw cause;
     } finally {
       setBulkBusy(false);
     }
@@ -2137,13 +2804,22 @@ export function DataPage({
     }
   }
 
-  async function archiveRecord(record: DynamicRecord) {
-    if (!window.confirm(t('data.archiveRecordConfirm', { name: record.displayName }))) return;
+  async function changeRecordLifecycle(record: DynamicRecord, archived: boolean) {
+    if (
+      archived &&
+      !(await confirmAction(t('data.archiveRecordConfirm', { name: record.displayName }), {
+        tone: 'danger',
+      }))
+    )
+      return;
     try {
-      await api(`${base}/object-types/${record.objectTypeId}/records/${record.id}/archive`, {
-        method: 'POST',
-        body: JSON.stringify({ reason: 'Archived from record context menu' }),
-      });
+      await api(
+        `${base}/object-types/${record.objectTypeId}/records/${record.id}/${archived ? 'archive' : 'restore'}`,
+        {
+          method: 'POST',
+          body: JSON.stringify(archived ? { reason: 'Archived from record context menu' } : {}),
+        },
+      );
       setSelectedRows((current) => {
         const next = new Set(current);
         next.delete(record.id);
@@ -2151,11 +2827,19 @@ export function DataPage({
       });
       if (selectedRecord?.id === record.id) setSelectedRecord(undefined);
       setMessageTone('success');
-      setMessage(t('data.recordArchived', { name: record.displayName }));
+      setMessage(
+        t(archived ? 'data.recordArchived' : 'webhooks.record.restored', {
+          name: record.displayName,
+        }),
+      );
       await loadRecords();
     } catch (cause) {
       setMessageTone('error');
-      setMessage(cause instanceof Error ? cause.message : t('data.recordArchiveFailed'));
+      setMessage(
+        cause instanceof Error
+          ? cause.message
+          : t(archived ? 'data.recordArchiveFailed' : 'data.lifecycleFailed'),
+      );
     }
   }
 
@@ -2183,13 +2867,7 @@ export function DataPage({
         label: selectedRow ? 'Deselect row' : 'Select row',
         icon: selectedRow ? '−' : '✓',
         separatorBefore: true,
-        onSelect: () =>
-          setSelectedRows((current) => {
-            const next = new Set(current);
-            if (next.has(record.id)) next.delete(record.id);
-            else next.add(record.id);
-            return next;
-          }),
+        onSelect: () => toggleRecordSelection(record.id, !selectedRow),
       },
       {
         label: 'Copy record name',
@@ -2201,17 +2879,26 @@ export function DataPage({
         icon: '#',
         onSelect: () => void copyContextValue('Record ID', record.id),
       },
-      ...(allowed(user, 'record.archive')
+      ...(record.archivedAt && allowed(user, 'record.restore') && canArchiveRecords
         ? [
             {
-              label: 'Archive record',
-              icon: '×',
-              tone: 'danger' as const,
+              label: t('common.restore'),
+              icon: '↺',
               separatorBefore: true,
-              onSelect: () => void archiveRecord(record),
+              onSelect: () => void changeRecordLifecycle(record, false),
             },
           ]
-        : []),
+        : !record.archivedAt && canArchiveRecords
+          ? [
+              {
+                label: t('common.archive'),
+                icon: '×',
+                tone: 'danger' as const,
+                separatorBefore: true,
+                onSelect: () => void changeRecordLifecycle(record, true),
+              },
+            ]
+          : []),
     ];
   }
 
@@ -2228,28 +2915,52 @@ export function DataPage({
   }
 
   function viewContextItems(view: RecordView): ContextMenuItem[] {
+    const permission = recordViewPermission(view);
+    const writable = viewWritable(view);
+    const permissionTargets: RecordViewPermissionType[] = canAdministerViews
+      ? ['collaborative', 'personal', 'locked']
+      : permission === 'collaborative' && view.createdBy === user.id
+        ? ['personal']
+        : permission === 'personal' && view.ownerId === user.id
+          ? ['collaborative']
+          : [];
     return [
       {
-        label: 'Open view',
+        label: t('data.openView'),
         icon: '↗',
         onSelect: () => chooseView(view.publicId ?? view.id),
       },
-      ...(allowed(user, 'schema.manage')
+      ...(canManageViews
         ? [
             {
-              label: 'Rename view',
-              icon: '✎',
-              disabled: viewBusy,
-              onSelect: () => void renameView(view),
-            },
-            {
-              label: 'Duplicate view',
+              label: t('data.duplicateView'),
               icon: '⧉',
               disabled: viewBusy,
               onSelect: () => void duplicateView(view),
             },
+          ]
+        : []),
+      ...(writable
+        ? [
             {
-              label: 'Archive view',
+              label: t('data.renameView'),
+              icon: '✎',
+              disabled: viewBusy,
+              onSelect: () => void renameView(view),
+            },
+          ]
+        : []),
+      ...permissionTargets.map((target, index) => ({
+        label: t(`data.setViewPermission.${target}`),
+        icon: target === 'locked' ? '▣' : target === 'personal' ? '●' : '◎',
+        disabled: viewBusy || target === permission,
+        separatorBefore: index === 0,
+        onSelect: () => void changeViewPermission(view, target),
+      })),
+      ...(viewArchivable(view)
+        ? [
+            {
+              label: t('data.archiveView'),
               icon: '×',
               disabled: viewBusy,
               tone: 'danger' as const,
@@ -2369,9 +3080,7 @@ export function DataPage({
   return (
     <>
       <div className="flex justify-end gap-2">
-        <h1 className="sr-only">
-          {workspaceMode ? t('data.workspaceData') : t('common.engineeringRecords')}
-        </h1>
+        <h1 className="sr-only">{workspaceMode ? t('data.library') : t('data.projectRecords')}</h1>
         {!workspaceMode && allowed(user, 'schema.manage') && (
           <Button variant="quiet" onClick={() => void installTemplate()}>
             {t('data.installTemplate')}
@@ -2388,8 +3097,18 @@ export function DataPage({
                 {workspaceMode ? t('data.workspaceTables') : t('data.engineeringTables')}
               </p>
               <p className="mt-0.5 text-[10px] text-slate-600">
-                {t('data.tableCount', { count: objectTypes.length })}
+                {t('data.tableCount', { count: tablePage.total })}
               </p>
+            </div>
+            <div className="mb-2 px-2">
+              <input
+                aria-label={t('data.searchTables')}
+                className="h-8 w-full rounded-md border border-slate-800 bg-slate-950 px-2 text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-sky-500/60"
+                onChange={(event) => setTableSearch(event.target.value)}
+                placeholder={t('data.searchTables')}
+                type="search"
+                value={tableSearch}
+              />
             </div>
             {typesLoading && (
               <div className="space-y-2 px-3 py-4" aria-label={t('data.loadingObjectTypes')}>
@@ -2397,13 +3116,17 @@ export function DataPage({
                 <div className="h-8 animate-pulse rounded bg-slate-800" />
               </div>
             )}
-            {!typesLoading && objectTypes.length === 0 && (
+            {!typesLoading && visibleObjectTypes.length === 0 && (
               <p className="px-3 py-4 text-sm text-slate-400">
-                {workspaceMode ? t('data.noWorkspaceTables') : t('data.noSchema')}
+                {tableQuery.trim()
+                  ? t('data.noTablesFound')
+                  : workspaceMode
+                    ? t('data.noWorkspaceTables')
+                    : t('data.noSchema')}
               </p>
             )}
             <div aria-label={t('data.tablesAndViews')} className="space-y-0.5">
-              {objectTypes.map((objectType) => {
+              {visibleObjectTypes.map((objectType) => {
                 const activeTable = selectedId === objectType.id;
                 return (
                   <div key={objectType.id}>
@@ -2425,7 +3148,7 @@ export function DataPage({
                           <span className="text-[10px] font-medium uppercase tracking-wider text-slate-500">
                             {t('data.views')}
                           </span>
-                          {allowed(user, 'schema.manage') && (
+                          {canManageViews && (
                             <button
                               aria-label={t('data.createView')}
                               className="grid size-5 place-items-center rounded text-sm leading-none text-slate-500 hover:bg-slate-800 hover:text-sky-300"
@@ -2477,118 +3200,140 @@ export function DataPage({
                                   <span className="text-sky-400">
                                     {viewTypeMeta[view.viewType].icon}
                                   </span>
+                                  {recordViewPermission(view) !== 'collaborative' && (
+                                    <span
+                                      aria-label={t(
+                                        `data.viewPermission.${recordViewPermission(view)}`,
+                                      )}
+                                      className="text-[10px] text-slate-500"
+                                      title={t(`data.viewPermission.${recordViewPermission(view)}`)}
+                                    >
+                                      {recordViewPermission(view) === 'locked' ? '▣' : '●'}
+                                    </span>
+                                  )}
                                   <span className="truncate">{view.name}</span>
                                 </span>
                               </button>
-                              {allowed(user, 'schema.manage') && (
-                                <details className="relative -ml-6" data-popover-menu>
-                                  <summary
-                                    aria-label={t('data.actionsForView', { name: view.name })}
-                                    className="grid size-6 list-none cursor-pointer place-items-center rounded text-slate-600 opacity-0 marker:content-none hover:bg-slate-700 hover:text-slate-200 group-hover/view:opacity-100 focus:opacity-100"
-                                  >
-                                    ⋯
-                                  </summary>
-                                  <div className="absolute right-0 top-7 z-40 grid min-w-32 gap-0.5 rounded-md border border-slate-700 bg-slate-950 p-1 shadow-xl">
-                                    <button
-                                      aria-label={t('data.renameViewLabel', { name: view.name })}
-                                      className="rounded px-2 py-1.5 text-left text-xs text-slate-300 hover:bg-slate-800"
-                                      disabled={viewBusy}
-                                      onClick={() => void renameView(view)}
-                                      type="button"
-                                    >
-                                      {t('data.rename')}
-                                    </button>
-                                    <button
-                                      aria-label={t('data.duplicateViewLabel', { name: view.name })}
-                                      className="rounded px-2 py-1.5 text-left text-xs text-slate-300 hover:bg-slate-800"
-                                      disabled={viewBusy}
-                                      onClick={() => void duplicateView(view)}
-                                      type="button"
-                                    >
-                                      {t('data.duplicate')}
-                                    </button>
-                                    <button
-                                      aria-label={t('data.archiveViewLabel', { name: view.name })}
-                                      className="rounded px-2 py-1.5 text-left text-xs text-rose-300 hover:bg-rose-500/10"
-                                      disabled={viewBusy}
-                                      onClick={() => void archiveView(view)}
-                                      type="button"
-                                    >
-                                      {t('common.archive')}
-                                    </button>
-                                  </div>
-                                </details>
-                              )}
                             </div>
                           ))}
-                        {showCreateView && allowed(user, 'schema.manage') && (
+                        {!viewsLoading && viewPage.hasNext && (
+                          <Button
+                            className="mt-1 w-full"
+                            disabled={viewsLoadingMore}
+                            onClick={() => void loadMoreViews()}
+                            type="button"
+                            variant="quiet"
+                          >
+                            {viewsLoadingMore
+                              ? t('common.loading')
+                              : t('data.loadMoreTables', {
+                                  shown: Math.min(views.length, viewPage.total),
+                                  total: viewPage.total,
+                                })}
+                          </Button>
+                        )}
+                        {showCreateView && canManageViews && (
                           <form
                             className="mt-1 space-y-1.5 px-1"
                             onSubmit={(event) => void createView(event)}
                           >
-                            <input
-                              aria-label={t('data.viewName')}
-                              autoFocus
-                              className={inputClass}
-                              maxLength={120}
-                              name="name"
-                              placeholder={t('data.viewName')}
-                              required
-                            />
-                            <select
-                              aria-label={t('data.viewType')}
-                              className={inputClass}
-                              name="viewType"
-                              value={newViewType}
-                              onChange={(event) =>
-                                setNewViewType(event.target.value as RecordViewType)
-                              }
-                            >
-                              {(
-                                Object.entries(viewTypeMeta) as Array<
-                                  [RecordViewType, (typeof viewTypeMeta)[RecordViewType]]
-                                >
-                              ).map(([type]) => (
-                                <option key={type} value={type}>
-                                  {t(viewTypeTranslationKeys[type])}
-                                </option>
-                              ))}
-                            </select>
-                            {newViewType === 'kanban' && (
-                              <select
-                                aria-label={t('data.kanbanGroupField')}
+                            <FormField label={t('data.viewName')} required>
+                              <input
+                                autoFocus
                                 className={inputClass}
-                                defaultValue=""
-                                name="groupFieldId"
+                                maxLength={120}
+                                name="name"
                                 required
+                              />
+                            </FormField>
+                            <FormField label={t('data.viewType')} required>
+                              <select
+                                className={inputClass}
+                                name="viewType"
+                                required
+                                value={newViewType}
+                                onChange={(event) =>
+                                  setNewViewType(event.target.value as RecordViewType)
+                                }
                               >
-                                <option value="">{t('data.kanbanGroupFieldOption')}</option>
-                                {fields
-                                  .filter((field) => field.fieldType === 'single_select')
-                                  .map((field) => (
-                                    <option key={field.id} value={field.id}>
-                                      {field.name}
-                                    </option>
-                                  ))}
+                                {(
+                                  Object.entries(viewTypeMeta) as Array<
+                                    [RecordViewType, (typeof viewTypeMeta)[RecordViewType]]
+                                  >
+                                ).map(([type]) => (
+                                  <option key={type} value={type}>
+                                    {t(viewTypeTranslationKeys[type])}
+                                  </option>
+                                ))}
                               </select>
+                            </FormField>
+                            <FormField label={t('data.viewPermission')} required>
+                              <select
+                                className={inputClass}
+                                name="permissionType"
+                                onChange={(event) =>
+                                  setNewViewPermission(
+                                    event.target.value as RecordViewPermissionType,
+                                  )
+                                }
+                                required
+                                value={newViewPermission}
+                              >
+                                <option value="collaborative">
+                                  {t('data.viewPermission.collaborative')}
+                                </option>
+                                <option value="personal">
+                                  {t('data.viewPermission.personal')}
+                                </option>
+                                {canAdministerViews && (
+                                  <option value="locked">{t('data.viewPermission.locked')}</option>
+                                )}
+                              </select>
+                            </FormField>
+                            {newViewPermission === 'locked' && (
+                              <FormField label={t('data.lockReason')}>
+                                <input className={inputClass} maxLength={500} name="lockReason" />
+                              </FormField>
+                            )}
+                            {newViewType === 'kanban' && (
+                              <FormField label={t('data.kanbanGroupField')} required>
+                                <select
+                                  className={inputClass}
+                                  defaultValue=""
+                                  name="groupFieldId"
+                                  required
+                                >
+                                  <option value="">{t('data.kanbanGroupFieldOption')}</option>
+                                  {fields
+                                    .filter((field) => field.fieldType === 'single_select')
+                                    .map((field) => (
+                                      <option key={field.id} value={field.id}>
+                                        {field.name}
+                                      </option>
+                                    ))}
+                                </select>
+                              </FormField>
                             )}
                             {newViewType === 'calendar' && (
-                              <select
-                                aria-label={t('data.calendarDateField')}
-                                className={inputClass}
-                                defaultValue=""
-                                name="dateFieldId"
-                                required
-                              >
-                                <option value="">{t('data.calendarDateFieldOption')}</option>
-                                {fields
-                                  .filter((field) => ['date', 'datetime'].includes(field.fieldType))
-                                  .map((field) => (
-                                    <option key={field.id} value={field.id}>
-                                      {field.name}
-                                    </option>
-                                  ))}
-                              </select>
+                              <FormField label={t('data.calendarDateField')} required>
+                                <select
+                                  className={inputClass}
+                                  defaultValue=""
+                                  name="dateFieldId"
+                                  required
+                                >
+                                  <option value="">{t('data.calendarDateFieldOption')}</option>
+                                  {fields
+                                    .filter((field) =>
+                                      ['date', 'datetime'].includes(field.fieldType),
+                                    )
+                                    .map((field) => (
+                                      <option key={field.id} value={field.id}>
+                                        {field.name}
+                                      </option>
+                                    ))}
+                                </select>
+                              </FormField>
                             )}
                             <div className="flex gap-1">
                               <Button
@@ -2616,6 +3361,21 @@ export function DataPage({
                 );
               })}
             </div>
+            {tablePage.hasNext && (
+              <button
+                className="mt-2 w-full rounded-md px-2 py-1.5 text-xs text-sky-400 hover:bg-slate-800 disabled:opacity-50"
+                disabled={tablesLoadingMore}
+                onClick={() => void loadTypes(tableQuery, visibleObjectTypes.length, true)}
+                type="button"
+              >
+                {tablesLoadingMore
+                  ? t('common.loading')
+                  : t('data.loadMoreTables', {
+                      shown: visibleObjectTypes.length,
+                      total: tablePage.total,
+                    })}
+              </button>
+            )}
             {allowed(user, 'schema.manage') && (
               <div className="mt-2 border-t border-slate-800 px-1 pt-2">
                 <button
@@ -2702,40 +3462,93 @@ export function DataPage({
                     to continue using traceable records and project-scoped resources.
                   </HelpTip>
                 )}
+                <IconAction
+                  aria-expanded={showApiPanel}
+                  className="size-9 border border-slate-800 bg-slate-900/75 font-mono text-[10px] shadow-sm"
+                  icon="</>"
+                  label={t('data.tableApi')}
+                  onClick={() => {
+                    const next = !showApiPanel;
+                    setShowApiPanel(next);
+                    if (next) {
+                      setShowSchema(false);
+                      setShowTableSettings(false);
+                      setShowTablePermissions(false);
+                    }
+                  }}
+                />
                 {allowed(user, 'schema.manage') && (
-                  <Button
+                  <IconAction
                     aria-expanded={showTableSettings}
-                    className="data-secondary-action"
-                    variant="quiet"
-                    onClick={() => setShowTableSettings((value) => !value)}
-                  >
-                    {t('data.editTable')}
-                  </Button>
+                    className="size-9 border border-slate-800 bg-slate-900/75 shadow-sm"
+                    icon="✎"
+                    label={t('data.editTable')}
+                    onClick={() => {
+                      setShowTableSettings((value) => !value);
+                      setShowTablePermissions(false);
+                    }}
+                  />
+                )}
+                {allowed(user, 'table.permission.manage') && (
+                  <IconAction
+                    aria-expanded={showTablePermissions}
+                    className="size-9 border border-slate-800 bg-slate-900/75 shadow-sm"
+                    icon="▣"
+                    label={t('data.tablePermissions')}
+                    onClick={() => {
+                      const next = !showTablePermissions;
+                      setShowTablePermissions(next);
+                      if (next) {
+                        setShowApiPanel(false);
+                        setShowTableSettings(false);
+                        setShowSchema(false);
+                      }
+                    }}
+                  />
                 )}
                 {allowed(user, 'schema.manage') && (
-                  <Button
+                  <IconAction
                     aria-expanded={showSchema}
-                    className="data-secondary-action"
-                    variant="quiet"
+                    className="size-9 border border-slate-800 bg-slate-900/75 shadow-sm"
+                    icon="▦"
+                    label={t('data.schema')}
                     onClick={() => {
                       const next = !showSchema;
                       setShowSchema(next);
+                      if (next) setShowTablePermissions(false);
                       if (next) setSchemaSelection(fields[0]?.id ?? 'new');
                     }}
-                  >
-                    {t('data.schema')}
-                  </Button>
+                  />
                 )}
                 {allowed(user, 'export.execute') && (
-                  <Button
-                    className="data-secondary-action"
-                    variant="quiet"
+                  <IconAction
+                    className="size-9 border border-slate-800 bg-slate-900/75 text-base shadow-sm"
+                    disabled={Boolean(
+                      recordExport && ['queued', 'running'].includes(recordExport.status),
+                    )}
+                    icon={
+                      recordExport && ['queued', 'running'].includes(recordExport.status)
+                        ? '…'
+                        : '↓'
+                    }
+                    label={
+                      recordExport && ['queued', 'running'].includes(recordExport.status)
+                        ? t('data.csvExportPreparing')
+                        : t('data.exportCsv')
+                    }
                     onClick={() => void exportCsv()}
-                  >
-                    {t('data.exportCsv')}
-                  </Button>
+                  />
                 )}
-                {allowed(user, 'record.create') && (
+                {archiveState === 'active' && canCreateRecords && (
+                  <IconAction
+                    aria-expanded={showImportCsv}
+                    className="size-9 border border-slate-800 bg-slate-900/75 text-base shadow-sm"
+                    icon="↑"
+                    label={t('data.importCsv')}
+                    onClick={() => setShowImportCsv((value) => !value)}
+                  />
+                )}
+                {archiveState === 'active' && canCreateRecords && (
                   <Button
                     className="data-primary-action"
                     onClick={() => {
@@ -2746,52 +3559,27 @@ export function DataPage({
                     {t('data.newRecord')}
                   </Button>
                 )}
-                {allowed(user, 'record.create') && (
-                  <details className="group relative" data-popover-menu>
-                    <summary
-                      aria-label={t('data.moreTableActions')}
-                      className="grid size-9 cursor-pointer list-none place-items-center rounded-lg border border-slate-800 bg-slate-900/75 text-base text-slate-500 shadow-sm marker:content-none hover:border-slate-700 hover:bg-slate-800 hover:text-slate-200"
-                      title={t('data.moreTableActions')}
-                    >
-                      ⋯
-                    </summary>
-                    <div className="absolute right-0 top-10 z-50 w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-slate-700 bg-slate-950 p-4 shadow-2xl shadow-black/40">
-                      <h3 className="text-sm font-semibold text-slate-200">
-                        {t('data.importCsv')}
-                      </h3>
-                      <p className="mt-1 text-xs leading-relaxed text-slate-500">
-                        {t('data.importHint')}
-                      </p>
-                      <form className="mt-3" onSubmit={(event) => void importCsv(event)}>
-                        <input
-                          accept=".csv,text/csv"
-                          className="block w-full text-xs text-slate-400 file:mr-3 file:rounded-md file:border-0 file:bg-slate-800 file:px-3 file:py-2 file:text-xs file:font-medium file:text-slate-200 hover:file:bg-slate-700"
-                          name="csv"
-                          required
-                          type="file"
-                        />
-                        <Button className="mt-3 w-full" variant="quiet" type="submit">
-                          {t('data.importRecords')}
-                        </Button>
-                      </form>
-                      {csvResult && (
-                        <p className="mt-3 text-xs text-slate-300">
-                          Imported {csvResult.imported}; {csvResult.failed} failed.
-                        </p>
-                      )}
-                      {csvResult?.errors.map((error) => (
-                        <p
-                          className="mt-1 text-xs text-rose-300"
-                          key={`${error.row}:${error.reason}`}
-                        >
-                          Row {error.row}: {error.reason}
-                        </p>
-                      ))}
-                    </div>
-                  </details>
-                )}
               </div>
             </div>
+
+            {showImportCsv && archiveState === 'active' && canCreateRecords && (
+              <CsvImportPanel
+                base={base}
+                objectTypeId={selectedId}
+                onClose={() => setShowImportCsv(false)}
+                onImported={loadRecords}
+              />
+            )}
+
+            {showApiPanel && (
+              <TableApiPanel
+                fields={fields}
+                onClose={() => setShowApiPanel(false)}
+                projectId={projectId}
+                table={selected}
+                workspaceId={workspaceId}
+              />
+            )}
 
             {showTableSettings && allowed(user, 'schema.manage') && (
               <form
@@ -2801,7 +3589,7 @@ export function DataPage({
               >
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                   <label className={fieldLabelClass}>
-                    {t('data.typeName')}
+                    <FormFieldLabel required>{t('data.typeName')}</FormFieldLabel>
                     <input
                       className={inputClass}
                       defaultValue={selected.name}
@@ -2810,7 +3598,7 @@ export function DataPage({
                     />
                   </label>
                   <label className={fieldLabelClass}>
-                    {t('data.tableLabel')}
+                    <FormFieldLabel required>{t('data.tableLabel')}</FormFieldLabel>
                     <input
                       className={inputClass}
                       defaultValue={selected.pluralName}
@@ -2819,7 +3607,7 @@ export function DataPage({
                     />
                   </label>
                   <label className={fieldLabelClass}>
-                    {t('data.stableKey')}
+                    <FormFieldLabel required>{t('data.stableKey')}</FormFieldLabel>
                     <input
                       aria-readonly={selected.system}
                       className={inputClass}
@@ -2839,7 +3627,7 @@ export function DataPage({
                     )}
                   </label>
                   <label className={fieldLabelClass}>
-                    {t('data.tableDescription')}
+                    <FormFieldLabel>{t('data.tableDescription')}</FormFieldLabel>
                     <input
                       className={inputClass}
                       defaultValue={selected.description}
@@ -2860,6 +3648,21 @@ export function DataPage({
                   </button>
                 </div>
               </form>
+            )}
+
+            {showTablePermissions && allowed(user, 'table.permission.manage') && (
+              <TablePermissionsPanel
+                base={base}
+                onClose={() => setShowTablePermissions(false)}
+                onSaved={() => {
+                  void api<ObjectType>(`${base}/object-types/${selected.id}`).then((updated) => {
+                    setObjectTypes((current) => mergeObjectTypes(current, [updated]));
+                    setVisibleObjectTypes((current) => mergeObjectTypes(current, [updated]));
+                  });
+                }}
+                tableId={selected.id}
+                tableName={selected.pluralName}
+              />
             )}
 
             {showSchema && allowed(user, 'schema.manage') && (
@@ -2971,7 +3774,7 @@ export function DataPage({
                           >
                             <button
                               aria-label={t('data.reorderField', { name: field.name })}
-                              className="shrink-0 cursor-grab rounded px-0.5 py-1 text-sm leading-none text-slate-600 hover:bg-slate-800 hover:text-sky-300 active:cursor-grabbing"
+                              className="inline-flex size-6 shrink-0 cursor-grab items-center justify-center rounded text-sm leading-none text-slate-600 hover:bg-slate-800 hover:text-sky-300 active:cursor-grabbing"
                               disabled={schemaBusy || Boolean(schemaSearch.trim())}
                               draggable={!schemaBusy && !schemaSearch.trim()}
                               title={
@@ -3036,7 +3839,7 @@ export function DataPage({
                                 </span>
                                 <span className="block truncate font-mono text-[9px] leading-tight text-slate-600">
                                   {field.key} ·{' '}
-                                  {t(fieldTypeTranslationKeys[schemaTypeForField(field)])}
+                                  {t(schemaFieldTypeTranslationKeys[schemaTypeForField(field)])}
                                 </span>
                               </span>
                               <span
@@ -3096,7 +3899,7 @@ export function DataPage({
 
                         <div className="mt-5 grid gap-4 sm:grid-cols-2">
                           <label className={fieldLabelClass}>
-                            {t('data.fieldName')}
+                            <FormFieldLabel required>{t('data.fieldName')}</FormFieldLabel>
                             <input
                               aria-label={t('data.fieldName')}
                               autoFocus
@@ -3118,7 +3921,7 @@ export function DataPage({
                             />
                           </label>
                           <label className={fieldLabelClass}>
-                            {t('data.stableFieldKey')}
+                            <FormFieldLabel required>{t('data.stableFieldKey')}</FormFieldLabel>
                             <input
                               aria-label={t('data.stableFieldKey')}
                               className={`${inputClass} mt-1.5 font-mono`}
@@ -3136,11 +3939,12 @@ export function DataPage({
                             <span className={fieldHintClass}>{t('data.stableKeyHint')}</span>
                           </label>
                           <label className={wideFieldLabelClass}>
-                            {t('data.fieldType')}
+                            <FormFieldLabel required>{t('data.fieldType')}</FormFieldLabel>
                             <select
                               aria-label={t('data.fieldType')}
                               className={`${inputClass} mt-1.5`}
                               name="fieldType"
+                              required
                               value={schemaFieldType}
                               onChange={(event) =>
                                 setSchemaFieldType(event.target.value as SchemaFieldType)
@@ -3164,7 +3968,7 @@ export function DataPage({
                                   <optgroup key={group} label={t(fieldGroupTranslationKeys[group])}>
                                     {groupTypes.map((type) => (
                                       <option key={type} value={type}>
-                                        {t(fieldTypeTranslationKeys[type])}
+                                        {t(schemaFieldTypeTranslationKeys[type])}
                                       </option>
                                     ))}
                                   </optgroup>
@@ -3173,10 +3977,7 @@ export function DataPage({
                             </select>
                           </label>
                           <label className={wideFieldLabelClass}>
-                            {t('workspaces.descriptionLabel')}{' '}
-                            <span className="font-normal text-slate-600">
-                              {t('common.optional')}
-                            </span>
+                            <FormFieldLabel>{t('data.fieldDescription')}</FormFieldLabel>
                             <textarea
                               aria-label={t('data.fieldDescription')}
                               className={`${inputClass} mt-1.5 min-h-20 resize-y`}
@@ -3188,7 +3989,7 @@ export function DataPage({
 
                           {['single_select', 'multi_select'].includes(schemaFieldType) && (
                             <label className={wideFieldLabelClass}>
-                              {t('data.options')}
+                              <FormFieldLabel required>{t('data.options')}</FormFieldLabel>
                               <textarea
                                 aria-label={t('data.selectOptions')}
                                 className={`${inputClass} mt-1.5 min-h-28 resize-y font-mono`}
@@ -3202,7 +4003,7 @@ export function DataPage({
 
                           {schemaFieldType === 'relation' && (
                             <label className={wideFieldLabelClass}>
-                              {t('data.relatedTable')}
+                              <FormFieldLabel required>{t('data.relatedTable')}</FormFieldLabel>
                               <select
                                 aria-label={t('data.relatedTable')}
                                 className={`${inputClass} mt-1.5`}
@@ -3233,7 +4034,7 @@ export function DataPage({
                           {['quantity', 'measurement', 'range'].includes(schemaFieldType) && (
                             <>
                               <label className={fieldLabelClass}>
-                                {t('data.dimension')}
+                                <FormFieldLabel required>{t('data.dimension')}</FormFieldLabel>
                                 <input
                                   aria-label={t('data.engineeringDimension')}
                                   className={`${inputClass} mt-1.5`}
@@ -3243,7 +4044,7 @@ export function DataPage({
                                 />
                               </label>
                               <label className={fieldLabelClass}>
-                                {t('data.canonicalUnit')}
+                                <FormFieldLabel required>{t('data.canonicalUnit')}</FormFieldLabel>
                                 <input
                                   aria-label={t('data.canonicalUnit')}
                                   className={`${inputClass} mt-1.5 font-mono`}
@@ -3253,7 +4054,7 @@ export function DataPage({
                                 />
                               </label>
                               <label className={wideFieldLabelClass}>
-                                {t('data.allowedUnits')}
+                                <FormFieldLabel required>{t('data.allowedUnits')}</FormFieldLabel>
                                 <input
                                   aria-label={t('data.allowedUnits')}
                                   className={`${inputClass} mt-1.5 font-mono`}
@@ -3263,7 +4064,7 @@ export function DataPage({
                                 />
                               </label>
                               <label className={fieldLabelClass}>
-                                {t('data.displayPrecision')}
+                                <FormFieldLabel>{t('data.displayPrecision')}</FormFieldLabel>
                                 <input
                                   aria-label={t('data.displayPrecision')}
                                   className={`${inputClass} mt-1.5`}
@@ -3283,7 +4084,7 @@ export function DataPage({
                                 {t('data.spectralPasteHint')}
                               </div>
                               <label className={fieldLabelClass}>
-                                {t('data.xAxisLabel')}
+                                <FormFieldLabel>{t('data.xAxisLabel')}</FormFieldLabel>
                                 <input
                                   aria-label={t('data.xAxisLabel')}
                                   className={`${inputClass} mt-1.5`}
@@ -3292,7 +4093,7 @@ export function DataPage({
                                 />
                               </label>
                               <label className={fieldLabelClass}>
-                                {t('data.xAxisUnit')}
+                                <FormFieldLabel>{t('data.xAxisUnit')}</FormFieldLabel>
                                 <input
                                   aria-label={t('data.xAxisUnit')}
                                   className={`${inputClass} mt-1.5 font-mono`}
@@ -3301,7 +4102,7 @@ export function DataPage({
                                 />
                               </label>
                               <label className={fieldLabelClass}>
-                                {t('data.signalLabel')}
+                                <FormFieldLabel>{t('data.signalLabel')}</FormFieldLabel>
                                 <input
                                   aria-label={t('data.signalLabel')}
                                   className={`${inputClass} mt-1.5`}
@@ -3310,7 +4111,7 @@ export function DataPage({
                                 />
                               </label>
                               <label className={fieldLabelClass}>
-                                {t('data.signalUnit')}
+                                <FormFieldLabel>{t('data.signalUnit')}</FormFieldLabel>
                                 <input
                                   aria-label={t('data.signalUnit')}
                                   className={`${inputClass} mt-1.5 font-mono`}
@@ -3410,7 +4211,11 @@ export function DataPage({
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div>
                             <p className="text-[10px] font-semibold uppercase tracking-widest text-sky-400">
-                              {t(fieldTypeTranslationKeys[schemaTypeForField(selectedSchemaField)])}{' '}
+                              {t(
+                                schemaFieldTypeTranslationKeys[
+                                  schemaTypeForField(selectedSchemaField)
+                                ],
+                              )}{' '}
                               {t('data.field')}
                             </p>
                             <h4 className="mt-1 text-base font-semibold text-slate-100">
@@ -3443,7 +4248,11 @@ export function DataPage({
                               {t('data.type')}
                             </p>
                             <p className="mt-1 text-xs text-slate-300">
-                              {t(fieldTypeTranslationKeys[schemaTypeForField(selectedSchemaField)])}
+                              {t(
+                                schemaFieldTypeTranslationKeys[
+                                  schemaTypeForField(selectedSchemaField)
+                                ],
+                              )}
                             </p>
                           </div>
                           <div>
@@ -3458,7 +4267,7 @@ export function DataPage({
 
                         <div className="mt-5 grid gap-4 sm:grid-cols-2">
                           <label className={wideFieldLabelClass}>
-                            {t('data.fieldName')}
+                            <FormFieldLabel required>{t('data.fieldName')}</FormFieldLabel>
                             <input
                               aria-label={t('data.fieldName')}
                               className={`${inputClass} mt-1.5`}
@@ -3469,10 +4278,7 @@ export function DataPage({
                             />
                           </label>
                           <label className={wideFieldLabelClass}>
-                            {t('workspaces.descriptionLabel')}{' '}
-                            <span className="font-normal text-slate-600">
-                              {t('common.optional')}
-                            </span>
+                            <FormFieldLabel>{t('data.fieldDescription')}</FormFieldLabel>
                             <textarea
                               aria-label={t('data.fieldDescription')}
                               className={`${inputClass} mt-1.5 min-h-20 resize-y`}
@@ -3487,7 +4293,7 @@ export function DataPage({
                             selectedSchemaField.fieldType,
                           ) && (
                             <label className={wideFieldLabelClass}>
-                              {t('data.options')}
+                              <FormFieldLabel required>{t('data.options')}</FormFieldLabel>
                               <textarea
                                 aria-label={t('data.selectOptions')}
                                 className={`${inputClass} mt-1.5 min-h-28 resize-y font-mono`}
@@ -3504,7 +4310,7 @@ export function DataPage({
                           {selectedSchemaField.fieldType === 'relation' && (
                             <>
                               <label className={wideFieldLabelClass}>
-                                {t('data.relatedTable')}
+                                <FormFieldLabel required>{t('data.relatedTable')}</FormFieldLabel>
                                 <select
                                   aria-label={t('data.relatedTable')}
                                   aria-readonly="true"
@@ -3546,7 +4352,7 @@ export function DataPage({
                           ) && (
                             <>
                               <label className={fieldLabelClass}>
-                                {t('data.dimension')}
+                                <FormFieldLabel required>{t('data.dimension')}</FormFieldLabel>
                                 <input
                                   aria-label={t('data.engineeringDimension')}
                                   className={`${inputClass} mt-1.5 opacity-70`}
@@ -3556,7 +4362,7 @@ export function DataPage({
                                 />
                               </label>
                               <label className={fieldLabelClass}>
-                                {t('data.canonicalUnit')}
+                                <FormFieldLabel required>{t('data.canonicalUnit')}</FormFieldLabel>
                                 <input
                                   aria-label={t('data.canonicalUnit')}
                                   className={`${inputClass} mt-1.5 font-mono opacity-70`}
@@ -3566,7 +4372,7 @@ export function DataPage({
                                 />
                               </label>
                               <label className={wideFieldLabelClass}>
-                                {t('data.allowedUnits')}
+                                <FormFieldLabel required>{t('data.allowedUnits')}</FormFieldLabel>
                                 <input
                                   aria-label={t('data.allowedUnits')}
                                   className={`${inputClass} mt-1.5 font-mono`}
@@ -3576,7 +4382,7 @@ export function DataPage({
                                 />
                               </label>
                               <label className={fieldLabelClass}>
-                                {t('data.displayPrecision')}
+                                <FormFieldLabel>{t('data.displayPrecision')}</FormFieldLabel>
                                 <input
                                   aria-label={t('data.displayPrecision')}
                                   className={`${inputClass} mt-1.5`}
@@ -3593,7 +4399,7 @@ export function DataPage({
                           {selectedSchemaField.fieldType === 'spectral_data' && (
                             <>
                               <label className={fieldLabelClass}>
-                                {t('data.xAxisLabel')}
+                                <FormFieldLabel>{t('data.xAxisLabel')}</FormFieldLabel>
                                 <input
                                   aria-label={t('data.xAxisLabel')}
                                   className={`${inputClass} mt-1.5`}
@@ -3602,7 +4408,7 @@ export function DataPage({
                                 />
                               </label>
                               <label className={fieldLabelClass}>
-                                {t('data.xAxisUnit')}
+                                <FormFieldLabel>{t('data.xAxisUnit')}</FormFieldLabel>
                                 <input
                                   aria-label={t('data.xAxisUnit')}
                                   className={`${inputClass} mt-1.5 font-mono`}
@@ -3611,7 +4417,7 @@ export function DataPage({
                                 />
                               </label>
                               <label className={fieldLabelClass}>
-                                {t('data.signalLabel')}
+                                <FormFieldLabel>{t('data.signalLabel')}</FormFieldLabel>
                                 <input
                                   aria-label={t('data.signalLabel')}
                                   className={`${inputClass} mt-1.5`}
@@ -3620,7 +4426,7 @@ export function DataPage({
                                 />
                               </label>
                               <label className={fieldLabelClass}>
-                                {t('data.signalUnit')}
+                                <FormFieldLabel>{t('data.signalUnit')}</FormFieldLabel>
                                 <input
                                   aria-label={t('data.signalUnit')}
                                   className={`${inputClass} mt-1.5 font-mono`}
@@ -3644,7 +4450,7 @@ export function DataPage({
                           )}
 
                           <label className={fieldLabelClass}>
-                            {t('data.order')}
+                            <FormFieldLabel>{t('data.order')}</FormFieldLabel>
                             <input
                               aria-label={t('data.fieldOrder')}
                               className={`${inputClass} mt-1.5`}
@@ -3725,46 +4531,70 @@ export function DataPage({
                   <span className="max-w-40 truncate px-2 text-sm font-medium text-slate-200">
                     {selectedView?.name ?? t('data.allRecords')}
                   </span>
-                  {viewDirty && (
-                    <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase text-amber-300">
-                      {t('data.unsaved')}
+                  {selectedView && recordViewPermission(selectedView) !== 'collaborative' && (
+                    <span
+                      aria-label={t(`data.viewPermission.${recordViewPermission(selectedView)}`)}
+                      className="text-xs text-slate-500"
+                      title={t(`data.viewPermission.${recordViewPermission(selectedView)}`)}
+                    >
+                      {recordViewPermission(selectedView) === 'locked' ? '▣' : '●'}
                     </span>
                   )}
+                  {viewDirty && (
+                    <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase text-amber-300">
+                      {t(selectedViewWritable ? 'data.unsaved' : 'data.localViewChanges')}
+                    </span>
+                  )}
+                  {selectedView && allowed(user, 'view.share') && (
+                    <IconAction
+                      aria-expanded={showShareView}
+                      className="size-7"
+                      icon="↗"
+                      label={t('data.shareView')}
+                      onClick={() => setShowShareView((value) => !value)}
+                    />
+                  )}
                 </div>
-                {(['fields', 'filter', 'sort'] as const).map((tool) => {
-                  const active = activeTool === tool;
-                  const label =
-                    tool === 'fields'
-                      ? t('data.columns')
-                      : tool === 'filter'
-                        ? t('data.filter')
-                        : t('data.sort');
-                  const count =
-                    tool === 'fields'
-                      ? `${visibleFields.length}/${fields.length}`
-                      : tool === 'filter' && filterField
-                        ? '1'
-                        : tool === 'sort' && sortField
+                {(['fields', 'filter', 'sort', 'group'] as const)
+                  .filter((tool) => tool !== 'group' || activeViewType === 'grid')
+                  .map((tool) => {
+                    const active = activeTool === tool;
+                    const label =
+                      tool === 'fields'
+                        ? t('data.columns')
+                        : tool === 'filter'
+                          ? t('data.filter')
+                          : tool === 'sort'
+                            ? t('data.sort')
+                            : t('data.group');
+                    const count =
+                      tool === 'fields'
+                        ? `${visibleFields.length}/${fields.length}`
+                        : tool === 'filter' && filterField
                           ? '1'
-                          : '';
-                  return (
-                    <button
-                      aria-expanded={active}
-                      className={`rounded-md px-2 py-1.5 text-xs ${active ? 'bg-sky-500/15 text-sky-300' : 'text-slate-300 hover:bg-slate-800'}`}
-                      key={tool}
-                      onClick={() => setActiveTool(active ? null : tool)}
-                      type="button"
-                    >
-                      {label}
-                      {count && (
-                        <span className="ml-2 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">
-                          {count}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-                {selectedView && allowed(user, 'schema.manage') && (
+                          : tool === 'sort' && sortField
+                            ? '1'
+                            : tool === 'group' && groupings.length
+                              ? String(groupings.length)
+                              : '';
+                    return (
+                      <button
+                        aria-expanded={active}
+                        className={`rounded-md px-2 py-1.5 text-xs ${active ? 'bg-sky-500/15 text-sky-300' : 'text-slate-300 hover:bg-slate-800'}`}
+                        key={tool}
+                        onClick={() => setActiveTool(active ? null : tool)}
+                        type="button"
+                      >
+                        {label}
+                        {count && (
+                          <span className="ml-2 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">
+                            {count}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                {selectedView && selectedViewWritable && (
                   <>
                     <button
                       className={`rounded-lg px-3 py-2 text-sm ${viewDirty ? 'bg-sky-500/15 font-medium text-sky-300 hover:bg-sky-500/20' : 'text-slate-600'}`}
@@ -3784,17 +4614,17 @@ export function DataPage({
                         {t('data.discardChanges')}
                       </button>
                     )}
-                    <button
-                      aria-label={t('data.archiveViewLabel', { name: selectedView.name })}
-                      className="rounded-lg px-2 py-2 text-sm text-slate-500 hover:bg-rose-500/10 hover:text-rose-300"
-                      disabled={viewBusy}
-                      onClick={() => void archiveView()}
-                      title={t('data.archiveView')}
-                      type="button"
-                    >
-                      ⋯
-                    </button>
                   </>
+                )}
+                {selectedView && !selectedViewWritable && viewDirty && (
+                  <button
+                    className="rounded-lg px-3 py-2 text-sm text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                    disabled={viewBusy}
+                    onClick={() => applyViewConfig(selectedView.config)}
+                    type="button"
+                  >
+                    {t('data.resetLocalView')}
+                  </button>
                 )}
                 <select
                   aria-label={t('data.rowDensity')}
@@ -3825,26 +4655,25 @@ export function DataPage({
                   </select>
                 )}
                 {workspaceMode && (
-                  <select
-                    aria-label={t('data.projectFilter')}
+                  <ProjectReferencePicker
+                    ariaLabel={t('data.projectFilter')}
                     className="max-w-48 rounded-lg border border-transparent bg-transparent px-3 py-2 text-sm text-slate-300 outline-none hover:bg-slate-800 focus:border-sky-500"
+                    projects={projectReferences}
+                    specialOptions={[
+                      {
+                        value: 'all',
+                        label: locale === 'ko' ? '모든 프로젝트' : 'All projects',
+                      },
+                      { value: 'none', label: t('data.noProject') },
+                    ]}
                     value={contextProjectFilter}
-                    onChange={(event) => {
-                      setContextProjectFilter(event.target.value);
+                    workspaceId={workspaceId}
+                    onChange={(nextValue) => {
+                      setContextProjectFilter(nextValue);
                       setPage(1);
                     }}
-                  >
-                    <option value="all">
-                      {locale === 'ko' ? '모든 프로젝트' : 'All projects'}
-                    </option>
-                    <option value="none">{t('data.noProject')}</option>
-                    {workspaceData?.projects.map((project) => (
-                      <option key={project.id} value={project.id}>
-                        {project.name}
-                        {project.archivedAt ? ' (archived)' : ''}
-                      </option>
-                    ))}
-                  </select>
+                    onProjectResolved={mergeProjectReferences}
+                  />
                 )}
                 <span className="min-w-3 flex-1" />
                 <div className="flex h-8 min-w-40 items-center gap-1 rounded-md border border-slate-800 bg-slate-950/55 px-2 focus-within:border-sky-500">
@@ -3875,24 +4704,68 @@ export function DataPage({
                     />
                   )}
                 </div>
+                <IconAction
+                  icon={archiveState === 'active' ? '⌫' : '↺'}
+                  label={archiveState === 'active' ? t('data.showArchived') : t('data.showActive')}
+                  onClick={() => {
+                    setArchiveState((current) => (current === 'active' ? 'archived' : 'active'));
+                    setPage(1);
+                    setSelectedRows(new Set());
+                    setGridSelection(undefined);
+                    setSelectedRecord(undefined);
+                    setShowInlineRecord(false);
+                    setShowNewRecord(false);
+                    setShowBulkEdit(false);
+                  }}
+                  tone={archiveState === 'archived' ? 'accent' : 'default'}
+                />
                 {selectedRows.size > 0 && (
                   <div className="flex items-center gap-2 pl-2">
                     <span className="text-xs font-medium text-sky-300">
                       {t('data.selected', { count: selectedRows.size })}
                     </span>
-                    {allowed(user, 'record.archive') && (
+                    {archiveState === 'active' &&
+                      canUpdateRecords &&
+                      fields.some(
+                        (field) =>
+                          !['measurement', 'formula', 'lookup', 'rollup'].includes(field.fieldType),
+                      ) && (
+                        <IconAction
+                          aria-expanded={showBulkEdit}
+                          disabled={bulkBusy}
+                          icon="✎"
+                          label={t('data.bulkEdit')}
+                          onClick={() => setShowBulkEdit((current) => !current)}
+                          tone={showBulkEdit ? 'accent' : 'default'}
+                        />
+                      )}
+                    {archiveState === 'active' && canArchiveRecords && (
                       <IconAction
                         disabled={bulkBusy}
                         icon={bulkBusy ? '…' : '⌫'}
                         label={t('common.archive')}
-                        onClick={() => void archiveSelectedRows()}
+                        onClick={() => void changeSelectedRowsLifecycle(true)}
                         tone="danger"
                       />
                     )}
+                    {archiveState === 'archived' &&
+                      allowed(user, 'record.restore') &&
+                      canArchiveRecords && (
+                        <IconAction
+                          disabled={bulkBusy}
+                          icon={bulkBusy ? '…' : '↺'}
+                          label={t('common.restore')}
+                          onClick={() => void changeSelectedRowsLifecycle(false)}
+                          tone="accent"
+                        />
+                      )}
                     <IconAction
                       icon="×"
                       label={t('data.clear')}
-                      onClick={() => setSelectedRows(new Set())}
+                      onClick={() => {
+                        setSelectedRows(new Set());
+                        setShowBulkEdit(false);
+                      }}
                     />
                   </div>
                 )}
@@ -3900,6 +4773,33 @@ export function DataPage({
                   {t('data.records', { count: records.total })}
                 </span>
               </div>
+
+              {selectedView && !selectedViewWritable && (
+                <div className="flex items-center gap-2 border-t border-slate-800 bg-slate-950/35 px-3 py-1.5 text-[11px] text-slate-500">
+                  <span aria-hidden="true">
+                    {recordViewPermission(selectedView) === 'locked' ? '▣' : '●'}
+                  </span>
+                  <span>
+                    {recordViewPermission(selectedView) === 'locked'
+                      ? t('data.lockedViewNotice')
+                      : t('data.personalViewNotice')}
+                    {selectedView.lockReason ? ` · ${selectedView.lockReason}` : ''}
+                  </span>
+                </div>
+              )}
+
+              {showBulkEdit && selectedRows.size > 0 && archiveState === 'active' && (
+                <div className="border-t border-slate-800 px-3 pb-3">
+                  <BulkRecordEditPanel
+                    base={base}
+                    busy={bulkBusy}
+                    count={selectedRows.size}
+                    fields={fields}
+                    onCancel={() => setShowBulkEdit(false)}
+                    onSubmit={updateSelectedRecordFields}
+                  />
+                </div>
+              )}
 
               {activeTool === 'fields' && (
                 <div className="border-t border-slate-800 p-3">
@@ -4011,6 +4911,192 @@ export function DataPage({
                 </div>
               )}
 
+              {activeTool === 'group' && (
+                <div className="border-t border-slate-800 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="text-xs font-medium text-slate-300">{t('data.groupRecords')}</p>
+                      <p className="mt-0.5 text-[11px] text-slate-500">
+                        {t('data.groupRecordsHelp')}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      {activeGroupings.length > 0 && (
+                        <>
+                          <IconAction
+                            className="size-7"
+                            icon="▾"
+                            label={t('data.expandAllGroups')}
+                            onClick={() => setCollapsedGroupPaths(new Set())}
+                          />
+                          <IconAction
+                            className="size-7"
+                            icon="▸"
+                            label={t('data.collapseAllGroups')}
+                            onClick={() =>
+                              setCollapsedGroupPaths(
+                                new Set(
+                                  (records.groupHierarchy ?? []).map((group) =>
+                                    groupPathKey(group.path.map((part) => part.value)),
+                                  ),
+                                ),
+                              )
+                            }
+                          />
+                        </>
+                      )}
+                      {groupings.length > 0 && (
+                        <IconAction
+                          className="size-7"
+                          icon="×"
+                          label={t('data.clearGroups')}
+                          onClick={() => {
+                            setGroupings([]);
+                            setPage(1);
+                          }}
+                        />
+                      )}
+                    </div>
+                  </div>
+                  <div className="mt-3 space-y-2">
+                    {groupings.map((grouping, index) => (
+                      <div
+                        className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/35 p-2"
+                        key={`${grouping.fieldId}:${index}`}
+                      >
+                        <label className="flex items-center gap-2 text-xs text-slate-400">
+                          <input
+                            aria-label={t('data.enableGroupLevel', { level: index + 1 })}
+                            checked={grouping.enabled}
+                            type="checkbox"
+                            onChange={(event) =>
+                              setGroupings((current) =>
+                                current.map((candidate, candidateIndex) =>
+                                  candidateIndex === index
+                                    ? { ...candidate, enabled: event.target.checked }
+                                    : candidate,
+                                ),
+                              )
+                            }
+                          />
+                          {t('data.groupLevel', { level: index + 1 })}
+                        </label>
+                        <select
+                          aria-label={t('data.groupLevelField', { level: index + 1 })}
+                          className="min-w-48 rounded-md border border-slate-700 bg-slate-900 px-2 py-1.5 text-xs text-slate-200 outline-none focus:border-sky-500"
+                          value={grouping.fieldId}
+                          onChange={(event) => {
+                            setGroupings((current) =>
+                              current.map((candidate, candidateIndex) =>
+                                candidateIndex === index
+                                  ? { ...candidate, fieldId: event.target.value }
+                                  : candidate,
+                              ),
+                            );
+                            setPage(1);
+                          }}
+                        >
+                          {groupableFields.map((field) => (
+                            <option
+                              disabled={groupings.some(
+                                (candidate, candidateIndex) =>
+                                  candidateIndex !== index && candidate.fieldId === field.id,
+                              )}
+                              key={field.id}
+                              value={field.id}
+                            >
+                              {field.name}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          aria-label={t('data.groupDirection', { level: index + 1 })}
+                          className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1.5 text-xs text-slate-300 outline-none focus:border-sky-500"
+                          value={grouping.direction}
+                          onChange={(event) => {
+                            setGroupings((current) =>
+                              current.map((candidate, candidateIndex) =>
+                                candidateIndex === index
+                                  ? {
+                                      ...candidate,
+                                      direction: event.target.value as 'asc' | 'desc',
+                                    }
+                                  : candidate,
+                              ),
+                            );
+                            setPage(1);
+                          }}
+                        >
+                          <option value="asc">{t('data.ascending')}</option>
+                          <option value="desc">{t('data.descending')}</option>
+                        </select>
+                        <span className="flex-1" />
+                        <IconAction
+                          className="size-7"
+                          disabled={index === 0}
+                          icon="↑"
+                          label={t('data.moveGroupUp', { level: index + 1 })}
+                          onClick={() =>
+                            setGroupings((current) => {
+                              const next = [...current];
+                              [next[index - 1], next[index]] = [next[index]!, next[index - 1]!];
+                              return next;
+                            })
+                          }
+                        />
+                        <IconAction
+                          className="size-7"
+                          disabled={index === groupings.length - 1}
+                          icon="↓"
+                          label={t('data.moveGroupDown', { level: index + 1 })}
+                          onClick={() =>
+                            setGroupings((current) => {
+                              const next = [...current];
+                              [next[index], next[index + 1]] = [next[index + 1]!, next[index]!];
+                              return next;
+                            })
+                          }
+                        />
+                        <IconAction
+                          className="size-7"
+                          icon="⌫"
+                          label={t('data.removeGroupLevel', { level: index + 1 })}
+                          onClick={() => {
+                            setGroupings((current) =>
+                              current.filter((_, candidateIndex) => candidateIndex !== index),
+                            );
+                            setPage(1);
+                          }}
+                          tone="danger"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  {groupings.length < 3 && groupings.length < groupableFields.length && (
+                    <button
+                      className="mt-2 rounded-md px-2 py-1.5 text-xs font-medium text-sky-300 hover:bg-sky-500/10"
+                      onClick={() => {
+                        const nextField = groupableFields.find(
+                          (field) => !groupings.some((grouping) => grouping.fieldId === field.id),
+                        );
+                        if (!nextField) return;
+                        setGroupings((current) => [
+                          ...current,
+                          { fieldId: nextField.id, direction: 'asc', enabled: true },
+                        ]);
+                        setPage(1);
+                      }}
+                      type="button"
+                    >
+                      + {t(groupings.length ? 'data.addSubgroup' : 'data.addGroup')}
+                    </button>
+                  )}
+                  {!groupableFields.length && (
+                    <p className="mt-3 text-xs text-slate-500">{t('data.noGroupableFields')}</p>
+                  )}
+                </div>
+              )}
+
               {activeTool === 'filter' && (
                 <div className="flex flex-wrap items-end gap-3 border-t border-slate-800 p-3">
                   <label className="min-w-44 text-xs text-slate-400">
@@ -4027,8 +5113,14 @@ export function DataPage({
                       {fields
                         .filter(
                           (field) =>
-                            field.fieldType !== 'measurement' &&
-                            field.fieldType !== 'range' &&
+                            ![
+                              'measurement',
+                              'range',
+                              'spectral_data',
+                              'tabular_data',
+                              'file',
+                              'dataset',
+                            ].includes(field.fieldType) &&
                             !calculatedFieldTypeSet.has(field.fieldType),
                         )
                         .map((field) => (
@@ -4106,6 +5198,10 @@ export function DataPage({
                               'multi_select',
                               'measurement',
                               'range',
+                              'spectral_data',
+                              'tabular_data',
+                              'file',
+                              'dataset',
                               'formula',
                               'lookup',
                               'rollup',
@@ -4137,6 +5233,18 @@ export function DataPage({
               )}
             </div>
 
+            {showShareView && selectedView && allowed(user, 'view.share') && (
+              <RecordViewSharePanel
+                base={base}
+                key={selectedView.id}
+                objectTypeId={selectedId}
+                onClose={() => setShowShareView(false)}
+                viewId={selectedView.publicId ?? selectedView.id}
+                viewName={selectedView.name}
+                viewType={activeViewType}
+              />
+            )}
+
             <div className="mt-2.5 flex flex-wrap items-start justify-between gap-2 text-xs text-slate-500">
               <details className="group relative">
                 <summary className="cursor-pointer list-none rounded-md px-1.5 py-1 font-medium text-slate-500 marker:content-none hover:bg-slate-800/70 hover:text-sky-300">
@@ -4157,6 +5265,7 @@ export function DataPage({
             </div>
 
             <div
+              aria-busy={recordsLoading}
               aria-label={t('data.tableAccessibleLabel', { name: selected.pluralName })}
               className={`mt-1.5 w-full min-w-0 max-w-full overflow-x-auto overflow-y-auto overscroll-x-contain rounded-md border border-slate-800 ${activeViewType === 'grid' ? 'max-h-[72vh]' : ''}`}
               onScroll={(event) => {
@@ -4168,803 +5277,889 @@ export function DataPage({
               <p aria-live="polite" className="sr-only">
                 {layoutAnnouncement}
               </p>
-              {recordsLoading && (
+              {recordsLoading && recordsObjectTypeId !== selectedId && (
                 <div className="space-y-3 p-5" aria-label={t('data.loadingRecords')}>
                   <div className={skeletonLineClass} />
                   <div className={skeletonLineClass} />
                   <div className={skeletonLineClass} />
                 </div>
               )}
-              {!recordsLoading && activeViewType === 'grid' && (
-                <table
-                  aria-multiselectable="true"
-                  className="min-w-full table-fixed select-none border-separate border-spacing-0 text-left text-sm"
-                  role="grid"
-                  style={{ width: gridTableWidth }}
-                  onCopy={handleGridCopy}
-                  onKeyDown={handleGridSelectionKeyDown}
-                  onPaste={handleGridPaste}
-                >
-                  <caption className="sr-only">
-                    Editable spreadsheet view for {selected.pluralName}
-                  </caption>
-                  <colgroup>
-                    <col className="w-20" />
-                    <col style={{ width: displayNameWidth }} />
-                    {workspaceMode && <col style={{ width: contextProjectWidth }} />}
-                    {visibleFields.map((field) => (
-                      <col
-                        data-column-id={field.id}
-                        key={field.id}
-                        style={{ width: fieldWidths[field.id] ?? DEFAULT_FIELD_WIDTH }}
-                      />
-                    ))}
-                    <col style={{ width: updatedAtWidth }} />
-                    <col className="w-20" />
-                  </colgroup>
-                  <thead className="sticky top-0 z-20 bg-slate-900 text-xs uppercase tracking-wider text-slate-500">
-                    <tr>
-                      <th className="w-20 border-b border-r border-slate-800 px-2.5 py-2">
-                        <span className="flex items-center gap-2">
-                          <input
-                            aria-label={t('data.selectAll')}
-                            checked={
-                              records.items.length > 0 &&
-                              records.items.every((record) => selectedRows.has(record.id))
-                            }
-                            type="checkbox"
-                            onChange={(event) =>
-                              setSelectedRows((current) => {
-                                const next = new Set(current);
-                                for (const record of records.items) {
-                                  if (event.target.checked) next.add(record.id);
-                                  else next.delete(record.id);
-                                }
-                                return next;
-                              })
-                            }
-                          />
-                          #
-                        </span>
-                      </th>
-                      <th
-                        aria-label={t('data.name')}
-                        className="sticky left-0 z-30 border-b border-r border-slate-800 bg-slate-900 px-1.5 py-1"
-                        onContextMenu={(event) =>
-                          setContextMenu(
-                            menuFromPointer(
-                              event,
-                              t('data.name'),
-                              systemColumnContextItems('displayName', t('data.name')),
-                            ),
-                          )
-                        }
-                        onKeyDown={(event) => {
-                          const menu = menuFromKeyboard(
-                            event,
-                            t('data.name'),
-                            systemColumnContextItems('displayName', t('data.name')),
-                          );
-                          if (menu) setContextMenu(menu);
-                        }}
-                        style={{ width: displayNameWidth }}
-                      >
-                        <button
-                          aria-label={t('data.sortByColumn', { column: t('data.name') })}
-                          className="flex w-full items-center rounded px-1 py-1 text-left hover:bg-slate-800"
-                          onClick={() => cycleSort('displayName')}
-                          title={t('data.sortCycleHint')}
-                          type="button"
-                        >
-                          {t('data.name')}
-                          {sortField === 'displayName' && (
-                            <span aria-hidden="true" className="ml-1 text-sky-400">
-                              {sortDirection === 'asc' ? '↑' : '↓'}
-                            </span>
-                          )}
-                        </button>
-                        <ColumnResizeHandle
-                          columnName={t('data.name')}
-                          resetWidth={DEFAULT_SYSTEM_FIELD_WIDTHS.displayName}
-                          width={displayNameWidth}
-                          onResize={(width) =>
-                            setSystemFieldWidths((current) => ({
-                              ...current,
-                              displayName: width,
-                            }))
-                          }
-                          onReset={() =>
-                            setSystemFieldWidths((current) => {
-                              const next = { ...current };
-                              delete next.displayName;
-                              return next;
-                            })
-                          }
+              {(!recordsLoading || recordsObjectTypeId === selectedId) &&
+                activeViewType === 'grid' && (
+                  <table
+                    aria-multiselectable="true"
+                    className="min-w-full table-fixed select-none border-separate border-spacing-0 text-left text-sm"
+                    role="grid"
+                    style={{ width: gridTableWidth }}
+                    onCopy={handleGridCopy}
+                    onKeyDown={handleGridSelectionKeyDown}
+                    onPaste={handleGridPaste}
+                  >
+                    <caption className="sr-only">
+                      Editable spreadsheet view for {selected.pluralName}
+                    </caption>
+                    <colgroup>
+                      <col className="w-20" />
+                      <col style={{ width: displayNameWidth }} />
+                      {workspaceMode && <col style={{ width: contextProjectWidth }} />}
+                      {visibleFields.map((field) => (
+                        <col
+                          data-column-id={field.id}
+                          key={field.id}
+                          style={{ width: fieldWidths[field.id] ?? DEFAULT_FIELD_WIDTH }}
                         />
-                      </th>
-                      {workspaceMode && (
+                      ))}
+                      <col style={{ width: updatedAtWidth }} />
+                      <col className="w-20" />
+                    </colgroup>
+                    <thead className="sticky top-0 z-20 bg-slate-900 text-xs uppercase tracking-wider text-slate-400">
+                      <tr>
+                        <th className="w-20 border-b border-r border-slate-800 px-2.5 py-2">
+                          <span className="flex items-center gap-2">
+                            <input
+                              aria-label={t('data.selectAll')}
+                              checked={
+                                records.items.length > 0 &&
+                                records.items.every((record) => selectedRows.has(record.id))
+                              }
+                              type="checkbox"
+                              onChange={(event) =>
+                                toggleVisibleRecordSelection(event.target.checked)
+                              }
+                            />
+                            #
+                          </span>
+                        </th>
                         <th
-                          aria-label={t('data.project')}
-                          className="relative border-b border-r border-slate-800 px-2.5 py-2"
+                          aria-label={t('data.name')}
+                          className="sticky left-0 z-30 border-b border-r border-slate-800 bg-slate-900 px-1.5 py-1"
                           onContextMenu={(event) =>
                             setContextMenu(
                               menuFromPointer(
                                 event,
-                                t('data.project'),
-                                systemColumnContextItems('contextProject', t('data.project')),
+                                t('data.name'),
+                                systemColumnContextItems('displayName', t('data.name')),
                               ),
                             )
                           }
                           onKeyDown={(event) => {
                             const menu = menuFromKeyboard(
                               event,
-                              t('data.project'),
-                              systemColumnContextItems('contextProject', t('data.project')),
+                              t('data.name'),
+                              systemColumnContextItems('displayName', t('data.name')),
                             );
                             if (menu) setContextMenu(menu);
                           }}
-                          style={{ width: contextProjectWidth }}
+                          style={{ width: displayNameWidth }}
                         >
-                          {t('data.project')}
+                          <button
+                            aria-label={t('data.sortByColumn', { column: t('data.name') })}
+                            className="flex w-full items-center rounded px-1 py-1 text-left hover:bg-slate-800"
+                            onClick={() => cycleSort('displayName')}
+                            title={t('data.sortCycleHint')}
+                            type="button"
+                          >
+                            {t('data.name')}
+                            {sortField === 'displayName' && (
+                              <span aria-hidden="true" className="ml-1 text-sky-400">
+                                {sortDirection === 'asc' ? '↑' : '↓'}
+                              </span>
+                            )}
+                          </button>
                           <ColumnResizeHandle
-                            columnName={t('data.project')}
-                            resetWidth={DEFAULT_SYSTEM_FIELD_WIDTHS.contextProject}
-                            width={contextProjectWidth}
+                            columnName={t('data.name')}
+                            resetWidth={DEFAULT_SYSTEM_FIELD_WIDTHS.displayName}
+                            width={displayNameWidth}
                             onResize={(width) =>
                               setSystemFieldWidths((current) => ({
                                 ...current,
-                                contextProject: width,
+                                displayName: width,
                               }))
                             }
                             onReset={() =>
                               setSystemFieldWidths((current) => {
                                 const next = { ...current };
-                                delete next.contextProject;
+                                delete next.displayName;
                                 return next;
                               })
                             }
                           />
                         </th>
-                      )}
-                      {visibleFields.map((field) => (
-                        <th
-                          aria-label={field.name}
-                          className={`relative border-b border-r border-slate-800 px-1.5 py-1 ${dragTarget?.fieldId === field.id ? (dragTarget.position === 'before' ? 'border-l-2 border-l-sky-400' : 'border-r-2 border-r-sky-400') : ''}`}
-                          key={field.id}
-                          onContextMenu={(event) =>
-                            setContextMenu(
-                              menuFromPointer(event, field.name, columnContextItems(field)),
-                            )
-                          }
-                          style={{ width: fieldWidths[field.id] ?? DEFAULT_FIELD_WIDTH }}
-                          onDragOver={(event: ReactDragEvent<HTMLTableCellElement>) => {
-                            if (!draggedFieldId || draggedFieldId === field.id) return;
-                            event.preventDefault();
-                            event.dataTransfer.dropEffect = 'move';
-                            const bounds = event.currentTarget.getBoundingClientRect();
-                            setDragTarget({
-                              fieldId: field.id,
-                              position:
+                        {workspaceMode && (
+                          <th
+                            aria-label={t('data.project')}
+                            className="relative border-b border-r border-slate-800 px-2.5 py-2"
+                            onContextMenu={(event) =>
+                              setContextMenu(
+                                menuFromPointer(
+                                  event,
+                                  t('data.project'),
+                                  systemColumnContextItems('contextProject', t('data.project')),
+                                ),
+                              )
+                            }
+                            onKeyDown={(event) => {
+                              const menu = menuFromKeyboard(
+                                event,
+                                t('data.project'),
+                                systemColumnContextItems('contextProject', t('data.project')),
+                              );
+                              if (menu) setContextMenu(menu);
+                            }}
+                            style={{ width: contextProjectWidth }}
+                          >
+                            {t('data.project')}
+                            <ColumnResizeHandle
+                              columnName={t('data.project')}
+                              resetWidth={DEFAULT_SYSTEM_FIELD_WIDTHS.contextProject}
+                              width={contextProjectWidth}
+                              onResize={(width) =>
+                                setSystemFieldWidths((current) => ({
+                                  ...current,
+                                  contextProject: width,
+                                }))
+                              }
+                              onReset={() =>
+                                setSystemFieldWidths((current) => {
+                                  const next = { ...current };
+                                  delete next.contextProject;
+                                  return next;
+                                })
+                              }
+                            />
+                          </th>
+                        )}
+                        {visibleFields.map((field) => (
+                          <th
+                            aria-label={field.name}
+                            className={`relative border-b border-r border-slate-800 px-1.5 py-1 ${dragTarget?.fieldId === field.id ? (dragTarget.position === 'before' ? 'border-l-2 border-l-sky-400' : 'border-r-2 border-r-sky-400') : ''}`}
+                            key={field.id}
+                            onContextMenu={(event) =>
+                              setContextMenu(
+                                menuFromPointer(event, field.name, columnContextItems(field)),
+                              )
+                            }
+                            style={{ width: fieldWidths[field.id] ?? DEFAULT_FIELD_WIDTH }}
+                            onDragOver={(event: ReactDragEvent<HTMLTableCellElement>) => {
+                              if (!draggedFieldId || draggedFieldId === field.id) return;
+                              event.preventDefault();
+                              event.dataTransfer.dropEffect = 'move';
+                              const bounds = event.currentTarget.getBoundingClientRect();
+                              setDragTarget({
+                                fieldId: field.id,
+                                position:
+                                  event.clientX < bounds.left + bounds.width / 2
+                                    ? 'before'
+                                    : 'after',
+                              });
+                            }}
+                            onDrop={(event: ReactDragEvent<HTMLTableCellElement>) => {
+                              if (!draggedFieldId || draggedFieldId === field.id) return;
+                              event.preventDefault();
+                              const bounds = event.currentTarget.getBoundingClientRect();
+                              reorderField(
+                                draggedFieldId,
+                                field.id,
                                 event.clientX < bounds.left + bounds.width / 2 ? 'before' : 'after',
-                            });
-                          }}
-                          onDrop={(event: ReactDragEvent<HTMLTableCellElement>) => {
-                            if (!draggedFieldId || draggedFieldId === field.id) return;
-                            event.preventDefault();
-                            const bounds = event.currentTarget.getBoundingClientRect();
-                            reorderField(
-                              draggedFieldId,
-                              field.id,
-                              event.clientX < bounds.left + bounds.width / 2 ? 'before' : 'after',
-                            );
-                            setDraggedFieldId('');
-                            setDragTarget(undefined);
-                          }}
-                          onKeyDown={(event) => {
-                            const menu = menuFromKeyboard(
-                              event,
-                              field.name,
-                              columnContextItems(field),
-                            );
-                            if (menu) setContextMenu(menu);
-                          }}
-                        >
-                          <div className="flex min-w-0 items-center gap-1">
-                            <span
-                              aria-label={t('data.reorderColumn', { column: field.name })}
-                              className="shrink-0 cursor-grab rounded px-0.5 py-1 text-sm leading-none text-slate-600 hover:bg-slate-800 hover:text-sky-300 active:cursor-grabbing"
-                              draggable
-                              role="button"
-                              tabIndex={0}
-                              title={t('data.reorderColumnHint')}
-                              onDragEnd={() => {
-                                setDraggedFieldId('');
-                                setDragTarget(undefined);
-                              }}
-                              onDragStart={(event: ReactDragEvent<HTMLSpanElement>) => {
-                                event.dataTransfer.effectAllowed = 'move';
-                                event.dataTransfer.setData('text/plain', field.id);
-                                setDraggedFieldId(field.id);
-                              }}
-                              onKeyDown={(event) => {
-                                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-                                event.preventDefault();
-                                event.stopPropagation();
-                                moveField(field.id, event.key === 'ArrowLeft' ? -1 : 1);
-                              }}
-                            >
-                              ⠿
-                            </span>
-                            <button
-                              aria-label={t('data.sortByColumn', { column: field.name })}
-                              className="flex min-w-0 flex-1 items-center rounded px-1 py-1 text-left hover:bg-slate-800"
-                              disabled={[
-                                'relation',
-                                'multi_select',
-                                'measurement',
-                                'range',
-                                'formula',
-                                'lookup',
-                                'rollup',
-                              ].includes(field.fieldType)}
-                              onClick={() => cycleSort(field.id)}
-                              title={t('data.sortCycleHint')}
-                              type="button"
-                            >
-                              <span className="truncate">{field.name}</span>
-                              {sortField === field.id && (
-                                <span aria-hidden="true" className="ml-1 text-sky-400">
-                                  {sortDirection === 'asc' ? '↑' : '↓'}
-                                </span>
-                              )}
-                              <span className="ml-2 truncate font-normal normal-case text-slate-600">
-                                {t(fieldTypeTranslationKeys[schemaTypeForField(field)])}
-                              </span>
-                            </button>
-                            <details className="relative shrink-0 normal-case" data-popover-menu>
-                              <summary
-                                aria-label={t('data.columnOptions', { column: field.name })}
-                                className="grid size-7 cursor-pointer list-none place-items-center rounded text-base tracking-normal text-slate-500 marker:content-none hover:bg-slate-800 hover:text-slate-200"
+                              );
+                              setDraggedFieldId('');
+                              setDragTarget(undefined);
+                            }}
+                            onKeyDown={(event) => {
+                              const menu = menuFromKeyboard(
+                                event,
+                                field.name,
+                                columnContextItems(field),
+                              );
+                              if (menu) setContextMenu(menu);
+                            }}
+                          >
+                            <div className="flex min-w-0 items-center gap-1">
+                              <span
+                                aria-label={t('data.reorderColumn', { column: field.name })}
+                                className="inline-flex size-6 shrink-0 cursor-grab items-center justify-center rounded text-sm leading-none text-slate-600 hover:bg-slate-800 hover:text-sky-300 active:cursor-grabbing"
+                                draggable
                                 role="button"
+                                tabIndex={0}
+                                title={t('data.reorderColumnHint')}
+                                onDragEnd={() => {
+                                  setDraggedFieldId('');
+                                  setDragTarget(undefined);
+                                }}
+                                onDragStart={(event: ReactDragEvent<HTMLSpanElement>) => {
+                                  event.dataTransfer.effectAllowed = 'move';
+                                  event.dataTransfer.setData('text/plain', field.id);
+                                  setDraggedFieldId(field.id);
+                                }}
+                                onKeyDown={(event) => {
+                                  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight')
+                                    return;
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  moveField(field.id, event.key === 'ArrowLeft' ? -1 : 1);
+                                }}
                               >
-                                ⋮
-                              </summary>
-                              <div className="absolute right-0 top-8 z-50 grid w-52 gap-0.5 rounded-md border border-slate-700 bg-slate-950 p-1 text-xs font-normal tracking-normal text-slate-300 shadow-xl">
-                                {![
+                                ⠿
+                              </span>
+                              <button
+                                aria-label={t('data.sortByColumn', { column: field.name })}
+                                className="flex min-w-0 flex-1 items-center rounded px-1 py-1 text-left hover:bg-slate-800"
+                                disabled={[
                                   'relation',
                                   'multi_select',
                                   'measurement',
                                   'range',
+                                  'spectral_data',
+                                  'tabular_data',
+                                  'file',
+                                  'dataset',
                                   'formula',
                                   'lookup',
                                   'rollup',
-                                ].includes(field.fieldType) && (
-                                  <>
-                                    <button
-                                      aria-label={t('data.sortFieldAscending', {
-                                        name: field.name,
-                                      })}
-                                      className={compactMenuItemClass}
-                                      onClick={() => {
-                                        setSortField(field.id);
-                                        setSortDirection('asc');
-                                        setPage(1);
-                                      }}
-                                      type="button"
-                                    >
-                                      <span className="mr-2 text-sky-400">↑</span>{' '}
-                                      {t('data.sortAscending')}
-                                    </button>
-                                    <button
-                                      aria-label={t('data.sortFieldDescending', {
-                                        name: field.name,
-                                      })}
-                                      className={compactMenuItemClass}
-                                      onClick={() => {
-                                        setSortField(field.id);
-                                        setSortDirection('desc');
-                                        setPage(1);
-                                      }}
-                                      type="button"
-                                    >
-                                      <span className="mr-2 text-sky-400">↓</span>{' '}
-                                      {t('data.sortDescending')}
-                                    </button>
-                                    {sortField === field.id && (
-                                      <button
-                                        aria-label={t('data.removeFieldSorting', {
-                                          name: field.name,
-                                        })}
-                                        className={compactMenuItemClass}
-                                        onClick={() => {
-                                          setSortField('');
-                                          setSortDirection('asc');
-                                          setPage(1);
-                                        }}
-                                        type="button"
-                                      >
-                                        <span className="mr-2 text-slate-500">×</span>{' '}
-                                        {t('data.removeSorting')}
-                                      </button>
-                                    )}
-                                  </>
+                                ].includes(field.fieldType)}
+                                onClick={() => cycleSort(field.id)}
+                                title={t('data.sortCycleHint')}
+                                type="button"
+                              >
+                                <span className="truncate">{field.name}</span>
+                                {sortField === field.id && (
+                                  <span aria-hidden="true" className="ml-1 text-sky-400">
+                                    {sortDirection === 'asc' ? '↑' : '↓'}
+                                  </span>
                                 )}
-                                {!['measurement', 'range'].includes(field.fieldType) && (
-                                  <button
-                                    aria-label={t('data.filterField', { name: field.name })}
-                                    className={compactMenuItemClass}
-                                    onClick={() => {
-                                      setFilterField(field.id);
-                                      setFilterOperator('eq');
-                                      setFilterValue('');
-                                      setDebouncedFilterValue('');
-                                      setActiveTool('filter');
-                                      setPage(1);
-                                    }}
-                                    type="button"
-                                  >
-                                    <span className="mr-2 text-sky-400">⌕</span>{' '}
-                                    {t('data.filterColumn')}
-                                  </button>
-                                )}
-                                <button
-                                  aria-label={t('data.hideFieldColumn', { name: field.name })}
-                                  className={compactMenuItemClass}
-                                  onClick={() =>
-                                    setHiddenFieldIds((current) => new Set([...current, field.id]))
-                                  }
-                                  type="button"
+                                <span
+                                  aria-label={t(
+                                    schemaFieldTypeTranslationKeys[schemaTypeForField(field)],
+                                  )}
+                                  className="ml-1.5 grid size-5 shrink-0 place-items-center rounded border border-slate-700 font-mono text-[9px] font-normal normal-case text-slate-500"
+                                  role="img"
+                                  title={t(
+                                    schemaFieldTypeTranslationKeys[schemaTypeForField(field)],
+                                  )}
                                 >
-                                  <span className="mr-2 text-slate-500">◫</span>{' '}
-                                  {t('data.hideColumn')}
-                                </button>
-                                {hiddenFieldIds.size > 0 && (
-                                  <button
-                                    className="border-t border-slate-800 px-2 py-1.5 text-left text-sky-300 hover:bg-slate-800"
-                                    onClick={() => setActiveTool('fields')}
-                                    type="button"
-                                  >
-                                    {t('data.showHiddenColumns')}
-                                  </button>
-                                )}
-                              </div>
-                            </details>
-                          </div>
+                                  {fieldMeta(field).icon}
+                                </span>
+                              </button>
+                            </div>
+                            <ColumnResizeHandle
+                              columnName={field.name}
+                              resetWidth={DEFAULT_FIELD_WIDTH}
+                              width={fieldWidths[field.id] ?? DEFAULT_FIELD_WIDTH}
+                              onResize={(width) =>
+                                setFieldWidths((current) => ({ ...current, [field.id]: width }))
+                              }
+                              onReset={() =>
+                                setFieldWidths((current) => {
+                                  const next = { ...current };
+                                  delete next[field.id];
+                                  return next;
+                                })
+                              }
+                            />
+                          </th>
+                        ))}
+                        <th
+                          aria-label={t('data.updated')}
+                          className="relative border-b border-r border-slate-800 px-1.5 py-1"
+                          onContextMenu={(event) =>
+                            setContextMenu(
+                              menuFromPointer(
+                                event,
+                                t('data.updated'),
+                                systemColumnContextItems('updatedAt', t('data.updated')),
+                              ),
+                            )
+                          }
+                          onKeyDown={(event) => {
+                            const menu = menuFromKeyboard(
+                              event,
+                              t('data.updated'),
+                              systemColumnContextItems('updatedAt', t('data.updated')),
+                            );
+                            if (menu) setContextMenu(menu);
+                          }}
+                          style={{ width: updatedAtWidth }}
+                        >
+                          <button
+                            aria-label={t('data.sortByColumn', { column: t('data.updated') })}
+                            className="flex w-full items-center rounded px-1 py-1 text-left hover:bg-slate-800"
+                            onClick={() => cycleSort('updatedAt')}
+                            title={t('data.sortCycleHint')}
+                            type="button"
+                          >
+                            {t('data.updated')}
+                            {sortField === 'updatedAt' && (
+                              <span aria-hidden="true" className="ml-1 text-sky-400">
+                                {sortDirection === 'asc' ? '↑' : '↓'}
+                              </span>
+                            )}
+                          </button>
                           <ColumnResizeHandle
-                            columnName={field.name}
-                            resetWidth={DEFAULT_FIELD_WIDTH}
-                            width={fieldWidths[field.id] ?? DEFAULT_FIELD_WIDTH}
+                            columnName={t('data.updated')}
+                            resetWidth={DEFAULT_SYSTEM_FIELD_WIDTHS.updatedAt}
+                            width={updatedAtWidth}
                             onResize={(width) =>
-                              setFieldWidths((current) => ({ ...current, [field.id]: width }))
+                              setSystemFieldWidths((current) => ({
+                                ...current,
+                                updatedAt: width,
+                              }))
                             }
                             onReset={() =>
-                              setFieldWidths((current) => {
+                              setSystemFieldWidths((current) => {
                                 const next = { ...current };
-                                delete next[field.id];
+                                delete next.updatedAt;
                                 return next;
                               })
                             }
                           />
                         </th>
-                      ))}
-                      <th
-                        aria-label={t('data.updated')}
-                        className="relative border-b border-r border-slate-800 px-1.5 py-1"
-                        onContextMenu={(event) =>
-                          setContextMenu(
-                            menuFromPointer(
-                              event,
-                              t('data.updated'),
-                              systemColumnContextItems('updatedAt', t('data.updated')),
-                            ),
-                          )
-                        }
-                        onKeyDown={(event) => {
-                          const menu = menuFromKeyboard(
-                            event,
-                            t('data.updated'),
-                            systemColumnContextItems('updatedAt', t('data.updated')),
-                          );
-                          if (menu) setContextMenu(menu);
-                        }}
-                        style={{ width: updatedAtWidth }}
-                      >
-                        <button
-                          aria-label={t('data.sortByColumn', { column: t('data.updated') })}
-                          className="flex w-full items-center rounded px-1 py-1 text-left hover:bg-slate-800"
-                          onClick={() => cycleSort('updatedAt')}
-                          title={t('data.sortCycleHint')}
-                          type="button"
-                        >
-                          {t('data.updated')}
-                          {sortField === 'updatedAt' && (
-                            <span aria-hidden="true" className="ml-1 text-sky-400">
-                              {sortDirection === 'asc' ? '↑' : '↓'}
-                            </span>
-                          )}
-                        </button>
-                        <ColumnResizeHandle
-                          columnName={t('data.updated')}
-                          resetWidth={DEFAULT_SYSTEM_FIELD_WIDTHS.updatedAt}
-                          width={updatedAtWidth}
-                          onResize={(width) =>
-                            setSystemFieldWidths((current) => ({
-                              ...current,
-                              updatedAt: width,
-                            }))
-                          }
-                          onReset={() =>
-                            setSystemFieldWidths((current) => {
-                              const next = { ...current };
-                              delete next.updatedAt;
-                              return next;
-                            })
-                          }
-                        />
-                      </th>
-                      <th className="w-20 border-b border-slate-800 px-2.5 py-2 text-center">
-                        <span aria-label={t('data.detail')} title={t('data.detail')}>
-                          ↗
-                        </span>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {virtualStart > 0 && (
-                      <tr aria-hidden="true">
-                        <td
-                          colSpan={visibleFields.length + 4 + (workspaceMode ? 1 : 0)}
-                          style={{ height: virtualStart * virtualRowHeight }}
-                        />
+                        <th className="w-20 border-b border-slate-800 px-2.5 py-2 text-center">
+                          <span aria-label={t('data.detail')} title={t('data.detail')}>
+                            ↗
+                          </span>
+                        </th>
                       </tr>
-                    )}
-                    {virtualRecords.map((record, visibleIndex) => {
-                      const index = virtualStart + visibleIndex;
-                      return (
-                        <tr
-                          className={`${selectedRows.has(record.id) ? 'bg-sky-500/5' : 'bg-slate-950/30'} hover:bg-slate-900/40`}
-                          key={record.id}
-                          onContextMenu={(event) => openRecordContextMenu(event, record)}
-                          onKeyDown={(event) => openRecordContextMenuFromKeyboard(event, record)}
-                        >
-                          <td className="border-b border-r border-slate-800 px-3 text-xs text-slate-600">
-                            <span className="flex items-center gap-2">
-                              <input
-                                aria-label={t('data.selectRecord', { name: record.displayName })}
-                                checked={selectedRows.has(record.id)}
-                                type="checkbox"
-                                onChange={(event) =>
-                                  setSelectedRows((current) => {
-                                    const next = new Set(current);
-                                    if (event.target.checked) next.add(record.id);
-                                    else next.delete(record.id);
-                                    return next;
-                                  })
-                                }
-                              />
-                              <button
-                                aria-label={t('data.quickViewRecord', { name: record.displayName })}
-                                className="rounded px-1 py-2 font-mono hover:bg-slate-800 hover:text-sky-300"
-                                onClick={() => setSelectedRecord(record)}
-                                title={t('data.openQuickView')}
-                                type="button"
+                    </thead>
+                    <tbody>
+                      {virtualStart > 0 && (
+                        <tr aria-hidden="true">
+                          <td
+                            colSpan={visibleFields.length + 4 + (workspaceMode ? 1 : 0)}
+                            style={{ height: virtualStart * virtualRowHeight }}
+                          />
+                        </tr>
+                      )}
+                      {virtualRecords.map((record, visibleIndex) => {
+                        const index = virtualStart + visibleIndex;
+                        const path = groupingFields.map((field) => recordGroupValue(record, field));
+                        const previousRecord = records.items[index - 1];
+                        const previousPath = previousRecord
+                          ? groupingFields.map((field) => recordGroupValue(previousRecord, field))
+                          : [];
+                        const hiddenByGroup = path.some((_, level) =>
+                          collapsedGroupPaths.has(groupPathKey(path.slice(0, level + 1))),
+                        );
+                        const groupHeaders = groupingFields.flatMap((field, level) => {
+                          const currentPath = path.slice(0, level + 1);
+                          const currentPathKey = groupPathKey(currentPath);
+                          const previousPathKey = groupPathKey(previousPath.slice(0, level + 1));
+                          const ancestorCollapsed = currentPath
+                            .slice(0, -1)
+                            .some((_, ancestor) =>
+                              collapsedGroupPaths.has(
+                                groupPathKey(currentPath.slice(0, ancestor + 1)),
+                              ),
+                            );
+                          if (ancestorCollapsed || currentPathKey === previousPathKey) return [];
+                          const value = currentPath[level] ?? null;
+                          const optionLabel =
+                            field.fieldType === 'single_select'
+                              ? field.config.options?.find((option) => option.key === value)?.label
+                              : undefined;
+                          const label = value === null ? t('data.noValue') : (optionLabel ?? value);
+                          const collapsed = collapsedGroupPaths.has(currentPathKey);
+                          const groupResult = groupResultByPath.get(currentPathKey);
+                          const count = groupResult?.count ?? 0;
+                          return [
+                            <tr className="bg-slate-900/90" key={`group:${currentPathKey}`}>
+                              <td
+                                className="border-b border-slate-800 py-1 text-xs text-slate-300"
+                                colSpan={visibleFields.length + 4 + (workspaceMode ? 1 : 0)}
+                                style={{ paddingLeft: 8 + level * 20 }}
                               >
-                                {(records.page - 1) * records.pageSize + index + 1}
-                              </button>
-                            </span>
-                          </td>
-                          <td
-                            className={`sticky left-0 z-10 border-b border-r border-slate-800 bg-slate-950 ${gridCellSelectionClass({ rowId: record.id, columnKey: 'displayName' })}`}
-                            data-grid-cell=""
-                            data-grid-column-key="displayName"
-                            data-grid-row-id={record.id}
-                            onPointerDown={(event) =>
-                              beginGridCellSelection(event, {
-                                rowId: record.id,
-                                columnKey: 'displayName',
-                              })
-                            }
-                            onPointerEnter={(event) =>
-                              extendGridCellSelection(event, {
-                                rowId: record.id,
-                                columnKey: 'displayName',
-                              })
-                            }
-                            tabIndex={-1}
-                          >
-                            {allowed(user, 'record.update') ? (
-                              <GridCell
-                                comfortable={rowDensity === 'comfortable'}
-                                label="Name"
-                                recordName={record.displayName}
-                                value={record.displayName}
-                                onSave={(value) => saveGridCell(record, 'displayName', value)}
-                              />
-                            ) : (
-                              <span className="block px-2.5 py-2 text-xs font-medium text-slate-200">
-                                {record.displayName}
-                              </span>
-                            )}
-                          </td>
-                          {workspaceMode && (
-                            <td
-                              className={`border-b border-r border-slate-800 px-1.5 py-1 ${gridCellSelectionClass({ rowId: record.id, columnKey: 'contextProject' })}`}
-                              data-grid-cell=""
-                              data-grid-column-key="contextProject"
-                              data-grid-row-id={record.id}
-                              onPointerDown={(event) =>
-                                beginGridCellSelection(event, {
-                                  rowId: record.id,
-                                  columnKey: 'contextProject',
-                                })
-                              }
-                              onPointerEnter={(event) =>
-                                extendGridCellSelection(event, {
-                                  rowId: record.id,
-                                  columnKey: 'contextProject',
-                                })
-                              }
-                              tabIndex={-1}
-                            >
-                              {allowed(user, 'record.update') ? (
-                                <select
-                                  aria-label={t('data.projectForRecord', {
-                                    name: record.displayName,
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <button
+                                    aria-expanded={!collapsed}
+                                    aria-label={t(
+                                      collapsed ? 'data.expandGroup' : 'data.collapseGroup',
+                                      { group: label },
+                                    )}
+                                    className="inline-flex max-w-full items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-slate-800 hover:text-sky-300"
+                                    onClick={() =>
+                                      setCollapsedGroupPaths((current) => {
+                                        const next = new Set(current);
+                                        if (collapsed) next.delete(currentPathKey);
+                                        else next.add(currentPathKey);
+                                        return next;
+                                      })
+                                    }
+                                    type="button"
+                                  >
+                                    <span aria-hidden="true">{collapsed ? '▸' : '▾'}</span>
+                                    <span className="truncate font-medium">{field.name}</span>
+                                    <span className="truncate text-slate-400">{label}</span>
+                                    <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-500">
+                                      {count}
+                                    </span>
+                                  </button>
+                                  {(groupResult?.summaries ?? []).map((summary) => {
+                                    const summaryField = fields.find(
+                                      (candidate) => candidate.id === summary.fieldId,
+                                    );
+                                    if (!summaryField) return null;
+                                    const summaryValue =
+                                      summary.value === null
+                                        ? '—'
+                                        : `${summary.value}${summary.unit ? ` ${summary.unit}` : ''}`;
+                                    const summaryLabel = t('data.groupSummaryLabel', {
+                                      field: summaryField.name,
+                                      operation: t(summaryTranslationKeys[summary.operation]),
+                                      value: summaryValue,
+                                    });
+                                    return (
+                                      <span
+                                        aria-label={summaryLabel}
+                                        className="rounded-md border border-slate-800 bg-slate-950/70 px-1.5 py-0.5 text-[10px] text-slate-400"
+                                        key={`${summary.fieldId}:${summary.operation}`}
+                                        title={t('data.groupSummaryScope')}
+                                      >
+                                        {summaryField.name} ·{' '}
+                                        {t(summaryTranslationKeys[summary.operation])}{' '}
+                                        <strong className="font-medium text-slate-200">
+                                          {summaryValue}
+                                        </strong>
+                                      </span>
+                                    );
                                   })}
-                                  className="min-h-7 w-full select-text rounded border border-transparent bg-transparent px-1.5 text-xs text-slate-300 outline-none hover:border-slate-700 focus:border-sky-400"
-                                  value={record.contextProjectId ?? ''}
-                                  onChange={(event) =>
-                                    void saveProjectCell(record, event.target.value || null).catch(
-                                      (cause: unknown) => {
-                                        setMessageTone('error');
-                                        setMessage(
-                                          cause instanceof Error
-                                            ? cause.message
-                                            : t('data.projectLinkSaveFailed'),
-                                        );
-                                      },
-                                    )
+                                </div>
+                              </td>
+                            </tr>,
+                          ];
+                        });
+                        return (
+                          <Fragment key={record.id}>
+                            {groupHeaders}
+                            {!hiddenByGroup && (
+                              <tr
+                                className={`${selectedRows.has(record.id) ? 'bg-sky-500/5' : 'bg-slate-950/30'} hover:bg-slate-900/40`}
+                                onContextMenu={(event) => openRecordContextMenu(event, record)}
+                                onKeyDown={(event) =>
+                                  openRecordContextMenuFromKeyboard(event, record)
+                                }
+                              >
+                                <td className="border-b border-r border-slate-800 px-3 text-xs text-slate-600">
+                                  <span className="flex items-center gap-2">
+                                    <input
+                                      aria-label={t('data.selectRecord', {
+                                        name: record.displayName,
+                                      })}
+                                      className="size-6"
+                                      checked={selectedRows.has(record.id)}
+                                      type="checkbox"
+                                      onChange={(event) =>
+                                        toggleRecordSelection(record.id, event.target.checked)
+                                      }
+                                    />
+                                    <button
+                                      aria-label={t('data.quickViewRecord', {
+                                        name: record.displayName,
+                                      })}
+                                      className="min-w-6 rounded px-1 py-2 font-mono hover:bg-slate-800 hover:text-sky-300"
+                                      onClick={() => setSelectedRecord(record)}
+                                      title={t('data.openQuickView')}
+                                      type="button"
+                                    >
+                                      {(records.page - 1) * records.pageSize + index + 1}
+                                    </button>
+                                  </span>
+                                </td>
+                                <td
+                                  className={`sticky left-0 z-10 border-b border-r border-slate-800 bg-slate-950 ${gridCellSelectionClass({ rowId: record.id, columnKey: 'displayName' })}`}
+                                  data-grid-cell=""
+                                  data-grid-column-key="displayName"
+                                  data-grid-row-id={record.id}
+                                  onPointerDown={(event) =>
+                                    beginGridCellSelection(event, {
+                                      rowId: record.id,
+                                      columnKey: 'displayName',
+                                    })
                                   }
+                                  onPointerEnter={(event) =>
+                                    extendGridCellSelection(event, {
+                                      rowId: record.id,
+                                      columnKey: 'displayName',
+                                    })
+                                  }
+                                  tabIndex={-1}
                                 >
-                                  <option value="">{t('data.noProject')}</option>
-                                  {workspaceData?.projects.map((project) => (
-                                    <option key={project.id} value={project.id}>
-                                      {project.name}
-                                      {project.archivedAt ? ' (archived)' : ''}
-                                    </option>
-                                  ))}
-                                </select>
-                              ) : (
-                                <span className="block truncate px-1.5 text-xs text-slate-400">
-                                  {workspaceData?.projects.find(
-                                    (project) => project.id === record.contextProjectId,
-                                  )?.name ?? t('data.noProject')}
-                                </span>
-                              )}
-                            </td>
-                          )}
-                          {visibleFields.map((field) => (
-                            <td
-                              className={`border-b border-r border-slate-800 ${gridCellSelectionClass({ rowId: record.id, columnKey: `field:${field.id}` })}`}
-                              data-grid-cell=""
-                              data-grid-column-key={`field:${field.id}`}
-                              data-grid-row-id={record.id}
-                              key={field.id}
-                              onPointerDown={(event) =>
-                                beginGridCellSelection(event, {
-                                  rowId: record.id,
-                                  columnKey: `field:${field.id}`,
-                                })
-                              }
-                              onPointerEnter={(event) =>
-                                extendGridCellSelection(event, {
-                                  rowId: record.id,
-                                  columnKey: `field:${field.id}`,
-                                })
-                              }
-                              tabIndex={-1}
-                            >
-                              {field.fieldType === 'measurement' ? (
-                                <span className="block max-w-64 truncate px-2.5 py-2 text-xs text-slate-400">
-                                  {record.measurements?.[field.id]?.resultId
-                                    ? `${record.measurements[field.id]?.value} ${record.measurements[field.id]?.unit} · ${record.measurements[field.id]?.status ?? 'pending'}`
-                                    : (record.measurements?.[field.id]?.status ?? '—')}
-                                </span>
-                              ) : field.fieldType === 'file' && isImageField(field.config) ? (
-                                <ImageGridCell
-                                  base={base}
-                                  comfortable={rowDensity === 'comfortable'}
-                                  editable={allowed(user, 'record.update')}
-                                  label={field.name}
-                                  recordName={record.displayName}
-                                  value={recordGridValue(record, field)}
-                                  onSave={(value) => saveGridCell(record, field, value)}
-                                />
-                              ) : allowed(user, 'record.update') &&
-                                !calculatedFieldTypeSet.has(field.fieldType) ? (
-                                <GridCell
-                                  base={base}
-                                  comfortable={rowDensity === 'comfortable'}
-                                  field={field}
-                                  label={field.name}
-                                  recordName={record.displayName}
-                                  value={recordGridValue(record, field)}
-                                  onSave={(value) => saveGridCell(record, field, value)}
-                                />
-                              ) : (
-                                <span
-                                  className={`flex w-full items-center px-2.5 text-xs text-slate-300 ${rowDensity === 'comfortable' ? 'min-h-11 py-2' : 'min-h-8 py-1'}`}
+                                  {!record.archivedAt && canUpdateRecords ? (
+                                    <GridCell
+                                      comfortable={rowDensity === 'comfortable'}
+                                      label="Name"
+                                      recordName={record.displayName}
+                                      value={record.displayName}
+                                      onSave={(value) => saveGridCell(record, 'displayName', value)}
+                                    />
+                                  ) : (
+                                    <span className="block px-2.5 py-2 text-xs font-medium text-slate-200">
+                                      {record.displayName}
+                                    </span>
+                                  )}
+                                </td>
+                                {workspaceMode && (
+                                  <td
+                                    className={`border-b border-r border-slate-800 px-1.5 py-1 ${gridCellSelectionClass({ rowId: record.id, columnKey: 'contextProject' })}`}
+                                    data-grid-cell=""
+                                    data-grid-column-key="contextProject"
+                                    data-grid-row-id={record.id}
+                                    onPointerDown={(event) =>
+                                      beginGridCellSelection(event, {
+                                        rowId: record.id,
+                                        columnKey: 'contextProject',
+                                      })
+                                    }
+                                    onPointerEnter={(event) =>
+                                      extendGridCellSelection(event, {
+                                        rowId: record.id,
+                                        columnKey: 'contextProject',
+                                      })
+                                    }
+                                    tabIndex={-1}
+                                  >
+                                    {!record.archivedAt && canUpdateRecords ? (
+                                      <ProjectReferencePicker
+                                        ariaLabel={t('data.projectForRecord', {
+                                          name: record.displayName,
+                                        })}
+                                        className="min-h-7 w-full select-text rounded border border-transparent bg-transparent px-1.5 text-xs text-slate-300 outline-none hover:border-slate-700 focus:border-sky-400"
+                                        projects={projectReferences}
+                                        specialOptions={[{ value: '', label: t('data.noProject') }]}
+                                        value={record.contextProjectId ?? ''}
+                                        workspaceId={workspaceId}
+                                        onChange={(nextValue) =>
+                                          void saveProjectCell(record, nextValue || null).catch(
+                                            (cause: unknown) => {
+                                              setMessageTone('error');
+                                              setMessage(
+                                                cause instanceof Error
+                                                  ? cause.message
+                                                  : t('data.projectLinkSaveFailed'),
+                                              );
+                                            },
+                                          )
+                                        }
+                                        onProjectResolved={mergeProjectReferences}
+                                      />
+                                    ) : (
+                                      <span className="block truncate px-1.5 text-xs text-slate-400">
+                                        {projectById.get(record.contextProjectId ?? '')?.name ??
+                                          t('data.noProject')}
+                                      </span>
+                                    )}
+                                  </td>
+                                )}
+                                {visibleFields.map((field) => (
+                                  <td
+                                    className={`border-b border-r border-slate-800 ${gridCellSelectionClass({ rowId: record.id, columnKey: `field:${field.id}` })}`}
+                                    data-grid-cell=""
+                                    data-grid-column-key={`field:${field.id}`}
+                                    data-grid-row-id={record.id}
+                                    key={field.id}
+                                    onPointerDown={(event) =>
+                                      beginGridCellSelection(event, {
+                                        rowId: record.id,
+                                        columnKey: `field:${field.id}`,
+                                      })
+                                    }
+                                    onPointerEnter={(event) =>
+                                      extendGridCellSelection(event, {
+                                        rowId: record.id,
+                                        columnKey: `field:${field.id}`,
+                                      })
+                                    }
+                                    tabIndex={-1}
+                                  >
+                                    {field.fieldType === 'measurement' ? (
+                                      <span className="block max-w-64 truncate px-2.5 py-2 text-xs text-slate-400">
+                                        {record.measurements?.[field.id]?.resultId
+                                          ? `${record.measurements[field.id]?.value} ${record.measurements[field.id]?.unit} · ${record.measurements[field.id]?.status ?? 'pending'}`
+                                          : (record.measurements?.[field.id]?.status ?? '—')}
+                                      </span>
+                                    ) : field.fieldType === 'file' && isImageField(field.config) ? (
+                                      <ImageGridCell
+                                        base={base}
+                                        comfortable={rowDensity === 'comfortable'}
+                                        editable={!record.archivedAt && canUpdateRecords}
+                                        label={field.name}
+                                        recordName={record.displayName}
+                                        value={recordGridValue(record, field)}
+                                        onSave={(value) => saveGridCell(record, field, value)}
+                                      />
+                                    ) : !record.archivedAt &&
+                                      canUpdateRecords &&
+                                      !calculatedFieldTypeSet.has(field.fieldType) ? (
+                                      <GridCell
+                                        base={base}
+                                        comfortable={rowDensity === 'comfortable'}
+                                        field={field}
+                                        label={field.name}
+                                        recordName={record.displayName}
+                                        relationReferences={record.relationLabels?.[field.id]}
+                                        referenceLabels={record.referenceLabels?.[field.id]}
+                                        value={recordGridValue(record, field)}
+                                        onSave={(value) => saveGridCell(record, field, value)}
+                                      />
+                                    ) : (
+                                      <span
+                                        className={`flex w-full items-center px-2.5 text-xs text-slate-300 ${rowDensity === 'comfortable' ? 'min-h-11 py-2' : 'min-h-8 py-1'}`}
+                                      >
+                                        {field.fieldType === 'relation' ? (
+                                          <RelationValue
+                                            ids={record.relations[field.id] ?? []}
+                                            references={record.relationLabels?.[field.id]}
+                                          />
+                                        ) : (
+                                          <CellValuePreview
+                                            base={base}
+                                            field={field}
+                                            label={field.name}
+                                            references={record.referenceLabels?.[field.id]}
+                                            value={recordGridValue(record, field)}
+                                          />
+                                        )}
+                                      </span>
+                                    )}
+                                  </td>
+                                ))}
+                                <td
+                                  className={`border-b border-r border-slate-800 px-2.5 text-xs text-slate-500 ${rowDensity === 'comfortable' ? 'py-3' : 'py-1.5'}`}
                                 >
-                                  <CellValuePreview
-                                    base={base}
-                                    field={field}
-                                    label={field.name}
-                                    value={recordGridValue(record, field)}
-                                  />
-                                </span>
-                              )}
-                            </td>
-                          ))}
+                                  {new Date(record.updatedAt).toLocaleDateString()}
+                                </td>
+                                <td className="border-b border-slate-800 px-3 py-2">
+                                  <button
+                                    aria-label={t('data.expandRecord', {
+                                      name: record.displayName,
+                                    })}
+                                    className="rounded-lg px-2 py-1 text-sky-400 hover:bg-sky-500/10 hover:text-sky-300"
+                                    onClick={() => setSelectedRecord(record)}
+                                    title={t('data.quickViewRecord', { name: record.displayName })}
+                                    type="button"
+                                  >
+                                    ↗
+                                  </button>
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        );
+                      })}
+                      {virtualEnd < records.items.length && (
+                        <tr aria-hidden="true">
                           <td
-                            className={`border-b border-r border-slate-800 px-2.5 text-xs text-slate-500 ${rowDensity === 'comfortable' ? 'py-3' : 'py-1.5'}`}
+                            colSpan={visibleFields.length + 4 + (workspaceMode ? 1 : 0)}
+                            style={{
+                              height: (records.items.length - virtualEnd) * virtualRowHeight,
+                            }}
+                          />
+                        </tr>
+                      )}
+                      {archiveState === 'active' && showInlineRecord && canCreateRecords && (
+                        <InlineRecordRow
+                          base={base}
+                          fields={visibleFields}
+                          projects={workspaceMode ? projectReferences : undefined}
+                          workspaceId={workspaceMode ? workspaceId : undefined}
+                          key={`${selectedId}:${visibleFields.map((field) => field.id).join(',')}`}
+                          onCancel={() => setShowInlineRecord(false)}
+                          onCreate={createInlineRecord}
+                          onOpenFullForm={() => {
+                            setShowInlineRecord(false);
+                            setShowNewRecord(true);
+                          }}
+                          onProjectResolved={mergeProjectReferences}
+                        />
+                      )}
+                      {archiveState === 'active' && !showInlineRecord && canCreateRecords && (
+                        <tr>
+                          <td
+                            className="border-r border-slate-800 p-1"
+                            colSpan={visibleFields.length + 4 + (workspaceMode ? 1 : 0)}
                           >
-                            {new Date(record.updatedAt).toLocaleDateString()}
-                          </td>
-                          <td className="border-b border-slate-800 px-3 py-2">
                             <button
-                              aria-label={t('data.expandRecord', { name: record.displayName })}
-                              className="rounded-lg px-2 py-1 text-sky-400 hover:bg-sky-500/10 hover:text-sky-300"
-                              onClick={() => setSelectedRecord(record)}
-                              title={t('data.quickViewRecord', { name: record.displayName })}
+                              className="w-full rounded-lg px-3 py-2 text-left text-sm text-slate-500 hover:bg-slate-900 hover:text-sky-300"
+                              onClick={() => {
+                                if (hiddenRequiredFields.length) setShowNewRecord(true);
+                                else setShowInlineRecord(true);
+                              }}
+                              title={
+                                hiddenRequiredFields.length
+                                  ? `Full form required for: ${hiddenRequiredFields.map((field) => field.name).join(', ')}`
+                                  : 'Add a record inline'
+                              }
                               type="button"
                             >
-                              ↗
+                              {locale === 'ko' ? '+ 레코드 추가' : '+ Add record'}
                             </button>
                           </td>
                         </tr>
-                      );
-                    })}
-                    {virtualEnd < records.items.length && (
-                      <tr aria-hidden="true">
-                        <td
-                          colSpan={visibleFields.length + 4 + (workspaceMode ? 1 : 0)}
-                          style={{ height: (records.items.length - virtualEnd) * virtualRowHeight }}
-                        />
-                      </tr>
-                    )}
-                    {showInlineRecord && allowed(user, 'record.create') && (
-                      <InlineRecordRow
-                        fields={visibleFields}
-                        projects={workspaceData?.projects}
-                        key={`${selectedId}:${visibleFields.map((field) => field.id).join(',')}`}
-                        onCancel={() => setShowInlineRecord(false)}
-                        onCreate={createInlineRecord}
-                        onOpenFullForm={() => {
-                          setShowInlineRecord(false);
-                          setShowNewRecord(true);
-                        }}
-                      />
-                    )}
-                    {!showInlineRecord && allowed(user, 'record.create') && (
+                      )}
+                    </tbody>
+                    <tfoot className="sticky bottom-0 z-20 bg-slate-900 text-xs">
                       <tr>
-                        <td
-                          className="border-r border-slate-800 p-1"
-                          colSpan={visibleFields.length + 4 + (workspaceMode ? 1 : 0)}
-                        >
-                          <button
-                            className="w-full rounded-lg px-3 py-2 text-left text-sm text-slate-500 hover:bg-slate-900 hover:text-sky-300"
-                            onClick={() => {
-                              if (hiddenRequiredFields.length) setShowNewRecord(true);
-                              else setShowInlineRecord(true);
-                            }}
-                            title={
-                              hiddenRequiredFields.length
-                                ? `Full form required for: ${hiddenRequiredFields.map((field) => field.name).join(', ')}`
-                                : 'Add a record inline'
-                            }
-                            type="button"
-                          >
-                            {locale === 'ko' ? '+ 레코드 추가' : '+ Add record'}
-                          </button>
+                        <td className="border-r border-slate-800 p-1 text-sky-400">Σ</td>
+                        <td className="sticky left-0 z-30 bg-slate-900 p-1 text-slate-400">
+                          {t('data.summaryFilteredRows', { count: records.total })}
                         </td>
+                        {workspaceMode && <td className="border-r border-slate-800" />}
+                        {visibleFields.map((field) => {
+                          const operation = fieldSummaries[field.id] ?? '';
+                          const options = summaryOperationsForField(field);
+                          const result = records.summaries?.find(
+                            (summary) =>
+                              summary.fieldId === field.id && summary.operation === operation,
+                          );
+                          const value =
+                            result?.value == null
+                              ? ''
+                              : `${result.value}${result.unit ? ` ${result.unit}` : ''}`;
+                          return (
+                            <td className="border-r border-slate-800 p-1" key={field.id}>
+                              {options.length ? (
+                                <div className="flex items-center gap-1">
+                                  <select
+                                    aria-label={t('data.summaryFor', { field: field.name })}
+                                    className="min-w-0 flex-1 bg-transparent text-xs text-slate-400"
+                                    title={t('data.summaryFullScope')}
+                                    value={operation}
+                                    onChange={(event) => {
+                                      const nextOperation = event.target.value as
+                                        RecordSummaryOperation | '';
+                                      setFieldSummaries((current) => {
+                                        const next = { ...current };
+                                        if (nextOperation) next[field.id] = nextOperation;
+                                        else delete next[field.id];
+                                        return next;
+                                      });
+                                    }}
+                                  >
+                                    <option value="">—</option>
+                                    {options.map((candidate) => (
+                                      <option key={candidate} value={candidate}>
+                                        {t(summaryTranslationKeys[candidate])}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  {operation && (
+                                    <span
+                                      className="max-w-24 truncate font-mono text-sky-300"
+                                      title={value || undefined}
+                                    >
+                                      {recordsLoading ? '…' : value || '—'}
+                                    </span>
+                                  )}
+                                </div>
+                              ) : null}
+                            </td>
+                          );
+                        })}
+                        <td className="border-r border-slate-800" />
+                        <td />
                       </tr>
+                    </tfoot>
+                  </table>
+                )}
+              {(!recordsLoading || recordsObjectTypeId === selectedId) &&
+                activeViewType === 'gallery' && (
+                  <GalleryRecordsView
+                    fields={visibleFields}
+                    records={records.items}
+                    onContextMenu={openRecordContextMenu}
+                    onContextMenuKeyDown={openRecordContextMenuFromKeyboard}
+                    onOpen={setSelectedRecord}
+                  />
+                )}
+              {(!recordsLoading || recordsObjectTypeId === selectedId) &&
+                activeViewType === 'kanban' && (
+                  <>
+                    {kanbanField ? (
+                      <KanbanRecordsView
+                        canUpdate={archiveState === 'active' && canUpdateRecords}
+                        field={kanbanField}
+                        groups={records.groups}
+                        records={records.items}
+                        onContextMenu={openRecordContextMenu}
+                        onContextMenuKeyDown={openRecordContextMenuFromKeyboard}
+                        onMove={(record, value) => saveGridCell(record, kanbanField, value)}
+                        onOpen={setSelectedRecord}
+                      />
+                    ) : (
+                      <p className="p-8 text-center text-sm text-rose-300">
+                        {t('data.invalidKanban')}
+                      </p>
                     )}
-                  </tbody>
-                </table>
-              )}
-              {!recordsLoading && activeViewType === 'gallery' && (
-                <GalleryRecordsView
-                  fields={visibleFields}
-                  records={records.items}
-                  onContextMenu={openRecordContextMenu}
-                  onContextMenuKeyDown={openRecordContextMenuFromKeyboard}
-                  onOpen={setSelectedRecord}
-                />
-              )}
-              {!recordsLoading && activeViewType === 'kanban' && (
-                <>
-                  {kanbanField ? (
-                    <KanbanRecordsView
-                      canUpdate={allowed(user, 'record.update')}
-                      field={kanbanField}
-                      groups={records.groups}
-                      records={records.items}
-                      onContextMenu={openRecordContextMenu}
-                      onContextMenuKeyDown={openRecordContextMenuFromKeyboard}
-                      onMove={(record, value) => saveGridCell(record, kanbanField, value)}
-                      onOpen={setSelectedRecord}
-                    />
-                  ) : (
-                    <p className="p-8 text-center text-sm text-rose-300">
-                      {t('data.invalidKanban')}
-                    </p>
-                  )}
-                </>
-              )}
-              {!recordsLoading && activeViewType === 'calendar' && (
-                <>
-                  {calendarField ? (
-                    <CalendarRecordsView
-                      field={calendarField}
-                      month={calendarMonth}
-                      records={records.items}
-                      onContextMenu={openRecordContextMenu}
-                      onContextMenuKeyDown={openRecordContextMenuFromKeyboard}
-                      onMonthChange={(month) => {
-                        setCalendarMonth(month);
-                        setPage(1);
-                      }}
-                      onOpen={setSelectedRecord}
-                    />
-                  ) : (
-                    <p className="p-8 text-center text-sm text-rose-300">
-                      {t('data.invalidCalendar')}
-                    </p>
-                  )}
-                </>
-              )}
-              {!recordsLoading && activeViewType === 'form' && (
-                <div className="mx-auto max-w-3xl p-5">
-                  <div className="mb-4 border-b border-slate-800 pb-3">
-                    <h3 className="text-lg font-semibold">Add {selected.name}</h3>
-                    <p className="mt-1 text-xs text-slate-500">
-                      Submissions create records in {selected.pluralName} and appear in every view.
-                    </p>
+                  </>
+                )}
+              {(!recordsLoading || recordsObjectTypeId === selectedId) &&
+                activeViewType === 'calendar' && (
+                  <>
+                    {calendarField ? (
+                      <CalendarRecordsView
+                        field={calendarField}
+                        month={calendarMonth}
+                        records={records.items}
+                        onContextMenu={openRecordContextMenu}
+                        onContextMenuKeyDown={openRecordContextMenuFromKeyboard}
+                        onMonthChange={(month) => {
+                          setCalendarMonth(month);
+                          setPage(1);
+                        }}
+                        onOpen={setSelectedRecord}
+                      />
+                    ) : (
+                      <p className="p-8 text-center text-sm text-rose-300">
+                        {t('data.invalidCalendar')}
+                      </p>
+                    )}
+                  </>
+                )}
+              {(!recordsLoading || recordsObjectTypeId === selectedId) &&
+                activeViewType === 'form' && (
+                  <div className="mx-auto max-w-3xl p-5">
+                    <div className="mb-4 border-b border-slate-800 pb-3">
+                      <h3 className="text-lg font-semibold">Add {selected.name}</h3>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Submissions create records in {selected.pluralName} and appear in every
+                        view.
+                      </p>
+                    </div>
+                    {archiveState === 'active' && canCreateRecords ? (
+                      <RecordForm
+                        base={base}
+                        fields={formFields}
+                        projects={workspaceMode ? projectReferences : undefined}
+                        submitLabel="Submit record"
+                        workspaceId={workspaceMode ? workspaceId : undefined}
+                        onSubmit={async (form) => {
+                          const created = await api<DynamicRecord>(
+                            `${base}/object-types/${selected.id}/records`,
+                            {
+                              method: 'POST',
+                              body: JSON.stringify({
+                                ...recordPayload(fields, form),
+                                ...(workspaceMode
+                                  ? {
+                                      contextProjectId:
+                                        String(form.get('contextProjectId') ?? '') || null,
+                                    }
+                                  : {}),
+                              }),
+                            },
+                          );
+                          setMessageTone('success');
+                          setMessage(t('data.recordSubmitted', { name: created.displayName }));
+                          await loadRecords();
+                        }}
+                        onProjectResolved={mergeProjectReferences}
+                      />
+                    ) : (
+                      <p className="rounded-md border border-dashed border-slate-800 p-6 text-center text-sm text-slate-500">
+                        {t('data.readOnlyForm')}
+                      </p>
+                    )}
                   </div>
-                  {allowed(user, 'record.create') ? (
-                    <RecordForm
-                      fields={formFields}
-                      projects={workspaceData?.projects}
-                      submitLabel="Submit record"
-                      onSubmit={async (form) => {
-                        const created = await api<DynamicRecord>(
-                          `${base}/object-types/${selected.id}/records`,
-                          {
-                            method: 'POST',
-                            body: JSON.stringify({
-                              ...recordPayload(fields, form),
-                              ...(workspaceMode
-                                ? {
-                                    contextProjectId:
-                                      String(form.get('contextProjectId') ?? '') || null,
-                                  }
-                                : {}),
-                            }),
-                          },
-                        );
-                        setMessageTone('success');
-                        setMessage(t('data.recordSubmitted', { name: created.displayName }));
-                        await loadRecords();
-                      }}
-                    />
-                  ) : (
-                    <p className="rounded-md border border-dashed border-slate-800 p-6 text-center text-sm text-slate-500">
-                      {t('data.readOnlyForm')}
-                    </p>
-                  )}
-                </div>
-              )}
-              {!recordsLoading &&
+                )}
+              {(!recordsLoading || recordsObjectTypeId === selectedId) &&
                 activeViewType !== 'form' &&
                 records.items.length === 0 &&
                 !showInlineRecord && (
@@ -5007,7 +6202,7 @@ export function DataPage({
           </>
         )}
       </section>
-      {showNewRecord && selected && allowed(user, 'record.create') && (
+      {archiveState === 'active' && showNewRecord && selected && canCreateRecords && (
         <div className="fixed inset-0 z-[70] flex justify-end" role="presentation">
           <button
             aria-label={t('data.closeNewRecordPanel')}
@@ -5045,9 +6240,11 @@ export function DataPage({
             </header>
             <div className="p-5 sm:p-7">
               <RecordForm
+                base={base}
                 fields={fields}
-                projects={workspaceData?.projects}
+                projects={workspaceMode ? projectReferences : undefined}
                 submitLabel="Create record"
+                workspaceId={workspaceMode ? workspaceId : undefined}
                 onSubmit={async (form) => {
                   await api(`${base}/object-types/${selected.id}/records`, {
                     method: 'POST',
@@ -5063,6 +6260,7 @@ export function DataPage({
                   setShowNewRecord(false);
                   await loadRecords();
                 }}
+                onProjectResolved={mergeProjectReferences}
               />
             </div>
           </aside>
@@ -5093,11 +6291,30 @@ export function DataPage({
                 <h2 className="mt-1 truncate text-2xl font-semibold" id="quick-record-title">
                   {selectedRecord.displayName}
                 </h2>
-                <p className="mt-1 font-mono text-[10px] text-slate-600">
-                  v{selectedRecord.rowVersion} · {selectedRecord.id}
-                </p>
+                <div className="mt-1 flex items-center gap-1 text-[10px] text-slate-600">
+                  <span className="font-mono">
+                    {t('data.version', { version: selectedRecord.rowVersion })}
+                  </span>
+                  <IconAction
+                    className="size-5 text-[10px]"
+                    icon="#"
+                    label={t('data.copyIdentifier', { label: t('data.recordId') })}
+                    onClick={() => void copyContextValue(t('data.recordId'), selectedRecord.id)}
+                  />
+                </div>
               </div>
               <div className="flex shrink-0 items-center gap-2">
+                {selectedRecord.archivedAt &&
+                  allowed(user, 'record.restore') &&
+                  canArchiveRecords && (
+                    <IconAction
+                      className="size-9"
+                      icon="↺"
+                      label={t('common.restore')}
+                      onClick={() => void changeRecordLifecycle(selectedRecord, false)}
+                      tone="accent"
+                    />
+                  )}
                 {!workspaceMode && (
                   <Link
                     className="rounded-lg px-3 py-2 text-sm text-sky-300 hover:bg-sky-500/10"
@@ -5118,32 +6335,102 @@ export function DataPage({
               </div>
             </header>
             <div className="p-5 sm:p-7">
-              <div className="mb-6 rounded-xl border border-slate-800 bg-slate-900/45 px-4 py-3 text-xs text-slate-400">
-                Mutable properties can be edited here without leaving the grid.
-                {!workspaceMode &&
-                  ' Measurements and evaluation history remain available in the full record view.'}
+              <div
+                aria-label={t('data.recordDetail')}
+                className="mb-5 grid grid-cols-3 rounded-lg border border-slate-800 bg-slate-900/45 p-1"
+                role="tablist"
+              >
+                {(['fields', 'comments', 'history'] as const).map((tab) => (
+                  <button
+                    aria-selected={quickRecordTab === tab}
+                    className={`rounded-md px-2 py-2 text-xs font-medium ${quickRecordTab === tab ? 'bg-sky-500/15 text-sky-300' : 'text-slate-500 hover:bg-slate-800 hover:text-slate-300'}`}
+                    key={tab}
+                    onClick={() => setQuickRecordTab(tab)}
+                    role="tab"
+                    type="button"
+                  >
+                    {t(
+                      tab === 'fields'
+                        ? 'data.propertiesRelations'
+                        : tab === 'comments'
+                          ? 'data.comments'
+                          : 'data.changeHistory',
+                    )}
+                  </button>
+                ))}
               </div>
-              {allowed(user, 'record.update') ? (
-                <RecordForm
-                  fields={fields}
-                  projects={workspaceData?.projects}
-                  record={selectedRecord}
-                  submitLabel="Save record"
-                  onSubmit={(form) => saveRecordPanel(selectedRecord, form)}
+              {quickRecordTab === 'fields' && (
+                <>
+                  <div className="mb-6 rounded-xl border border-slate-800 bg-slate-900/45 px-4 py-3 text-xs text-slate-400">
+                    {selectedRecord.archivedAt
+                      ? t('data.archivedReadOnly')
+                      : 'Mutable properties can be edited here without leaving the grid.'}
+                    {!selectedRecord.archivedAt &&
+                      !workspaceMode &&
+                      ' Measurements and evaluation history remain available in the full record view.'}
+                  </div>
+                  {!selectedRecord.archivedAt && canUpdateRecords ? (
+                    <RecordForm
+                      base={base}
+                      fields={fields}
+                      projects={workspaceMode ? projectReferences : undefined}
+                      record={selectedRecord}
+                      submitLabel="Save record"
+                      workspaceId={workspaceMode ? workspaceId : undefined}
+                      onSubmit={(form) => saveRecordPanel(selectedRecord, form)}
+                      onProjectResolved={mergeProjectReferences}
+                    />
+                  ) : (
+                    <dl className="divide-y divide-slate-800 rounded-xl border border-slate-800">
+                      {visibleFields.map((field) => (
+                        <div
+                          className="grid gap-1 px-4 py-3 sm:grid-cols-[12rem_1fr]"
+                          key={field.id}
+                        >
+                          <dt className="text-sm text-slate-500">{field.name}</dt>
+                          <dd className="text-sm text-slate-200">
+                            {field.fieldType === 'relation' ? (
+                              <RelationValue
+                                ids={selectedRecord.relations[field.id] ?? []}
+                                references={selectedRecord.relationLabels?.[field.id]}
+                              />
+                            ) : field.fieldType === 'measurement' ? (
+                              displayValue(selectedRecord.measurements?.[field.id]?.value)
+                            ) : (
+                              displayFieldValue(
+                                field,
+                                recordGridValue(selectedRecord, field),
+                                selectedRecord.referenceLabels?.[field.id],
+                              )
+                            )}
+                          </dd>
+                        </div>
+                      ))}
+                    </dl>
+                  )}
+                </>
+              )}
+              {quickRecordTab === 'comments' && (
+                <RecordCommentsPanel
+                  archived={Boolean(selectedRecord.archivedAt)}
+                  base={base}
+                  compact
+                  objectTypeId={selectedRecord.objectTypeId}
+                  recordId={selectedRecord.id}
+                  user={user}
                 />
-              ) : (
-                <dl className="divide-y divide-slate-800 rounded-xl border border-slate-800">
-                  {visibleFields.map((field) => (
-                    <div className="grid gap-1 px-4 py-3 sm:grid-cols-[12rem_1fr]" key={field.id}>
-                      <dt className="text-sm text-slate-500">{field.name}</dt>
-                      <dd className="text-sm text-slate-200">
-                        {field.fieldType === 'measurement'
-                          ? displayValue(selectedRecord.measurements?.[field.id]?.value)
-                          : displayFieldValue(field, recordGridValue(selectedRecord, field))}
-                      </dd>
-                    </div>
-                  ))}
-                </dl>
+              )}
+              {quickRecordTab === 'history' && (
+                <RecordHistoryPanel
+                  base={base}
+                  objectTypeId={selectedRecord.objectTypeId}
+                  record={selectedRecord}
+                  user={user}
+                  onRestored={(restored) => {
+                    setSelectedRecord(restored);
+                    void loadRecords();
+                  }}
+                />
               )}
             </div>
           </aside>
@@ -5186,7 +6473,7 @@ export function DataPage({
             </div>
             <form className="mt-5 space-y-4" onSubmit={(event) => void createObjectType(event)}>
               <label className="block text-sm font-medium text-slate-300">
-                {t('data.typeName')}
+                <FormFieldLabel required>{t('data.typeName')}</FormFieldLabel>
                 <input
                   autoFocus
                   className={inputClass}
@@ -5197,7 +6484,7 @@ export function DataPage({
                 />
               </label>
               <label className="block text-sm font-medium text-slate-300">
-                {t('data.tableLabel')}
+                <FormFieldLabel required>{t('data.tableLabel')}</FormFieldLabel>
                 <input
                   className={inputClass}
                   name="pluralName"
@@ -5206,7 +6493,7 @@ export function DataPage({
                 />
               </label>
               <label className="block text-sm font-medium text-slate-300">
-                {t('data.stableKey')}
+                <FormFieldLabel required>{t('data.stableKey')}</FormFieldLabel>
                 <input
                   className={inputClass}
                   name="key"
@@ -5238,34 +6525,30 @@ export function DataPage({
   );
 }
 
-function apiBaseForDownload(): string {
-  return `${import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000'}/api/v1`;
-}
-
 export function RecordDetailPage({ user }: { user: User }) {
   const { t } = useI18n();
+  const { confirmAction } = useActionDialog();
   const { workspaceId = '', projectId = '', objectTypeId = '', recordId = '' } = useParams();
   const navigate = useNavigate();
   const base = projectPath(workspaceId, projectId);
+  const [objectType, setObjectType] = useState<ObjectType>();
   const [fields, setFields] = useState<FieldDefinition[]>([]);
   const [record, setRecord] = useState<DynamicRecord>();
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const load = useCallback(async () => {
     try {
-      const [typeResult, fieldResult, recordResult] = await Promise.all([
-        api<{ items: ObjectType[] }>(`${base}/object-types`),
+      const [loadedObjectType, fieldResult, recordResult] = await Promise.all([
+        api<ObjectType>(`${base}/object-types/${objectTypeId}`),
         api<{ items: FieldDefinition[] }>(`${base}/object-types/${objectTypeId}/fields`),
         api<DynamicRecord>(`${base}/object-types/${objectTypeId}/records/${recordId}`),
       ]);
+      setObjectType(loadedObjectType);
       setFields(fieldResult.items);
       setRecord(recordResult);
       setError('');
-      const objectType = typeResult.items.find(
-        (item) =>
-          item.id === objectTypeId || item.publicId === canonicalTableIdentifier(objectTypeId),
-      );
-      if (objectType?.publicId && objectType.publicId !== objectTypeId) {
-        void navigate(`${base}/data/${objectType.publicId}/records/${recordId}`, {
+      if (loadedObjectType.publicId && loadedObjectType.publicId !== objectTypeId) {
+        void navigate(`${base}/data/${loadedObjectType.publicId}/records/${recordId}`, {
           replace: true,
         });
       }
@@ -5276,7 +6559,8 @@ export function RecordDetailPage({ user }: { user: User }) {
   useEffect(() => void load(), [load]);
 
   async function archive(archived: boolean) {
-    if (archived && !window.confirm(t('data.recordArchiveConfirm'))) return;
+    if (archived && !(await confirmAction(t('data.recordArchiveConfirm'), { tone: 'danger' })))
+      return;
     try {
       await api(
         `${base}/object-types/${objectTypeId}/records/${recordId}/${archived ? 'archive' : 'restore'}`,
@@ -5291,8 +6575,23 @@ export function RecordDetailPage({ user }: { user: User }) {
     }
   }
 
+  async function copyRecordId() {
+    try {
+      if (!navigator.clipboard) throw new Error('Clipboard is unavailable.');
+      await navigator.clipboard.writeText(recordId);
+      setNotice(t('data.copied', { label: t('data.recordId') }));
+    } catch {
+      setError(t('data.clipboardDenied'));
+    }
+  }
+
   if (!record && !error) return <p className="text-slate-400">{t('data.loadingRecord')}</p>;
   if (!record) return <ErrorText>{error}</ErrorText>;
+  const canUpdateRecord =
+    allowed(user, 'record.update') && (objectType?.recordPermissions?.canUpdate ?? true);
+  const canArchiveRecord =
+    (objectType?.recordPermissions?.canArchive ?? true) &&
+    (allowed(user, 'record.archive') || allowed(user, 'record.restore'));
   return (
     <>
       <Link className="text-sm text-sky-400" to={`${base}/data?type=${objectTypeId}`}>
@@ -5304,16 +6603,24 @@ export function RecordDetailPage({ user }: { user: User }) {
             {t('data.recordDetail')}
           </p>
           <h1 className="mt-2 text-4xl font-semibold">{record.displayName}</h1>
-          <p className="mt-2 text-sm text-slate-500">
-            {t('data.versionStableId', { version: record.rowVersion, id: record.id })}
-          </p>
+          <div className="mt-2 flex items-center gap-1 text-sm text-slate-500">
+            <span>{t('data.version', { version: record.rowVersion })}</span>
+            <IconAction
+              className="size-6 text-xs"
+              icon="#"
+              label={t('data.copyIdentifier', { label: t('data.recordId') })}
+              onClick={() => void copyRecordId()}
+            />
+          </div>
         </div>
         <div className="flex gap-2">
           {record.archivedAt
-            ? allowed(user, 'record.restore') && (
+            ? allowed(user, 'record.restore') &&
+              canArchiveRecord && (
                 <Button onClick={() => void archive(false)}>{t('common.restore')}</Button>
               )
-            : allowed(user, 'record.archive') && (
+            : allowed(user, 'record.archive') &&
+              canArchiveRecord && (
                 <Button variant="quiet" onClick={() => void archive(true)}>
                   {t('common.archive')}
                 </Button>
@@ -5321,10 +6628,17 @@ export function RecordDetailPage({ user }: { user: User }) {
         </div>
       </div>
       <ErrorText>{error}</ErrorText>
+      <NoticeText tone="success">{notice}</NoticeText>
       <section className={emptyPanelClass}>
         <h2 className="mb-5 text-xl font-semibold">{t('data.propertiesRelations')}</h2>
-        {allowed(user, 'record.update') ? (
+        {record.archivedAt && (
+          <p className="mb-5 rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-sm text-amber-200">
+            {t('data.archivedReadOnly')}
+          </p>
+        )}
+        {!record.archivedAt && canUpdateRecord ? (
           <RecordForm
+            base={base}
             key={record.rowVersion}
             fields={fields}
             record={record}
@@ -5349,19 +6663,43 @@ export function RecordDetailPage({ user }: { user: User }) {
               <div key={field.id}>
                 <dt className="text-xs uppercase tracking-wide text-slate-500">{field.name}</dt>
                 <dd className="mt-1 text-slate-200">
-                  {field.fieldType === 'relation'
-                    ? displayValue(record.relations[field.id])
-                    : field.fieldType === 'measurement'
-                      ? record.measurements?.[field.id]?.resultId
-                        ? `${record.measurements[field.id]?.value} ${record.measurements[field.id]?.unit} · ${record.measurements[field.id]?.status ?? 'pending'}`
-                        : (record.measurements?.[field.id]?.status ?? '—')
-                      : displayFieldValue(field, record.values[field.key])}
+                  {field.fieldType === 'relation' ? (
+                    <RelationValue
+                      ids={record.relations[field.id] ?? []}
+                      references={record.relationLabels?.[field.id]}
+                    />
+                  ) : field.fieldType === 'measurement' ? (
+                    record.measurements?.[field.id]?.resultId ? (
+                      `${record.measurements[field.id]?.value} ${record.measurements[field.id]?.unit} · ${record.measurements[field.id]?.status ?? 'pending'}`
+                    ) : (
+                      (record.measurements?.[field.id]?.status ?? '—')
+                    )
+                  ) : (
+                    displayFieldValue(
+                      field,
+                      recordGridValue(record, field),
+                      record.referenceLabels?.[field.id],
+                    )
+                  )}
                 </dd>
               </div>
             ))}
           </dl>
         )}
       </section>
+      <RecordCommentsPanel
+        archived={Boolean(record.archivedAt)}
+        base={base}
+        objectTypeId={objectTypeId}
+        recordId={record.id}
+        user={user}
+      />
+      <RecordReviewsPanel
+        base={base}
+        objectTypeId={objectTypeId}
+        recordId={record.id}
+        user={user}
+      />
       <RecordHistoryPanel
         base={base}
         objectTypeId={objectTypeId}

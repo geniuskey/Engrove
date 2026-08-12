@@ -1,108 +1,62 @@
 import { useEffect, useState } from 'react';
 import { api, inputClass } from './App.js';
 import type { FieldDefinition, FieldType } from './DataPageTypes.js';
+import { FormFieldLabel } from './FormFieldLabel.js';
 import { useI18n } from './i18n.js';
+import type { TranslationKey } from './i18n-types.js';
+
+export const fieldTypeTranslationKeys: Record<FieldType, TranslationKey> = {
+  text: 'data.fieldTypeText',
+  long_text: 'data.fieldTypeLongText',
+  integer: 'data.fieldTypeInteger',
+  decimal: 'data.fieldTypeDecimal',
+  boolean: 'data.fieldTypeBoolean',
+  date: 'data.fieldTypeDate',
+  datetime: 'data.fieldTypeDatetime',
+  single_select: 'data.fieldTypeSingleSelect',
+  multi_select: 'data.fieldTypeMultiSelect',
+  user: 'data.fieldTypeUser',
+  relation: 'data.fieldTypeRelation',
+  file: 'data.fieldTypeFile',
+  dataset: 'data.fieldTypeDataset',
+  quantity: 'data.fieldTypeQuantity',
+  measurement: 'data.fieldTypeMeasurement',
+  range: 'data.fieldTypeRange',
+  spectral_data: 'data.fieldTypeSpectralData',
+  tabular_data: 'data.fieldTypeTabularData',
+  formula: 'data.fieldTypeFormula',
+  lookup: 'data.fieldTypeLookup',
+  rollup: 'data.fieldTypeRollup',
+};
 
 export const fieldTypeMeta: Record<
   FieldType,
   {
-    label: string;
-    description: string;
     icon: string;
     group: 'Basic' | 'Choice' | 'Linked' | 'Engineering' | 'Structured' | 'Calculated';
   }
 > = {
-  text: {
-    label: 'Text',
-    description: 'Short names, codes, and labels',
-    icon: 'Aa',
-    group: 'Basic',
-  },
-  long_text: {
-    label: 'Long text',
-    description: 'Notes and multi-line descriptions',
-    icon: '¶',
-    group: 'Basic',
-  },
-  integer: { label: 'Integer', description: 'Whole numbers', icon: '#', group: 'Basic' },
-  decimal: { label: 'Decimal', description: 'Numbers with precision', icon: '.0', group: 'Basic' },
-  boolean: { label: 'Checkbox', description: 'Yes or no values', icon: '✓', group: 'Basic' },
-  date: { label: 'Date', description: 'Calendar dates', icon: '◷', group: 'Basic' },
-  datetime: { label: 'Date & time', description: 'Timestamped events', icon: '◴', group: 'Basic' },
-  single_select: {
-    label: 'Single select',
-    description: 'One option from a controlled list',
-    icon: '▾',
-    group: 'Choice',
-  },
-  multi_select: {
-    label: 'Multi select',
-    description: 'Multiple controlled labels',
-    icon: '≡',
-    group: 'Choice',
-  },
-  user: { label: 'User', description: 'Organization member reference', icon: '@', group: 'Linked' },
-  relation: {
-    label: 'Relation',
-    description: 'Records from another table',
-    icon: '↗',
-    group: 'Linked',
-  },
-  file: { label: 'File', description: 'Uploaded file reference', icon: '⌑', group: 'Linked' },
-  dataset: {
-    label: 'Dataset',
-    description: 'Processed dataset reference',
-    icon: '▦',
-    group: 'Linked',
-  },
-  quantity: {
-    label: 'Quantity',
-    description: 'A value with compatible units',
-    icon: 'u',
-    group: 'Engineering',
-  },
-  measurement: {
-    label: 'Measurement',
-    description: 'Traceable measured result',
-    icon: 'μ',
-    group: 'Engineering',
-  },
-  range: {
-    label: 'Range',
-    description: 'Lower and upper engineering bounds',
-    icon: '↔',
-    group: 'Engineering',
-  },
-  spectral_data: {
-    label: 'Spectral data',
-    description: 'X-axis values with one or more signal series',
-    icon: '∿',
-    group: 'Structured',
-  },
-  tabular_data: {
-    label: 'Data table',
-    description: 'Excel-like columns and rows stored as structured data',
-    icon: '▦',
-    group: 'Structured',
-  },
-  formula: {
-    label: 'Formula',
-    description: 'Calculate a value from fields in this row',
-    icon: 'ƒx',
-    group: 'Calculated',
-  },
-  lookup: {
-    label: 'Lookup',
-    description: 'Bring a value from related records',
-    icon: '↙',
-    group: 'Calculated',
-  },
-  rollup: {
-    label: 'Rollup',
-    description: 'Aggregate values across related records',
-    icon: 'Σ',
-    group: 'Calculated',
-  },
+  text: { icon: 'Aa', group: 'Basic' },
+  long_text: { icon: '¶', group: 'Basic' },
+  integer: { icon: '#', group: 'Basic' },
+  decimal: { icon: '.0', group: 'Basic' },
+  boolean: { icon: '✓', group: 'Basic' },
+  date: { icon: '◷', group: 'Basic' },
+  datetime: { icon: '◴', group: 'Basic' },
+  single_select: { icon: '▾', group: 'Choice' },
+  multi_select: { icon: '≡', group: 'Choice' },
+  user: { icon: '@', group: 'Linked' },
+  relation: { icon: '↗', group: 'Linked' },
+  file: { icon: '⌑', group: 'Linked' },
+  dataset: { icon: '▦', group: 'Linked' },
+  quantity: { icon: 'u', group: 'Engineering' },
+  measurement: { icon: 'μ', group: 'Engineering' },
+  range: { icon: '↔', group: 'Engineering' },
+  spectral_data: { icon: '∿', group: 'Structured' },
+  tabular_data: { icon: '▦', group: 'Structured' },
+  formula: { icon: 'ƒx', group: 'Calculated' },
+  lookup: { icon: '↙', group: 'Calculated' },
+  rollup: { icon: 'Σ', group: 'Calculated' },
 };
 
 export const fieldTypes = Object.keys(fieldTypeMeta) as FieldType[];
@@ -243,7 +197,7 @@ export function CalculatedFieldSettings({
   if (type === 'formula')
     return (
       <label className={wideFieldLabelClass}>
-        {t('data.formulaExpression')}
+        <FormFieldLabel required>{t('data.formulaExpression')}</FormFieldLabel>
         <textarea
           aria-label={t('data.formulaExpression')}
           className={`${inputClass} mt-1.5 min-h-24 resize-y font-mono`}
@@ -265,7 +219,7 @@ export function CalculatedFieldSettings({
   return (
     <>
       <label className={fieldLabelClass}>
-        {t('data.relationField')}
+        <FormFieldLabel required>{t('data.relationField')}</FormFieldLabel>
         <select
           className={`${inputClass} mt-1.5`}
           name="relationFieldId"
@@ -283,10 +237,11 @@ export function CalculatedFieldSettings({
       </label>
       {type === 'rollup' && (
         <label className={fieldLabelClass}>
-          {t('data.aggregation')}
+          <FormFieldLabel required>{t('data.aggregation')}</FormFieldLabel>
           <select
             className={`${inputClass} mt-1.5`}
             name="aggregation"
+            required
             value={aggregation}
             onChange={(event) =>
               setAggregation(event.target.value as 'count' | 'sum' | 'average' | 'min' | 'max')
@@ -301,7 +256,7 @@ export function CalculatedFieldSettings({
         </label>
       )}
       <label className={type === 'lookup' ? wideFieldLabelClass : fieldLabelClass}>
-        {t('data.targetField')}
+        <FormFieldLabel required>{t('data.targetField')}</FormFieldLabel>
         <select
           className={`${inputClass} mt-1.5`}
           defaultValue={defaults?.targetFieldId ?? 'displayName'}

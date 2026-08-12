@@ -2,7 +2,7 @@
 
 Engrove is a self-hosted data and operations workspace built for engineers. The repository contains a reproducible Community stack: a React web app, NestJS API, Node orchestration worker, private Python scientific worker, PostgreSQL, Redis, and S3-compatible object storage.
 
-Community Phases 0–8 are implemented. Projects provide configurable engineering records, exact engineering quantities and measurement history, immutable specifications, exact-version file evidence, durable background jobs, CSV-to-Parquet datasets, derived XY datasets, revisioned charts and dashboards, and audited engineering tasks with exact evidence links, Kanban, and calendar views. OIDC, hardened production composition, readiness/metrics, age-encrypted fresh-install backup and restore, the completed Test & Characterization v6 template, traceable demo data, onboarding, and pilot feedback/adoption reporting are included.
+Community Phases 0–8 are implemented. Projects provide configurable engineering records, exact engineering quantities and measurement history, immutable specifications, exact-version file evidence, durable background jobs, CSV-to-Parquet datasets, derived XY datasets, revisioned charts and dashboards, and audited engineering tasks with exact evidence links, Kanban, and calendar views. Record discussions support mentions, assigned reviews, approval or change-request decisions, a project review inbox, and a dedicated read-only Reviewer role. OIDC, hardened production composition, readiness/metrics, age-encrypted fresh-install backup and restore, the completed Test & Characterization v6 template, traceable demo data, onboarding, and pilot feedback/adoption reporting are included.
 
 ## Prerequisites
 
@@ -31,6 +31,13 @@ pnpm --filter @engrove/api setup:rotate
 ```
 
 PostgreSQL, Redis, MinIO API, and the MinIO console are exposed on the host for local development only. Use the documented [production self-hosting overlay](docs/operations/self-hosting.md) for separate database roles, scoped object-storage credentials, private ports, read-only non-root containers, TLS ingress, and explicit migrations.
+
+Before a production installation or upgrade, validate the private mode-`0600` environment file and
+the fully rendered hardened composition without printing its secrets:
+
+```bash
+pnpm production:preflight -- --env-file /etc/engrove/production.env
+```
 
 Stop the stack without deleting development data:
 
@@ -84,6 +91,10 @@ Rebuild one project's typed record projections without modifying its JSONB sourc
 - [Backup and restore](docs/operations/backup-restore.md)
 - [OIDC and Keycloak](docs/operations/oidc-keycloak.md)
 - [Observability](docs/operations/observability.md)
+- [API access and personal tokens](docs/operations/api-access.md)
+- [TypeScript API client](packages/sdk/README.md)
+- [Project webhooks](docs/operations/webhooks.md)
+- [Task collaboration](docs/product/task-collaboration.md)
 - [Production security checklist](docs/operations/security-checklist.md)
 - [Community administrator guide](docs/operations/administrator-guide.md)
 - [Pilot guide](docs/operations/pilot-guide.md)

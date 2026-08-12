@@ -19,6 +19,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "project:loop": "bash scripts/project-loop.sh",
+    "production:preflight": "node scripts/production-preflight.mjs",
+    "production:preflight:test": "node --test scripts/production-preflight.test.mjs deploy/docker/web-server.test.mjs",
     "db:generate": "pnpm --filter @engrove/database db:generate",
     "db:migrate": "pnpm --filter @engrove/database db:migrate",
     "setup:rotate": "pnpm --filter @engrove/api setup:rotate",

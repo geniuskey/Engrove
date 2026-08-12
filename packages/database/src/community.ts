@@ -1,12 +1,13 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { v7 as uuidv7 } from 'uuid';
+import { seedDefaultTaskWorkflow } from './task-workflow-defaults.js';
 import { generateBasePublicId, generateWorkspacePublicId } from './public-ids.js';
 import { RepositoryError } from './errors.js';
 
 export { RepositoryError } from './errors.js';
 
-export type MemberRole = 'owner' | 'admin' | 'engineer' | 'contributor' | 'viewer';
+export type MemberRole = 'owner' | 'admin' | 'engineer' | 'contributor' | 'reviewer' | 'viewer';
 export type SecurityTokenType = 'invitation' | 'password_reset';
 
 export interface ActorSession {
@@ -17,6 +18,11 @@ export interface ActorSession {
   email: string;
   displayName: string;
   csrfTokenHash: string;
+  authenticationType?: 'session' | 'api_token';
+  apiTokenId?: string;
+  apiTokenAccessLevel?: 'read' | 'write';
+  apiTokenScopes?: string[] | null;
+  apiTokenWorkspaceId?: string | null;
 }
 
 export interface AuditInput {
@@ -50,18 +56,24 @@ function safeHashEqual(left: string, right: string): boolean {
 }
 
 async function transaction<T>(pool: Pool, action: (client: PoolClient) => Promise<T>): Promise<T> {
-  const client = await pool.connect();
-  try {
-    await client.query('begin isolation level serializable');
-    const result = await action(client);
-    await client.query('commit');
-    return result;
-  } catch (error) {
-    await client.query('rollback');
-    throw error;
-  } finally {
-    client.release();
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    const client = await pool.connect();
+    try {
+      await client.query('begin isolation level serializable');
+      const result = await action(client);
+      await client.query('commit');
+      return result;
+    } catch (error) {
+      await client.query('rollback');
+      const code =
+        typeof error === 'object' && error && 'code' in error ? String(error.code) : undefined;
+      if (attempt === 4 || (code !== '40001' && code !== '40P01')) throw error;
+    } finally {
+      client.release();
+    }
+    await new Promise((resolve) => setTimeout(resolve, attempt * 10));
   }
+  throw new Error('TRANSACTION_RETRY_EXHAUSTED');
 }
 
 async function setupTransaction<T>(
@@ -654,6 +666,13 @@ export async function completePasswordReset(
       input.passwordHash,
     ]);
     await revokeUserSessions(client, row.subject_user_id, 'password_reset');
+    await client.query(
+      `update api_tokens
+       set revoked_at = coalesce(revoked_at, now()),
+           revoked_reason = coalesce(revoked_reason, 'password_reset')
+       where user_id = $1 and revoked_at is null`,
+      [row.subject_user_id],
+    );
     await client.query('update security_tokens set used_at = now() where id = $1', [row.id]);
     await appendAudit(client, {
       organizationId: row.organization_id,
@@ -718,22 +737,161 @@ function mapWorkspaceConflict(error: unknown): never {
 export async function listWorkspaces(pool: Pool, actor: ActorSession): Promise<WorkspaceRow[]> {
   const result = await pool.query(
     `select id, public_id, name, slug, description, archived_at from workspaces
-     where organization_id = $1 order by name, id`,
-    [actor.organizationId],
+     where organization_id = $1 and ($2::uuid is null or id = $2)
+       and workspace_visible_to(id,$1,$3,$4)
+     order by name, id`,
+    [actor.organizationId, actor.apiTokenWorkspaceId ?? null, actor.actorId, actor.role],
   );
   return result.rows.map(mapWorkspace);
+}
+
+export interface WorkspacePage {
+  items: WorkspaceRow[];
+  pageInfo: {
+    limit: number;
+    offset: number;
+    total: number;
+    overallTotal: number;
+    hasNext: boolean;
+  };
+}
+
+export async function getWorkspace(
+  pool: Pool,
+  actor: ActorSession,
+  workspaceIdentifier: string,
+): Promise<WorkspaceRow> {
+  const result = await pool.query<{
+    id: string;
+    public_id: string;
+    name: string;
+    slug: string;
+    description: string;
+    archived_at: Date | null;
+  }>(
+    `select id, public_id, name, slug, description, archived_at
+     from workspaces
+     where organization_id = $1
+       and ($2::uuid is null or id = $2)
+       and workspace_visible_to(id,$1,$4,$5)
+       and (id::text = $3 or public_id = $3)`,
+    [
+      actor.organizationId,
+      actor.apiTokenWorkspaceId ?? null,
+      workspaceIdentifier,
+      actor.actorId,
+      actor.role,
+    ],
+  );
+  if (!result.rows[0])
+    throw new RepositoryError('WORKSPACE_NOT_FOUND', 404, 'Workspace was not found.');
+  return mapWorkspace(result.rows[0]);
+}
+
+/** Bounded workspace portfolio lookup for navigation and management surfaces. */
+export async function listWorkspacePage(
+  pool: Pool,
+  actor: ActorSession,
+  query = '',
+  requestedLimit = 50,
+  requestedOffset = 0,
+): Promise<WorkspacePage> {
+  const normalizedQuery = query.normalize('NFKC').trim();
+  const escapedQuery = normalizedQuery.replace(/[\\%_]/g, '\\$&');
+  const limit = Math.max(1, Math.min(100, requestedLimit));
+  const offset = Math.max(0, Math.min(1_000_000, requestedOffset));
+  const result = await pool.query<{
+    id: string | null;
+    public_id: string | null;
+    name: string | null;
+    slug: string | null;
+    description: string | null;
+    archived_at: Date | null;
+    total: number;
+    overall_total: number;
+  }>(
+    `with scoped as materialized (
+       select id, public_id, name, slug, description, archived_at
+       from workspaces
+       where organization_id = $1 and ($2::uuid is null or id = $2)
+         and workspace_visible_to(id,$1,$7,$8)
+     ), filtered as materialized (
+       select * from scoped
+       where $3 = ''
+          or name ilike '%' || $4 || '%' escape '\\'
+          or slug ilike '%' || $4 || '%' escape '\\'
+          or description ilike '%' || $4 || '%' escape '\\'
+          or public_id ilike '%' || $4 || '%' escape '\\'
+     )
+     select page.id, page.public_id, page.name, page.slug, page.description, page.archived_at,
+            counts.total, counts.overall_total
+     from (
+       select (select count(*)::int from filtered) as total,
+              (select count(*)::int from scoped) as overall_total
+     ) counts
+     left join lateral (
+       select * from filtered
+       order by archived_at nulls first,
+                case when lower(name) = lower($3) or lower(slug) = lower($3) then 0 else 1 end,
+                name, id
+       limit $5 offset $6
+     ) page on true`,
+    [
+      actor.organizationId,
+      actor.apiTokenWorkspaceId ?? null,
+      normalizedQuery,
+      escapedQuery,
+      limit,
+      offset,
+      actor.actorId,
+      actor.role,
+    ],
+  );
+  const first = result.rows[0];
+  const total = first?.total ?? 0;
+  const overallTotal = first?.overall_total ?? 0;
+  const items = result.rows
+    .filter(
+      (
+        row,
+      ): row is typeof row & {
+        id: string;
+        public_id: string;
+        name: string;
+        slug: string;
+        description: string;
+      } => row.id !== null,
+    )
+    .map(mapWorkspace);
+  return {
+    items,
+    pageInfo: {
+      limit,
+      offset,
+      total,
+      overallTotal,
+      hasNext: offset + items.length < total,
+    },
+  };
 }
 
 export async function createWorkspace(
   pool: Pool,
   actor: ActorSession,
-  input: { name: string; slug: string; description?: string; requestId: string },
+  input: {
+    name: string;
+    slug: string;
+    description?: string;
+    visibility?: 'organization' | 'restricted';
+    requestId: string;
+  },
 ): Promise<WorkspaceRow> {
   return transaction(pool, async (client) => {
     const id = uuidv7();
     const result = await client.query(
-      `insert into workspaces (id, public_id, organization_id, name, slug, description, created_by)
-       values ($1, $2, $3, $4, $5, $6, $7)
+      `insert into workspaces
+         (id, public_id, organization_id, name, slug, description, visibility, created_by)
+       values ($1, $2, $3, $4, $5, $6, $7, $8)
        returning id, public_id, name, slug, description, archived_at`,
       [
         id,
@@ -742,6 +900,7 @@ export async function createWorkspace(
         input.name.trim(),
         input.slug.trim().toLowerCase(),
         input.description ?? '',
+        input.visibility ?? 'organization',
         actor.actorId,
       ],
     );
@@ -772,8 +931,9 @@ export async function updateWorkspace(
   return transaction(pool, async (client) => {
     const previous = await client.query<{ name: string; slug: string; description: string }>(
       `select name, slug, description from workspaces
-       where id = $1 and organization_id = $2 for update`,
-      [input.workspaceId, actor.organizationId],
+       where id = $1 and organization_id = $2
+         and workspace_visible_to(id,$2,$3,$4) for update`,
+      [input.workspaceId, actor.organizationId, actor.actorId, actor.role],
     );
     if (!previous.rows[0])
       throw new RepositoryError('WORKSPACE_NOT_FOUND', 404, 'Workspace was not found.');
@@ -852,26 +1012,250 @@ async function assertWorkspaceScope(
   workspaceId: string,
 ): Promise<void> {
   const result = await client.query(
-    'select 1 from workspaces where id = $1 and organization_id = $2',
-    [workspaceId, actor.organizationId],
+    `select 1 from workspaces where id = $1 and organization_id = $2
+       and workspace_visible_to(id,$2,$3,$4)`,
+    [workspaceId, actor.organizationId, actor.actorId, actor.role],
   );
   if (!result.rowCount)
     throw new RepositoryError('WORKSPACE_NOT_FOUND', 404, 'Workspace was not found.');
 }
 
-export async function listProjects(
+export type ProjectArchiveState = 'active' | 'archived' | 'all';
+
+export interface ProjectPage {
+  items: ProjectRow[];
+  pageInfo: { limit: number; offset: number; total: number; hasNext: boolean };
+  overallTotal: number;
+}
+
+/** Bounded project catalog for management surfaces and API integrations. */
+export async function listProjectPage(
   pool: Pool,
   actor: ActorSession,
   workspaceId: string,
-): Promise<ProjectRow[]> {
-  const result = await pool.query(
-    `select p.id, p.public_id, p.workspace_id, p.name, p.key, p.description, p.status, p.row_version, p.archived_at
+  options: {
+    query?: string;
+    archiveState?: ProjectArchiveState;
+    limit?: number;
+    offset?: number;
+  } = {},
+): Promise<ProjectPage> {
+  const query = (options.query ?? '').normalize('NFKC').trim();
+  const escapedQuery = query.replace(/[\\%_]/g, '\\$&');
+  const archiveState = options.archiveState ?? 'all';
+  const limit = Math.min(Math.max(Math.trunc(options.limit ?? 50), 1), 100);
+  const offset = Math.min(Math.max(Math.trunc(options.offset ?? 0), 0), 1_000_000);
+  const result = await pool.query<{
+    id: string | null;
+    public_id: string | null;
+    workspace_id: string | null;
+    name: string | null;
+    key: string | null;
+    description: string | null;
+    status: string | null;
+    row_version: number | null;
+    archived_at: Date | null;
+    total: number;
+    overall_total: number;
+  }>(
+    `with scoped as materialized (
+       select p.id, p.public_id, p.workspace_id, p.name, p.key, p.description, p.status,
+              p.row_version, p.archived_at
+       from projects p join workspaces w on w.id = p.workspace_id
+       where p.workspace_id = $1 and w.organization_id = $2 and p.system = false
+         and project_visible_to(p.id,$1,$2,$8,$9)
+     ), filtered as materialized (
+       select * from scoped
+       where ($3 = 'all'
+              or ($3 = 'active' and archived_at is null)
+              or ($3 = 'archived' and archived_at is not null))
+         and ($4 = ''
+              or name ilike '%' || $5 || '%' escape '\\'
+              or key ilike '%' || $5 || '%' escape '\\'
+              or description ilike '%' || $5 || '%' escape '\\'
+              or status ilike '%' || $5 || '%' escape '\\'
+              or public_id ilike '%' || $5 || '%' escape '\\')
+     )
+     select page.id, page.public_id, page.workspace_id, page.name, page.key,
+            page.description, page.status, page.row_version, page.archived_at,
+            counts.total, counts.overall_total
+     from (
+       select (select count(*)::int from filtered) as total,
+              (select count(*)::int from scoped) as overall_total
+     ) counts
+     left join lateral (
+       select * from filtered
+       order by archived_at nulls first,
+                case when lower(name) = lower($4) or lower(key) = lower($4) then 0 else 1 end,
+                lower(name), id
+       limit $6 offset $7
+     ) page on true`,
+    [
+      workspaceId,
+      actor.organizationId,
+      archiveState,
+      query,
+      escapedQuery,
+      limit,
+      offset,
+      actor.actorId,
+      actor.role,
+    ],
+  );
+  const first = result.rows[0];
+  const total = first?.total ?? 0;
+  const overallTotal = first?.overall_total ?? 0;
+  const items = result.rows
+    .filter(
+      (
+        row,
+      ): row is typeof row & {
+        id: string;
+        public_id: string;
+        workspace_id: string;
+        name: string;
+        key: string;
+        description: string;
+        status: string;
+        row_version: number;
+      } => row.id !== null,
+    )
+    .map(mapProject);
+  return {
+    items,
+    pageInfo: { limit, offset, total, hasNext: offset + items.length < total },
+    overallTotal,
+  };
+}
+
+export interface ProjectOptionPage {
+  items: ProjectRow[];
+  pageInfo: {
+    limit: number;
+    total: number;
+    hasMore: boolean;
+  };
+}
+
+export interface ProjectReferenceRow {
+  id: string;
+  publicId: string;
+  name: string;
+  key: string;
+  archivedAt: string | null;
+}
+
+export async function listProjectReferences(
+  pool: Pool,
+  actor: ActorSession,
+  workspaceId: string,
+  projectIds: string[],
+): Promise<ProjectReferenceRow[]> {
+  const ids = [...new Set(projectIds)].slice(0, 500);
+  if (ids.length === 0) return [];
+  const result = await pool.query<{
+    id: string;
+    public_id: string;
+    name: string;
+    key: string;
+    archived_at: Date | null;
+  }>(
+    `select p.id, p.public_id, p.name, p.key, p.archived_at
      from projects p join workspaces w on w.id = p.workspace_id
      where p.workspace_id = $1 and w.organization_id = $2 and p.system = false
-     order by p.name, p.id`,
-    [workspaceId, actor.organizationId],
+       and p.id = any($3::uuid[])
+       and project_visible_to(p.id,$1,$2,$4,$5)
+     order by array_position($3::uuid[], p.id)`,
+    [workspaceId, actor.organizationId, ids, actor.actorId, actor.role],
   );
-  return result.rows.map(mapProject);
+  return result.rows.map((row) => ({
+    id: row.id,
+    publicId: row.public_id,
+    name: row.name,
+    key: row.key,
+    archivedAt: row.archived_at?.toISOString() ?? null,
+  }));
+}
+
+/**
+ * Bounded project lookup for navigation controls. Unlike the management catalog, this provides
+ * relevance-ranked active projects without offset pagination.
+ */
+export async function listProjectOptions(
+  pool: Pool,
+  actor: ActorSession,
+  workspaceId: string,
+  query = '',
+  limit = 20,
+): Promise<ProjectOptionPage> {
+  const normalizedQuery = query.normalize('NFKC').trim();
+  const escapedQuery = normalizedQuery.replace(/[\\%_]/g, '\\$&');
+  const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 50));
+  const result = await pool.query<{
+    id: string;
+    public_id: string;
+    workspace_id: string;
+    name: string;
+    key: string;
+    description: string;
+    status: string;
+    row_version: number;
+    archived_at: Date | null;
+    total: number;
+  }>(
+    `select p.id,p.public_id,p.workspace_id,p.name,p.key,p.description,p.status,p.row_version,
+            p.archived_at,count(*) over()::int total
+     from projects p join workspaces w on w.id=p.workspace_id
+     where p.workspace_id=$1 and w.organization_id=$2 and p.system=false and p.archived_at is null
+       and project_visible_to(p.id,$1,$2,$6,$7)
+       and ($3::text='' or p.name ilike '%'||$4||'%' escape '\\'
+                         or p.key ilike '%'||$4||'%' escape '\\'
+                         or p.public_id ilike '%'||$4||'%' escape '\\')
+     order by case
+       when lower(p.name)=lower($3) then 0
+       when lower(p.key)=lower($3) then 1
+       when lower(p.public_id)=lower($3) then 2
+       when p.name ilike $4||'%' escape '\\' then 3
+       when p.key ilike $4||'%' escape '\\' then 4
+       when p.public_id ilike $4||'%' escape '\\' then 5
+       else 6 end,
+       p.name,p.id
+     limit $5`,
+    [
+      workspaceId,
+      actor.organizationId,
+      normalizedQuery,
+      escapedQuery,
+      boundedLimit,
+      actor.actorId,
+      actor.role,
+    ],
+  );
+  const total = Number(result.rows[0]?.total ?? 0);
+  return {
+    items: result.rows.map(mapProject),
+    pageInfo: { limit: boundedLimit, total, hasMore: result.rows.length < total },
+  };
+}
+
+export async function getProject(
+  pool: Pool,
+  actor: ActorSession,
+  workspaceId: string,
+  projectIdentifier: string,
+): Promise<ProjectRow> {
+  const result = await pool.query(
+    `select p.id, p.public_id, p.workspace_id, p.name, p.key, p.description, p.status,
+            p.row_version, p.archived_at
+     from projects p join workspaces w on w.id=p.workspace_id
+     where p.workspace_id=$1 and w.organization_id=$2 and p.system=false
+       and project_visible_to(p.id,$1,$2,$4,$5)
+       and (p.id::text=$3 or p.public_id=$3)`,
+    [workspaceId, actor.organizationId, projectIdentifier, actor.actorId, actor.role],
+  );
+  if (!result.rows[0])
+    throw new RepositoryError('PROJECT_NOT_FOUND', 404, 'Project was not found.');
+  return mapProject(result.rows[0]);
 }
 
 export async function listLegacyConfigurableDataProjects(
@@ -884,9 +1268,10 @@ export async function listLegacyConfigurableDataProjects(
             p.archived_at
      from projects p join workspaces w on w.id = p.workspace_id
      where p.workspace_id = $1 and w.organization_id = $2 and p.system = false
+       and project_visible_to(p.id,$1,$2,$3,$4)
        and exists (select 1 from object_types o where o.project_id = p.id)
      order by p.name, p.id`,
-    [workspaceId, actor.organizationId],
+    [workspaceId, actor.organizationId, actor.actorId, actor.role],
   );
   return result.rows.map(mapProject);
 }
@@ -912,7 +1297,7 @@ export async function ensureWorkspaceDataProject(
          (id, public_id, workspace_id, name, key, description, system, created_by)
        values ($1, $2, $3, 'Workspace data', '__WORKSPACE_DATA__',
                'Internal backing scope for workspace-shared tables.', true, $4)
-       on conflict (workspace_id) where system = true do nothing
+       on conflict do nothing
        returning id, public_id, workspace_id, name, key, description, status, row_version, archived_at`,
       [id, generateBasePublicId(), workspaceId, actor.actorId],
     );
@@ -954,6 +1339,7 @@ export async function createProject(
     name: string;
     key: string;
     description?: string;
+    visibility?: 'workspace' | 'restricted';
     requestId: string;
   },
 ): Promise<ProjectRow> {
@@ -961,8 +1347,9 @@ export async function createProject(
     await assertWorkspaceScope(client, actor, input.workspaceId);
     const id = uuidv7();
     const result = await client.query(
-      `insert into projects (id, public_id, workspace_id, name, key, description, created_by)
-       values ($1, $2, $3, $4, $5, $6, $7)
+      `insert into projects
+         (id, public_id, workspace_id, name, key, description, visibility, created_by)
+       values ($1, $2, $3, $4, $5, $6, $7, $8)
        returning id, public_id, workspace_id, name, key, description, status, row_version, archived_at`,
       [
         id,
@@ -971,9 +1358,11 @@ export async function createProject(
         input.name.trim(),
         input.key.trim().toUpperCase(),
         input.description ?? '',
+        input.visibility ?? 'workspace',
         actor.actorId,
       ],
     );
+    await seedDefaultTaskWorkflow(client, id, actor.actorId);
     await appendAudit(client, {
       organizationId: actor.organizationId,
       workspaceId: input.workspaceId,
@@ -1007,6 +1396,7 @@ export async function updateProject(
       `update projects set name = $4, description = $5, status = $6,
           row_version = row_version + 1, updated_at = now()
        where id = $1 and workspace_id = $2 and row_version = $3 and system = false
+         and project_visible_to(id,$2,$7,$8,$9)
        returning id, public_id, workspace_id, name, key, description, status, row_version, archived_at`,
       [
         input.projectId,
@@ -1015,12 +1405,16 @@ export async function updateProject(
         input.name.trim(),
         input.description,
         input.status,
+        actor.organizationId,
+        actor.actorId,
+        actor.role,
       ],
     );
     if (!result.rows[0]) {
       const exists = await client.query(
-        'select 1 from projects where id = $1 and workspace_id = $2 and system = false',
-        [input.projectId, input.workspaceId],
+        `select 1 from projects where id = $1 and workspace_id = $2 and system = false
+           and project_visible_to(id,$2,$3,$4,$5)`,
+        [input.projectId, input.workspaceId, actor.organizationId, actor.actorId, actor.role],
       );
       throw new RepositoryError(
         exists.rowCount ? 'VERSION_CONFLICT' : 'PROJECT_NOT_FOUND',
@@ -1063,8 +1457,17 @@ export async function setProjectArchived(
            archive_reason = case when $4::boolean then $5::text else null end,
            row_version = row_version + 1, updated_at = now()
        where id = $1 and workspace_id = $2 and system = false
+         and project_visible_to(id,$2,$6,$3,$7)
        returning id, public_id, workspace_id, name, key, description, status, row_version, archived_at`,
-      [input.projectId, input.workspaceId, actor.actorId, input.archived, input.reason ?? null],
+      [
+        input.projectId,
+        input.workspaceId,
+        actor.actorId,
+        input.archived,
+        input.reason ?? null,
+        actor.organizationId,
+        actor.role,
+      ],
     );
     if (!result.rows[0])
       throw new RepositoryError('PROJECT_NOT_FOUND', 404, 'Project was not found.');
@@ -1090,24 +1493,58 @@ export interface MemberRow {
   role: MemberRole;
 }
 
-export async function listMembers(pool: Pool, actor: ActorSession): Promise<MemberRow[]> {
-  const result = await pool.query<{
-    user_id: string;
-    email: string;
-    display_name: string;
-    role: MemberRole;
-  }>(
-    `select m.user_id, u.email, u.display_name, m.role
-     from memberships m join users u on u.id = m.user_id
-     where m.organization_id = $1 order by u.display_name, u.id`,
-    [actor.organizationId],
-  );
-  return result.rows.map((row) => ({
-    userId: row.user_id,
-    email: row.email,
-    displayName: row.display_name,
-    role: row.role,
-  }));
+export interface MemberPage {
+  items: MemberRow[];
+  pageInfo: { limit: number; offset: number; total: number; hasNext: boolean };
+  overallTotal: number;
+}
+
+export async function listMemberPage(
+  pool: Pool,
+  actor: ActorSession,
+  options: { query?: string; limit?: number; offset?: number } = {},
+): Promise<MemberPage> {
+  const query = (options.query ?? '').normalize('NFKC').trim();
+  const escapedQuery = query.replace(/[\\%_]/g, '\\$&');
+  const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
+  const offset = Math.min(Math.max(options.offset ?? 0, 0), 1_000_000);
+  const matches = `($2::text = ''
+    or u.display_name ilike '%' || $3 || '%' escape '\\'
+    or u.email ilike '%' || $3 || '%' escape '\\'
+    or m.role::text ilike '%' || $3 || '%' escape '\\')`;
+  const [items, count] = await Promise.all([
+    pool.query<{
+      user_id: string;
+      email: string;
+      display_name: string;
+      role: MemberRole;
+    }>(
+      `select m.user_id, u.email, u.display_name, m.role
+       from memberships m join users u on u.id = m.user_id
+       where m.organization_id = $1 and ${matches}
+       order by lower(u.display_name), lower(u.email), u.id limit $4 offset $5`,
+      [actor.organizationId, query, escapedQuery, limit, offset],
+    ),
+    pool.query<{ total: string; overall_total: string }>(
+      `select count(*) filter (where ${matches})::text total,
+              count(*)::text overall_total
+       from memberships m join users u on u.id = m.user_id
+       where m.organization_id = $1`,
+      [actor.organizationId, query, escapedQuery],
+    ),
+  ]);
+  const total = Number(count.rows[0]?.total ?? 0);
+  const overallTotal = Number(count.rows[0]?.overall_total ?? 0);
+  return {
+    items: items.rows.map((row) => ({
+      userId: row.user_id,
+      email: row.email,
+      displayName: row.display_name,
+      role: row.role,
+    })),
+    pageInfo: { limit, offset, total, hasNext: offset + items.rows.length < total },
+    overallTotal,
+  };
 }
 
 export async function updateMemberRole(
@@ -1216,6 +1653,14 @@ export interface MemberGroupRow {
   updatedAt: string;
 }
 
+export interface MemberGroupPage {
+  items: MemberGroupRow[];
+  pageInfo: { limit: number; offset: number; total: number; hasNext: boolean };
+  overallTotal: number;
+}
+
+export type OwnMemberGroupRow = Omit<MemberGroupRow, 'memberIds'>;
+
 function mapMemberGroupConflict(error: unknown): never {
   if (
     typeof error === 'object' &&
@@ -1234,32 +1679,86 @@ function mapMemberGroupConflict(error: unknown): never {
   throw error;
 }
 
-export async function listMemberGroups(pool: Pool, actor: ActorSession): Promise<MemberGroupRow[]> {
+export async function listMemberGroupPage(
+  pool: Pool,
+  actor: ActorSession,
+  options: { query?: string; limit?: number; offset?: number } = {},
+): Promise<MemberGroupPage> {
+  const query = (options.query ?? '').normalize('NFKC').trim();
+  const escapedQuery = query.replace(/[\\%_]/g, '\\$&');
+  const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
+  const offset = Math.min(Math.max(options.offset ?? 0, 0), 1_000_000);
+  const matches = `($2::text = ''
+    or g.name ilike '%' || $3 || '%' escape '\\'
+    or g.description ilike '%' || $3 || '%' escape '\\')`;
+  const [items, count] = await Promise.all([
+    pool.query<{
+      id: string;
+      name: string;
+      description: string;
+      color: MemberGroupColor;
+      member_ids: string[];
+      updated_at: Date;
+    }>(
+      `select g.id, g.name, g.description, g.color, g.updated_at,
+              coalesce(array_agg(gm.user_id order by gm.user_id)
+                filter (where gm.user_id is not null), '{}') as member_ids
+       from member_groups g
+       left join member_group_memberships gm
+         on gm.organization_id = g.organization_id and gm.group_id = g.id
+       where g.organization_id = $1 and g.archived_at is null and ${matches}
+       group by g.id
+       order by lower(g.name), g.id limit $4 offset $5`,
+      [actor.organizationId, query, escapedQuery, limit, offset],
+    ),
+    pool.query<{ total: string; overall_total: string }>(
+      `select count(*) filter (where ${matches})::text total,
+              count(*)::text overall_total
+       from member_groups g
+       where g.organization_id = $1 and g.archived_at is null`,
+      [actor.organizationId, query, escapedQuery],
+    ),
+  ]);
+  const total = Number(count.rows[0]?.total ?? 0);
+  const overallTotal = Number(count.rows[0]?.overall_total ?? 0);
+  return {
+    items: items.rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      color: row.color,
+      memberIds: row.member_ids,
+      updatedAt: row.updated_at.toISOString(),
+    })),
+    pageInfo: { limit, offset, total, hasNext: offset + items.rows.length < total },
+    overallTotal,
+  };
+}
+
+export async function listOwnMemberGroups(
+  pool: Pool,
+  actor: ActorSession,
+): Promise<OwnMemberGroupRow[]> {
   const result = await pool.query<{
     id: string;
     name: string;
     description: string;
     color: MemberGroupColor;
-    member_ids: string[];
     updated_at: Date;
   }>(
-    `select g.id, g.name, g.description, g.color, g.updated_at,
-            coalesce(array_agg(gm.user_id order by gm.user_id)
-              filter (where gm.user_id is not null), '{}') as member_ids
+    `select g.id, g.name, g.description, g.color, g.updated_at
      from member_groups g
-     left join member_group_memberships gm
+     join member_group_memberships gm
        on gm.organization_id = g.organization_id and gm.group_id = g.id
-     where g.organization_id = $1 and g.archived_at is null
-     group by g.id
+     where g.organization_id = $1 and gm.user_id = $2 and g.archived_at is null
      order by lower(g.name), g.id`,
-    [actor.organizationId],
+    [actor.organizationId, actor.actorId],
   );
   return result.rows.map((row) => ({
     id: row.id,
     name: row.name,
     description: row.description,
     color: row.color,
-    memberIds: row.member_ids,
     updatedAt: row.updated_at.toISOString(),
   }));
 }
@@ -1454,17 +1953,64 @@ export async function archiveMemberGroup(
   });
 }
 
-export async function listAuditEvents(
+export interface AuditEventRow {
+  id: string;
+  workspaceId: string | null;
+  projectId: string | null;
+  actorId: string | null;
+  actorName: string | null;
+  actorEmail: string | null;
+  action: string;
+  targetType: string;
+  targetId: string | null;
+  requestId: string;
+  payload: Record<string, unknown>;
+  createdAt: Date;
+}
+
+export interface AuditEventPage {
+  items: AuditEventRow[];
+  pageInfo: { limit: number; offset: number; total: number; hasNext: boolean };
+}
+
+export async function listAuditEventPage(
   pool: Pool,
   actor: ActorSession,
-  limit = 100,
-): Promise<Record<string, unknown>[]> {
-  const result = await pool.query(
-    `select id, workspace_id as "workspaceId", project_id as "projectId", actor_id as "actorId",
-            action, target_type as "targetType", target_id as "targetId", request_id as "requestId",
-            payload, created_at as "createdAt"
-     from audit_events where organization_id = $1 order by created_at desc, id desc limit $2`,
-    [actor.organizationId, Math.min(Math.max(limit, 1), 200)],
-  );
-  return result.rows;
+  options: { query?: string; limit?: number; offset?: number } = {},
+): Promise<AuditEventPage> {
+  const query = (options.query ?? '').normalize('NFKC').trim();
+  const escapedQuery = query.replace(/[\\%_]/g, '\\$&');
+  const limit = Math.min(Math.max(options.limit ?? 100, 1), 200);
+  const offset = Math.min(Math.max(options.offset ?? 0, 0), 1_000_000);
+  const matches = `($2 = ''
+    or e.action ilike '%' || $3 || '%' escape '\\'
+    or e.target_type ilike '%' || $3 || '%' escape '\\'
+    or coalesce(e.target_id::text,'') ilike '%' || $3 || '%' escape '\\'
+    or e.request_id ilike '%' || $3 || '%' escape '\\'
+    or coalesce(u.display_name,'') ilike '%' || $3 || '%' escape '\\'
+    or coalesce(u.email,'') ilike '%' || $3 || '%' escape '\\')`;
+  const [items, count] = await Promise.all([
+    pool.query<AuditEventRow>(
+      `select e.id, e.workspace_id as "workspaceId", e.project_id as "projectId",
+              e.actor_id as "actorId", u.display_name as "actorName", u.email as "actorEmail",
+              e.action, e.target_type as "targetType", e.target_id as "targetId",
+              e.request_id as "requestId", e.payload, e.created_at as "createdAt"
+       from audit_events e
+       left join users u on u.id = e.actor_id
+       where e.organization_id = $1 and ${matches}
+       order by e.created_at desc, e.id desc limit $4 offset $5`,
+      [actor.organizationId, query, escapedQuery, limit, offset],
+    ),
+    pool.query<{ total: string }>(
+      `select count(*)::text total from audit_events e
+       left join users u on u.id = e.actor_id
+       where e.organization_id = $1 and ${matches}`,
+      [actor.organizationId, query, escapedQuery],
+    ),
+  ]);
+  const total = Number(count.rows[0]?.total ?? 0);
+  return {
+    items: items.rows,
+    pageInfo: { limit, offset, total, hasNext: offset + items.rows.length < total },
+  };
 }

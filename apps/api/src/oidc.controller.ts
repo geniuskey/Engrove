@@ -2,12 +2,14 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { EngroveConfig } from '@engrove/config';
 import { createSession, getInstallationOrganizationId, type Pool } from '@engrove/database';
 import { Controller, Get, HttpException, Inject, Query, Req, Res } from '@nestjs/common';
+import { ApiFoundResponse, ApiOkResponse, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { hash } from 'argon2';
 import type { Request, Response } from 'express';
 import * as oidc from 'openid-client';
 import { v7 as uuidv7 } from 'uuid';
 import { z } from 'zod';
 import { requestId, setSessionCookies } from './community.controller.js';
+import { openApiSchema } from './openapi.js';
 import type { Runtime } from './runtime.js';
 import { RUNTIME } from './runtime.provider.js';
 
@@ -17,6 +19,7 @@ interface OidcState {
   nonce: string;
   verifier: string;
   expiresAt: number;
+  returnTo: string;
 }
 
 export interface OidcIdentityClaims {
@@ -69,10 +72,32 @@ function unseal(value: string | undefined, secret: string): OidcState {
       nonce: z.string().min(20),
       verifier: z.string().min(20),
       expiresAt: z.number(),
+      returnTo: z.string().optional(),
     })
     .parse(JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')));
   if (parsed.expiresAt < Date.now()) throw new HttpException({ code: 'OIDC_STATE_EXPIRED' }, 400);
-  return parsed;
+  return { ...parsed, returnTo: safeOidcReturnTo(parsed.returnTo) };
+}
+
+export function safeOidcReturnTo(value: string | undefined): string {
+  if (
+    !value ||
+    value.length > 2048 ||
+    !value.startsWith('/') ||
+    value.startsWith('//') ||
+    value.includes('\\')
+  )
+    return '/workspaces';
+  try {
+    const parsed = new URL(value, 'https://engrove.invalid');
+    const allowed =
+      parsed.pathname === '/' ||
+      /^\/workspaces(?:\/|$)/.test(parsed.pathname) ||
+      ['/members', '/audit', '/get-started', '/pilot'].includes(parsed.pathname);
+    return allowed ? `${parsed.pathname}${parsed.search}${parsed.hash}` : '/workspaces';
+  } catch {
+    return '/workspaces';
+  }
 }
 
 async function provider(runtime: Runtime) {
@@ -186,16 +211,37 @@ export async function resolveOidcUser(
   }
 }
 
+const oidcStatusResponse = z.object({ enabled: z.boolean() }).strict();
+const redirectHeaders = {
+  Location: {
+    description: 'Authorization provider or safe Engrove return URL.',
+    schema: { type: 'string', format: 'uri' },
+  },
+};
+
+@ApiTags('Oidc')
 @Controller('api/v1/auth/oidc')
 export class OidcController {
   constructor(@Inject(RUNTIME) private readonly runtime: Runtime) {}
 
-  @Get('status') status() {
+  @ApiOkResponse({ schema: openApiSchema(oidcStatusResponse) })
+  @Get('status')
+  status() {
     const config = this.runtime.config;
     return { enabled: Boolean(config.OIDC_ISSUER && config.OIDC_CLIENT_ID) };
   }
 
-  @Get('start') async start(@Res() response: Response) {
+  @ApiQuery({
+    name: 'returnTo',
+    required: false,
+    description: 'Internal Engrove path restored after OIDC sign-in. External URLs are ignored.',
+  })
+  @ApiFoundResponse({
+    description: 'Redirects to the configured OIDC authorization endpoint.',
+    headers: redirectHeaders,
+  })
+  @Get('start')
+  async start(@Res() response: Response, @Query('returnTo') returnTo?: string) {
     const config = enabledConfig(this.runtime);
     const verifier = oidc.randomPKCECodeVerifier();
     const state = oidc.randomState();
@@ -213,7 +259,13 @@ export class OidcController {
     response.cookie(
       OIDC_COOKIE,
       seal(
-        { state, nonce, verifier, expiresAt: Date.now() + 10 * 60_000 },
+        {
+          state,
+          nonce,
+          verifier,
+          expiresAt: Date.now() + 10 * 60_000,
+          returnTo: safeOidcReturnTo(returnTo),
+        },
         config.INTERNAL_SERVICE_SECRET,
       ),
       {
@@ -227,11 +279,13 @@ export class OidcController {
     response.redirect(url.href);
   }
 
-  @Get('callback') async callback(
-    @Req() request: Request,
-    @Res() response: Response,
-    @Query('code') code?: string,
-  ) {
+  @ApiQuery({ name: 'code', required: true, type: String, description: 'OIDC authorization code.' })
+  @ApiFoundResponse({
+    description: 'Creates the Engrove session and redirects to the sealed internal return path.',
+    headers: redirectHeaders,
+  })
+  @Get('callback')
+  async callback(@Req() request: Request, @Res() response: Response, @Query('code') code?: string) {
     if (!code) throw new HttpException({ code: 'OIDC_CODE_MISSING' }, 400);
     const config = enabledConfig(this.runtime);
     const state = unseal(
@@ -262,6 +316,6 @@ export class OidcController {
       sameSite: 'lax',
       path: '/api/v1/auth/oidc',
     });
-    response.redirect(`${config.ENGROVE_PUBLIC_URL.replace(/\/$/, '')}/workspaces`);
+    response.redirect(`${config.ENGROVE_PUBLIC_URL.replace(/\/$/, '')}${state.returnTo}`);
   }
 }

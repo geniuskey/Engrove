@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useState } from 'react';
 import { api } from './App.js';
-import type { FieldDefinition } from './DataPageTypes.js';
+import type { FieldDefinition, RecordReference } from './DataPageTypes.js';
 import { displayFieldValue } from './DataPageViews.js';
 
 interface ChartPoint {
@@ -220,11 +220,13 @@ function DatasetCellPreview({
   base,
   field,
   label,
+  references,
   value,
 }: {
   base: string;
   field: FieldDefinition;
   label: string;
+  references?: RecordReference[] | undefined;
   value: unknown;
 }) {
   const datasetIds = useMemo(
@@ -271,7 +273,7 @@ function DatasetCellPreview({
     );
   return (
     <span className="block max-w-64 truncate text-slate-300">
-      {displayFieldValue(field, value)}
+      {displayFieldValue(field, value, references)}
     </span>
   );
 }
@@ -280,22 +282,30 @@ export function CellValuePreview({
   base,
   field,
   label,
+  references,
   value,
 }: {
   base?: string | undefined;
   field: FieldDefinition;
   label?: string;
+  references?: RecordReference[] | undefined;
   value: unknown;
 }) {
   const chartSeries = chartSeriesFromValue(field, value);
   if (chartSeries) return <MiniLineChart label={label ?? field.name} series={chartSeries} />;
   if (field.fieldType === 'dataset' && base)
     return (
-      <DatasetCellPreview base={base} field={field} label={label ?? field.name} value={value} />
+      <DatasetCellPreview
+        base={base}
+        field={field}
+        label={label ?? field.name}
+        references={references}
+        value={value}
+      />
     );
   return (
     <span className="block max-w-64 truncate text-slate-300">
-      {displayFieldValue(field, value)}
+      {displayFieldValue(field, value, references)}
     </span>
   );
 }

@@ -10,9 +10,11 @@ export async function grantProductionRoles(pool: Pool): Promise<void> {
     grant usage on schema drizzle to engrove_runtime, engrove_backup;
     grant select on all tables in schema drizzle to engrove_runtime, engrove_backup;
     grant select on maintenance_state, workspaces, projects, file_objects, file_upload_sessions, datasets,
-      dataset_artifacts, background_jobs, background_job_attempts, outbox_events to engrove_worker;
+      dataset_artifacts, background_jobs, background_job_attempts, outbox_events, webhook_endpoints,
+      webhook_deliveries, project_idempotency_requests to engrove_worker;
     grant insert, update on datasets, dataset_artifacts, background_jobs,
-      background_job_attempts, outbox_events, audit_events to engrove_worker;
+      background_job_attempts, outbox_events, audit_events, webhook_deliveries to engrove_worker;
+    grant delete on project_idempotency_requests to engrove_worker;
     alter default privileges in schema public grant select, insert, update, delete on tables to engrove_runtime;
     alter default privileges in schema public grant usage, select on sequences to engrove_runtime;
     alter default privileges in schema public grant select on tables to engrove_backup;

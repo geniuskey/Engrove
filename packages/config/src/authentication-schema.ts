@@ -20,5 +20,7 @@ export const oidcConfigShape = {
   OIDC_NAME_CLAIM: z.string().min(1).default('name'),
   OIDC_ALLOWED_DOMAINS: commaSeparated.default([]),
   OIDC_AUTO_PROVISION: booleanString.default(true),
-  OIDC_DEFAULT_ROLE: z.enum(['admin', 'engineer', 'contributor', 'viewer']).default('viewer'),
+  OIDC_DEFAULT_ROLE: z
+    .enum(['admin', 'engineer', 'contributor', 'reviewer', 'viewer'])
+    .default('viewer'),
 };

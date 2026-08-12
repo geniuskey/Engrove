@@ -27,10 +27,23 @@ if [[ -z "$database_url" ]]; then
     --env POSTGRES_DB=engrove_test \
     --env POSTGRES_USER=engrove_test \
     --env POSTGRES_PASSWORD=engrove_test \
+    --tmpfs /var/lib/postgresql:rw,noexec,nosuid,nodev \
     --publish 127.0.0.1::5432 \
     postgres:18.1-bookworm >/dev/null
 
-  port=$(docker port "$container_name" 5432/tcp | sed 's/.*://')
+  port=''
+  for _ in {1..20}; do
+    mapping=$(docker port "$container_name" 5432/tcp 2>/dev/null | head -n 1 || true)
+    port=${mapping##*:}
+    if [[ "$port" =~ ^[0-9]+$ ]]; then
+      break
+    fi
+    sleep 0.1
+  done
+  if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+    echo "Could not resolve the PostgreSQL integration container port."
+    exit 1
+  fi
   database_url="postgresql://engrove_test:engrove_test@127.0.0.1:${port}/engrove_test"
 
   ready=false

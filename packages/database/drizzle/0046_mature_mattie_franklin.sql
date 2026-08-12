@@ -1,0 +1,1 @@
+CREATE INDEX "tasks_assignee_lifecycle_due_idx" ON "tasks" USING btree ("assignee_id","archived_at","due_date","updated_at") WHERE "tasks"."assignee_id" is not null;

@@ -1,11 +1,26 @@
 import type { Request } from 'express';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  actorAllowsAction,
+  apiTokenAllowsAction,
+  apiTokenAllowsWorkspace,
   applyAuthenticationRateLimit,
   authenticationRateLimitKeys,
   authenticationRateLimits,
   verifiedClientIp,
 } from './community.controller.js';
+
+const apiTokenActor = {
+  sessionId: '',
+  actorId: '019fbcf9-e020-71da-935a-6a6a728b3790',
+  organizationId: '019fbcf9-e020-71da-935a-6a6a728b3791',
+  role: 'owner' as const,
+  email: 'owner@example.com',
+  displayName: 'Owner',
+  csrfTokenHash: '',
+  authenticationType: 'api_token' as const,
+  apiTokenAccessLevel: 'read' as const,
+};
 
 const request = (ip: string, remoteAddress = ip) =>
   ({ ip, socket: { remoteAddress } }) as unknown as Request;
@@ -93,5 +108,113 @@ describe('authentication rate limiting', () => {
         authenticationRateLimits.signIn,
       ),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('API token permission boundaries', () => {
+  it('keeps read-only tokens read-only and excludes administrative capabilities', () => {
+    expect(apiTokenAllowsAction(apiTokenActor, 'record.read')).toBe(true);
+    expect(apiTokenAllowsAction(apiTokenActor, 'export.execute')).toBe(true);
+    expect(apiTokenAllowsAction(apiTokenActor, 'record.update')).toBe(false);
+    expect(apiTokenAllowsAction(apiTokenActor, 'record.comment', true)).toBe(false);
+    expect(apiTokenAllowsAction(apiTokenActor, 'view.manage', true)).toBe(false);
+    expect(apiTokenAllowsAction(apiTokenActor, 'schema.read', true)).toBe(false);
+    expect(
+      apiTokenAllowsAction({ ...apiTokenActor, apiTokenAccessLevel: 'write' }, 'record.update'),
+    ).toBe(true);
+    expect(
+      apiTokenAllowsAction(
+        { ...apiTokenActor, apiTokenAccessLevel: 'write', apiTokenScopes: ['data'] },
+        'view.manage',
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      apiTokenAllowsAction(
+        { ...apiTokenActor, apiTokenAccessLevel: 'write', apiTokenScopes: ['data'] },
+        'record.comment',
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      apiTokenAllowsAction(
+        { ...apiTokenActor, apiTokenAccessLevel: 'write', apiTokenScopes: ['data'] },
+        'view.share',
+        true,
+      ),
+    ).toBe(false);
+    expect(
+      apiTokenAllowsAction({ ...apiTokenActor, apiTokenAccessLevel: 'write' }, 'member.manage'),
+    ).toBe(false);
+    expect(
+      apiTokenAllowsAction(
+        { ...apiTokenActor, apiTokenAccessLevel: 'write' },
+        'workspace.access.manage',
+      ),
+    ).toBe(false);
+    expect(
+      apiTokenAllowsAction(
+        { ...apiTokenActor, apiTokenAccessLevel: 'write' },
+        'project.access.manage',
+      ),
+    ).toBe(false);
+    expect(
+      apiTokenAllowsAction({ ...apiTokenActor, apiTokenAccessLevel: 'write' }, 'audit.read'),
+    ).toBe(false);
+    expect(
+      apiTokenAllowsAction({ ...apiTokenActor, apiTokenAccessLevel: 'write' }, 'notification.read'),
+    ).toBe(false);
+    expect(
+      apiTokenAllowsAction({ ...apiTokenActor, apiTokenAccessLevel: 'write' }, 'task.watch', true),
+    ).toBe(false);
+    expect(
+      apiTokenAllowsAction(
+        { ...apiTokenActor, apiTokenAccessLevel: 'write' },
+        'task.personalize',
+        true,
+      ),
+    ).toBe(false);
+    expect(
+      apiTokenAllowsAction(
+        { ...apiTokenActor, apiTokenAccessLevel: 'write' },
+        'task.automation.manage',
+        true,
+      ),
+    ).toBe(false);
+  });
+
+  it('limits newly scoped tokens to selected product areas', () => {
+    const taskToken = { ...apiTokenActor, apiTokenScopes: ['tasks'] };
+    expect(apiTokenAllowsAction(taskToken, 'task.read')).toBe(true);
+    expect(apiTokenAllowsAction(taskToken, 'workspace.read')).toBe(false);
+    expect(apiTokenAllowsAction(taskToken, 'record.read')).toBe(false);
+    expect(apiTokenAllowsAction(taskToken, 'milestone.read')).toBe(false);
+    expect(actorAllowsAction(taskToken, 'task.read')).toBe(true);
+    expect(actorAllowsAction(taskToken, 'project.read')).toBe(false);
+    expect(
+      apiTokenAllowsAction({ ...taskToken, apiTokenAccessLevel: 'write' }, 'task.create', true),
+    ).toBe(true);
+    expect(
+      apiTokenAllowsAction(
+        { ...taskToken, apiTokenAccessLevel: 'write' },
+        'milestone.manage',
+        true,
+      ),
+    ).toBe(false);
+    expect(
+      apiTokenAllowsAction({ ...apiTokenActor, apiTokenScopes: ['workspace'] }, 'workspace.read'),
+    ).toBe(true);
+  });
+
+  it('hides workspaces outside a token scope', () => {
+    const scoped = {
+      ...apiTokenActor,
+      apiTokenWorkspaceId: '019fbcf9-e020-71da-935a-6a6a728b3792',
+    };
+    expect(apiTokenAllowsWorkspace(scoped, scoped.apiTokenWorkspaceId)).toBe(true);
+    expect(apiTokenAllowsWorkspace(scoped, '019fbcf9-e020-71da-935a-6a6a728b3793')).toBe(false);
+    expect(apiTokenAllowsWorkspace(apiTokenActor, '019fbcf9-e020-71da-935a-6a6a728b3793')).toBe(
+      true,
+    );
   });
 });
