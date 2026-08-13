@@ -13,8 +13,8 @@ hero:
       text: Engrove 알아보기
       link: /app-introduction
     - theme: alt
-      text: 5분 만에 시작하기
-      link: /guide/getting-started
+      text: 화면으로 둘러보기
+      link: /guide/product-tour
     - theme: alt
       text: GitHub
       link: https://github.com/geniuskey/Engrove
@@ -65,6 +65,7 @@ features:
 ## 다음 단계
 
 - [Engrove가 해결하는 문제와 제품 구조](/app-introduction)
+- [실제 화면과 예제로 핵심 흐름 둘러보기](/guide/product-tour)
 - [로컬에서 실행하고 첫 프로젝트 둘러보기](/guide/getting-started)
 - [워크스페이스·프로젝트·데이터의 관계 이해하기](/guide/concepts)
 - [API, SDK, 웹훅과 운영 모델 살펴보기](/guide/api-and-operations)

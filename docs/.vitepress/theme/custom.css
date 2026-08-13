@@ -107,6 +107,28 @@
   display: block;
 }
 
+.vp-doc img[src*='/screenshots/'] {
+  background: var(--vp-c-bg-soft);
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  box-shadow: 0 14px 38px rgba(15, 23, 42, 0.12);
+  display: block;
+  margin: 20px auto 8px;
+}
+
+.vp-doc p:has(> img[src*='/screenshots/']) + p > em {
+  color: var(--vp-c-text-2);
+  display: block;
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 0 0 28px;
+  text-align: center;
+}
+
+.dark .vp-doc img[src*='/screenshots/'] {
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.28);
+}
+
 .audience-grid span {
   color: var(--vp-c-text-2);
   font-size: 13px;
