@@ -11,6 +11,9 @@
   "scripts": {
     "dev": "turbo dev",
     "build": "turbo build",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs",
     "bundle:check": "node scripts/check-bundle-budget.mjs",
     "assets:logos": "node scripts/generate-logo-variants.mjs",
     "lint": "turbo lint && pnpm python:lint",
@@ -44,6 +47,7 @@
     "prettier": "3.9.6",
     "turbo": "2.10.8",
     "typescript": "5.9.3",
-    "typescript-eslint": "8.65.0"
+    "typescript-eslint": "8.65.0",
+    "vitepress": "1.6.4"
   }
 }
