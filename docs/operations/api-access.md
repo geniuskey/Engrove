@@ -56,7 +56,8 @@ invocation and preserves that key and request body across retries.
 The low-level client accepts only relative `/api/v1/` paths and validates the configured HTTP(S)
 origin, preventing a malformed path from forwarding the bearer token to another host. Keep the
 token in a server-side environment or secret manager; never bundle a personal API token into a
-public browser application. See [`packages/sdk/README.md`](../../packages/sdk/README.md) for the
+public browser application. See the
+[`packages/sdk` README](https://github.com/geniuskey/Engrove/tree/main/packages/sdk) for the
 complete typed table example.
 
 ## Automate project tasks
