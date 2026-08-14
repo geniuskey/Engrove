@@ -1,40 +1,46 @@
-# Record comments
+---
+description: 구성 가능한 레코드의 댓글, 멘션과 변경 이력 규칙을 설명합니다.
+title: 레코드 댓글
+---
 
-Configurable records provide a lightweight comment thread for day-to-day collaboration. The grid's
-record drawer keeps the table visible and switches between **Fields**, **Comments**, and **Change
-history**. The full record page exposes the same comments before formal review threads, so a quick
-question does not need to become an assigned review.
+# 레코드 댓글
 
-Comments are newest-first and paged in bounded groups of 50. A comment body contains 1–10,000
-trimmed characters. Contributors, Reviewers, Engineers, Administrators, and Owners have the
-`record.comment` permission; Viewers can read comments but cannot write them. A write-capable API
-token with the `data` capability may use the same endpoints.
+구성 가능한 레코드는 일상 협업을 위한 가벼운 댓글 흐름을 제공합니다. 그리드의 레코드 패널에서
+**필드**, **댓글**, **변경 이력**을 전환할 수 있고, 전체 레코드 화면에서도 공식 검토 스레드 전에
+같은 댓글을 보여 줍니다. 간단한 질문을 모두 담당자가 있는 검토로 만들 필요가 없습니다.
 
-Authors may select up to 50 active organization members as mentions. Mentioned people are stored as
-stable user references rather than parsed from display text, appear as chips on the comment, and
-receive a `record.mentioned` notification unless they disabled mention notifications. Clicking the
-notification opens the exact record and highlights the referenced comment. Self-mentions do not
-create notifications. Editing a comment notifies only newly added mentions, so wording corrections
-do not repeatedly alert the same people.
+댓글은 최신순이며 50개 단위로 페이지를 나눕니다. 본문은 공백을 제거한 1–10,000자입니다.
+Contributor, Reviewer, Engineer, Administrator와 Owner는 `record.comment` 권한으로 작성할 수 있고,
+Viewer는 읽기만 가능합니다. `data` 기능이 있는 쓰기 API 토큰도 같은 엔드포인트를 사용합니다.
 
-Only the author may edit a comment. Each edit submits the last-read `rowVersion`; concurrent edits
-return `409 RECORD_COMMENT_VERSION_CONFLICT` instead of overwriting another session. The current
-comment shows an edited marker, while the audit log stores the previous body, previous mention set,
-and the before/after comment versions. Comments cannot be added or edited after the parent record is
-archived, but the complete discussion remains readable.
+## 멘션과 알림
 
-Project-scoped endpoints:
+작성자는 활성 조직 멤버를 최대 50명까지 멘션할 수 있습니다. 멘션은 표시 이름에서 문자열을 추출하지
+않고 안정적인 사용자 참조로 저장되며, 댓글에 칩으로 표시됩니다.
 
-- `GET /api/v1/workspaces/{workspaceId}/projects/{projectId}/object-types/{objectTypeId}/records/{recordId}/comments`
-- `POST /api/v1/workspaces/{workspaceId}/projects/{projectId}/object-types/{objectTypeId}/records/{recordId}/comments`
-- `PATCH /api/v1/workspaces/{workspaceId}/projects/{projectId}/object-types/{objectTypeId}/records/{recordId}/comments/{commentId}`
+- 멘션된 사람은 설정에서 끄지 않았다면 `record.mentioned` 알림을 받습니다.
+- 알림을 선택하면 정확한 레코드와 댓글이 강조되어 열립니다.
+- 자기 자신을 멘션해도 알림은 만들지 않습니다.
+- 댓글 수정 시 새로 추가된 멘션에만 알립니다.
 
-The list accepts `limit` from 1–100 and a zero-based `offset`, and returns exact `pageInfo.total`
-and `hasNext` values. Comment creation and editing require browser CSRF protection. Database foreign
-keys bind every comment to the exact project, table, and record; direct cross-table comment links
-are rejected even when both tables belong to the same project. A database target constraint also
-ensures each notification references exactly one task or one record, never both.
+## 수정과 동시성
 
-Deletion is deliberately unavailable because it would weaken an engineering discussion trail.
-Reactions, attachments, threaded replies, and comment-triggered automations are not silently
-approximated by this release; they require their own retention and delivery policies.
+댓글은 작성자만 수정할 수 있습니다. 수정 요청은 마지막으로 읽은 `rowVersion`을 보내며, 다른
+세션에서 먼저 바뀌었다면 `409 RECORD_COMMENT_VERSION_CONFLICT`를 반환합니다. 현재 댓글에는 수정됨
+표시가 붙고, 감사 로그에는 이전 본문, 멘션 집합과 전후 버전이 보존됩니다.
+
+상위 레코드가 보관된 뒤에는 댓글을 추가하거나 수정할 수 없지만 기존 대화는 계속 읽을 수 있습니다.
+삭제는 엔지니어링 논의 이력을 약화하므로 제공하지 않습니다.
+
+## API 계약
+
+- `GET .../object-types/{objectTypeId}/records/{recordId}/comments`
+- `POST .../object-types/{objectTypeId}/records/{recordId}/comments`
+- `PATCH .../records/{recordId}/comments/{commentId}`
+
+목록은 1–100 범위의 `limit`, 0부터 시작하는 `offset`, 정확한 `pageInfo.total`과 `hasNext`를
+제공합니다. 데이터베이스 외래 키는 댓글을 정확한 프로젝트, 테이블과 레코드에 묶고 테이블을 가로지른
+잘못된 연결을 거부합니다.
+
+반응, 첨부, 스레드 답글과 댓글 기반 자동화는 각 기능의 보존·전송 정책이 준비되기 전까지 제공하지
+않습니다.

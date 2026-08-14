@@ -1,87 +1,88 @@
-# Project task workflows
+---
+description: 프로젝트별 작업 상태, 전환 규칙과 흐름 인사이트를 설명합니다.
+title: 작업 워크플로
+---
 
-Engrove task status is configured per project. A workflow consists of ordered statuses and directed transitions. The task board, task detail editor, bulk changes, API updates, and automation engine all use the same definition.
+# 프로젝트 작업 워크플로
 
-## Status model
+Engrove의 작업 상태는 프로젝트마다 구성합니다. 하나의 워크플로는 순서가 있는 상태와 상태 사이의
+방향성 전환으로 이루어집니다. 작업 보드, 상세 편집, 일괄 변경, API와 자동화는 모두 같은 정의를
+사용합니다.
 
-Every active status has:
+## 상태 모델
 
-- an immutable `key` used by APIs and automation rules;
-- an editable display name, color, and board position;
-- one category: `todo`, `in_progress`, or `done`;
-- an optional WIP limit from 1 to 999;
-- an `initial` flag. Exactly one active status is initial.
+활성 상태마다 다음 속성이 있습니다.
 
-Completion metrics use the category, not a hard-coded status key. This lets a project add statuses such as `quality_review` or `released` without breaking open/completed task counts. The `blocked` key remains a useful conventional status for attention metrics but is not required by the category model.
+- API와 자동화 규칙이 사용하는 변경 불가능한 `key`
+- 수정 가능한 표시 이름, 색상과 보드 순서
+- `todo`, `in_progress`, `done` 중 하나인 범주
+- 1–999 범위의 선택적 WIP 제한
+- 최초 상태 여부. 활성 상태 중 정확히 하나만 최초 상태여야 합니다.
 
-When the number of active cards in a status exceeds its WIP limit, the board marks that column and shows the current count against the limit. The limit is an operational signal rather than a hard write restriction: urgent work can still move forward, while the overload remains visible to the team.
+완료 통계는 특정 상태 키가 아니라 범주를 사용합니다. 따라서 `quality_review`, `released` 같은 상태를
+추가해도 미완료·완료 작업 수가 깨지지 않습니다. `blocked`는 주의 지표에 유용한 관례적 키지만 필수는
+아닙니다.
 
-## Transitions and safety
+한 상태의 활성 카드 수가 WIP 제한을 넘으면 보드가 해당 열과 현재 수치를 표시합니다. WIP 제한은
+작업을 막는 강제 규칙이 아니라 과부하를 팀에 알리는 운영 신호입니다.
 
-Transitions are directed. Moving from status A to status B requires an active A→B transition. This rule is enforced for single-task updates, atomic bulk updates, board drag and drop, detail editing, and automation actions.
+## 전환과 안전성
 
-- New tasks start in the project's initial status unless a valid status is explicitly supplied through the API.
-- A status cannot be archived while active tasks or active automation rules reference it.
-- The initial status cannot be archived until another status is selected as initial.
-- Archiving a status removes its transitions but preserves task history.
-- An automation action that is no longer allowed records a failed execution with `TRANSITION_NOT_ALLOWED`; it does not roll back the user action that triggered the automation.
+전환에는 방향이 있습니다. 상태 A에서 B로 이동하려면 활성 A→B 전환이 있어야 합니다. 이 규칙은
+단일 수정, 원자적 일괄 수정, 드래그 앤 드롭, 상세 편집과 자동화에 동일하게 적용됩니다.
 
-## Task activity and accountability
+- 새 작업은 API에서 유효한 상태를 지정하지 않는 한 프로젝트의 최초 상태로 시작합니다.
+- 활성 작업이나 자동화 규칙이 참조하는 상태는 보관할 수 없습니다.
+- 다른 최초 상태를 지정하기 전에는 현재 최초 상태를 보관할 수 없습니다.
+- 상태를 보관하면 전환은 제거되지만 과거 작업 이력은 유지됩니다.
+- 허용되지 않는 자동화 전환은 `TRANSITION_NOT_ALLOWED` 실패 이력을 남기며, 자동화를 촉발한 사용자의
+  변경까지 되돌리지는 않습니다.
 
-Task detail merges comments, status transitions, and field-change history into one chronological
-activity stream. Title, description, priority, assignee, and due-date changes are persisted in the
-immutable audit event written by the same transaction as the task update. Bulk edits retain the
-before and after values for every affected task. Automation changes also include the rule name, so a
-user can distinguish a teammate's edit from a rule-driven update.
+## 작업 활동과 책임 추적
 
-Status transitions continue to use the dedicated status history, including the actor and previous
-and next status. They are not duplicated as generic field edits. Historical assignee IDs remain
-auditable even after a member becomes inactive; the UI labels an unavailable identity instead of
-silently attributing it to the current assignee.
+작업 상세는 댓글, 상태 전환과 필드 변경을 하나의 시간순 활동으로 합칩니다. 제목, 설명, 우선순위,
+담당자와 마감일 변경은 작업 수정과 같은 트랜잭션의 변경 불가능한 감사 이벤트에 기록됩니다. 일괄
+수정은 각 작업의 이전 값과 이후 값을 남기고, 자동화 변경은 규칙 이름도 기록합니다.
 
-The board's non-blocking **Flow insights** panel turns that immutable history into project-level
-operating signals without asking users to maintain another progress field. It shows current active
-work and WIP, status-entry age, a configurable seven-day stale-work signal, completed throughput,
-median cycle time, an 85th-percentile predictability bound, the oldest active tasks, and a bounded
-completed-work distribution. A cumulative-flow chart reconstructs the end-of-day task count in
-every current or historical workflow status, making a widening band an explicit signal that work is
-accumulating. Task archive and restore events delimit the periods counted as active; a task is not
-silently included while archived. The server folds status and lifecycle interval boundaries into
-daily UTC deltas, then cumulatively sums only `days × workflow statuses`; it does not rescan every
-task interval for every chart day. WIP overload and stale age are warnings, not write restrictions.
+상태 전환은 행위자, 이전 상태와 다음 상태를 가진 전용 이력을 사용합니다. 비활성화된 멤버의 과거
+담당자 ID도 보존하며, UI는 이를 현재 담당자에게 잘못 귀속하지 않고 사용할 수 없는 사용자로
+표시합니다.
 
-The companion **Created vs completed** chart buckets task creation and the most recent qualifying
-completion by UTC day. Creation counts every task entering the project in the rolling window even
-if it is later archived. Completion includes a task only while its current workflow category is
-still `done`; reopening removes the earlier completion until the task completes again. Consequently
-`created − completed` is an intake-pressure signal, not an exact active-backlog delta when archive,
-restore, or reopen events occur.
+## 흐름 인사이트
 
-Cycle time is the sum of intervals in statuses whose category is `in_progress`, ending at the most
-recent transition into a `done` category while the task remains done. A reopened task therefore
-includes its later in-progress interval. Direct `todo`→`done` transitions have zero working-status
-cycle time rather than being treated as missing data. The completion window is 30, 60, or 90 days
-in the browser; the API accepts 7–365 days. Status aging always describes the current complete
-project and is deliberately independent of transient board filters. The UI states this scope to
-avoid presenting a filtered board beside misleading partial operational metrics.
+보드의 **흐름 인사이트** 패널은 사용자가 별도 진행률을 관리하지 않아도 다음 운영 신호를 계산합니다.
 
-`GET /api/v1/workspaces/{workspaceId}/projects/{projectId}/tasks/{taskId}` returns the typed
-`status_history`, `change_history`, and `comments` collections used by the merged activity stream.
+- 현재 WIP와 상태별 체류 시간
+- 기본 7일 기준의 오래된 작업
+- 완료 처리량
+- 중앙값과 P85 사이클 타임
+- 가장 오래 열린 작업
+- 누적 흐름과 생성 대비 완료 추이
 
-## API
+누적 흐름은 현재와 과거 워크플로 상태의 일별 마감 작업 수를 재구성합니다. 밴드가 넓어지면 해당
+단계에 작업이 쌓이고 있다는 뜻입니다. 보관 기간은 활성 작업 시간에서 제외하며, 지표는 일시적인
+보드 필터와 무관한 프로젝트 전체 범위를 사용합니다.
 
-All routes are scoped by workspace and project:
+사이클 타임은 `in_progress` 범주에 머문 구간의 합입니다. 완료 후 다시 열린 작업은 이후 작업 구간도
+포함하고, `todo`에서 바로 `done`으로 이동한 작업은 누락 값이 아니라 0의 작업 시간으로 처리합니다.
 
-- `GET /api/v1/workspaces/{workspaceId}/projects/{projectId}/task-workflow`
-- `POST /api/v1/workspaces/{workspaceId}/projects/{projectId}/task-workflow/statuses`
-- `PATCH /api/v1/workspaces/{workspaceId}/projects/{projectId}/task-workflow/statuses/{statusId}`
-- `POST /api/v1/workspaces/{workspaceId}/projects/{projectId}/task-workflow/statuses/{statusId}/archive`
-- `POST /api/v1/workspaces/{workspaceId}/projects/{projectId}/task-workflow/transitions`
-- `DELETE /api/v1/workspaces/{workspaceId}/projects/{projectId}/task-workflow/transitions/{transitionId}`
-- `GET /api/v1/workspaces/{workspaceId}/projects/{projectId}/task-flow-insights`
+## API와 권한
 
-Reading uses `task.read`. Workflow mutation uses `task.workflow.manage`, which is granted to owners and administrators by default. Request and response schemas are available in the OpenAPI document.
+모든 경로는 워크스페이스와 프로젝트 범위 안에서 동작합니다.
 
-## Migration compatibility
+- `GET .../task-workflow`
+- `POST .../task-workflow/statuses`
+- `PATCH .../task-workflow/statuses/{statusId}`
+- `POST .../task-workflow/statuses/{statusId}/archive`
+- `POST .../task-workflow/transitions`
+- `DELETE .../task-workflow/transitions/{transitionId}`
+- `GET .../task-flow-insights`
 
-Existing projects are seeded with `todo`, `in_progress`, `blocked`, and `done`. Existing task and history values remain unchanged. All directed pairs among those four statuses are seeded so upgrades do not unexpectedly invalidate an existing move; administrators can then remove transitions that their process should forbid.
+읽기에는 `task.read`, 워크플로 변경에는 기본적으로 Owner와 Administrator에게 부여되는
+`task.workflow.manage`가 필요합니다.
+
+기존 프로젝트는 `todo`, `in_progress`, `blocked`, `done`으로 시작하며 업그레이드 시 기존 작업과
+이력 값은 유지됩니다.
+
+다음으로 [작업 자동화](/product/task-automation)와 [작업 협업](/product/task-collaboration)을
+확인하세요.

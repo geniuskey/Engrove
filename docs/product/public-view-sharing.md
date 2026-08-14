@@ -1,70 +1,69 @@
-# Public saved-view sharing
+---
+description: 저장된 데이터 뷰와 공개 입력 폼을 외부 사용자에게 안전하게 공유하는 방법을 설명합니다.
+title: 공개 뷰 공유
+---
 
-Engrove can publish a persisted Grid, Gallery, Kanban, Calendar, or Form view to people who do not
-have an account. Data views are live and read-only: saved field visibility, filters, and layout
-continue to follow the owner-managed view, while a visitor's search, filters, sorting, and paging
-remain temporary. Form views are write-only intake links that create records through the same field
-validation, derived-value, audit, and webhook transaction used inside Engrove.
+# 공개 저장 뷰 공유
 
-## Owner workflow
+Engrove는 저장된 Grid, Gallery, Kanban, Calendar 또는 Form 뷰를 계정이 없는 사람에게 공개할 수
+있습니다. 데이터 뷰는 실시간 읽기 전용이며, 소유자가 저장한 필드 표시, 필터와 레이아웃을 따릅니다.
+방문자의 검색, 임시 필터, 정렬과 페이지 이동은 저장된 정의를 바꾸지 않습니다.
 
-1. Open a saved view and select the **Share view** icon.
-2. Optionally require a password and choose an expiry. For read-only views, explicitly enable CSV
-   download when needed; form links never expose download.
-3. Enable the link and copy the full URL immediately. Engrove cannot display it again.
-4. Return to the same panel to change settings, rotate the URL, review access count and last access,
-   or revoke it.
+Form 뷰는 같은 필드 검증, 파생 값, 감사와 웹훅 트랜잭션을 통해 레코드를 만드는 쓰기 전용 입력
+링크입니다.
 
-Creating a new link when one is already active rotates it. The previous URL stops working
-immediately. Password, expiry, download, rotation, and revocation controls are kept together so the
-owner can assess the complete exposure boundary before publishing.
+## 소유자 흐름
 
-Only Engineers, Admins, and Owners receive `view.share`. Contributors can continue managing saved
-view content according to its collaborative or personal permissions, but cannot publish it outside
-the organization. API tokens cannot create, update, rotate, or revoke shares.
+1. 저장된 뷰를 열고 **뷰 공유** 아이콘을 선택합니다.
+2. 필요하면 비밀번호와 만료일을 설정합니다. 읽기 전용 뷰의 CSV 다운로드는 명시적으로 켜야 하며,
+   Form 링크는 다운로드를 제공하지 않습니다.
+3. 링크를 활성화하고 전체 URL을 즉시 복사합니다. Engrove는 같은 URL을 다시 표시할 수 없습니다.
+4. 같은 패널에서 설정 변경, URL 교체, 접근 수와 최근 접근 확인 또는 폐기를 수행합니다.
 
-## Visitor contract
+이미 활성 링크가 있을 때 새 링크를 만들면 기존 URL은 즉시 중지됩니다. 비밀번호, 만료, 다운로드,
+교체와 폐기를 한 패널에 모아 공개 범위를 함께 판단할 수 있습니다.
 
-The public page has no editing controls and does not require an Engrove session. Password-protected
-links reveal no metadata until unlocked. A successful unlock grants a short-lived, link-specific
-access token. Visitors can explore only fields made visible by the saved view; their changes never
-alter the shared definition.
+외부 공개 권한 `view.share`는 Engineer, Administrator와 Owner에게만 있습니다. Contributor는 권한에
+따라 저장 뷰 내용을 관리할 수 있지만 조직 밖으로 공개할 수 없습니다. API 토큰도 공유 링크 생성,
+수정, 교체와 폐기에 사용할 수 없습니다.
 
-CSV download is an explicit owner choice and is limited to 10,000 records. File and dataset
-references, internal record identifiers, relation identifiers, and user identifiers are not
-included in public output. Public record identifiers are derived separately for each share.
+## 방문자 계약
 
-## Public form contract
+공개 페이지에는 편집 기능이 없고 Engrove 세션도 필요하지 않습니다. 비밀번호 보호 링크는 잠금이
+풀릴 때까지 메타데이터도 노출하지 않습니다. 성공적인 잠금 해제는 수명이 짧고 해당 링크에만 유효한
+접근 토큰을 발급합니다.
 
-Only visible scalar, select, quantity, and range fields may be published in a public form. User,
-relation, file, dataset, measurement, calculated, and structured-data fields can expose internal
-identifiers or require privileged storage/evaluation workflows, so share creation fails with the
-exact incompatible field until the owner removes it. Existing form validation also prevents hiding
-a required field that has no default.
+방문자는 저장 뷰가 표시하도록 지정한 필드만 볼 수 있습니다. CSV 다운로드는 소유자가 켠 경우에만
+가능하고 10,000개 레코드로 제한됩니다. 파일·데이터셋 참조, 내부 레코드·관계·사용자 식별자는 공개
+출력에서 제외되며, 공개 레코드 식별자는 공유 링크마다 별도로 파생합니다.
 
-The public page marks every field as required or optional and never exposes existing records. Every
-submission requires an 8–200 character idempotency key; a safe retry returns the original record,
-while reusing a key with different content returns a conflict. A hidden bot-trap field must remain
-empty and submissions are limited to 20 per link and privacy-preserving client fingerprint per hour.
-Raw client addresses are not stored.
+## 공개 폼 계약
 
-Anonymous submissions deliberately leave `records.created_by` and `records.updated_by` empty rather
-than attributing external input to the link owner. `public_form_submissions` retains the immutable
-share-to-record provenance, request hash, idempotency digest, keyed network fingerprint, and time.
-The audit event uses `record.public_form_submitted` with no actor, and the ordinary `record.created`
-webhook includes `source: public_form`, the share/view identifiers, and a null actor. Only the first
-successful attempt increments the share's submission count.
+공개 폼에는 보이는 scalar, select, quantity와 range 필드만 사용할 수 있습니다. User, relation,
+file, dataset, measurement, calculated와 structured-data 필드는 내부 식별자나 권한이 필요한 저장 절차를
+노출할 수 있으므로 허용하지 않습니다. 기본값 없는 필수 필드를 숨길 수도 없습니다.
 
-## Security operations
+공개 페이지는 모든 필드에 필수 또는 선택을 표시하고 기존 레코드를 노출하지 않습니다.
 
-- Treat the URL as a bearer credential, even when a password is also enabled.
-- Prefer expiry for vendor reviews, design gates, and other time-bounded collaboration.
-- Rotate a link if it may have been forwarded beyond the intended audience.
-- Revoke it when the external review or handoff ends.
-- Do not collect share URLs in analytics, support screenshots, proxy logs, or browser telemetry.
-- Keep CSV disabled when live viewing is sufficient.
+- 요청마다 8–200자의 idempotency key가 필요합니다.
+- 같은 내용의 안전한 재시도는 기존 레코드를 반환합니다.
+- 같은 키에 다른 내용을 보내면 충돌을 반환합니다.
+- 숨은 봇 방지 필드는 비어 있어야 합니다.
+- 링크와 개인정보를 보존하는 클라이언트 지문 조합당 시간당 20회로 제한합니다.
+- 원시 클라이언트 IP 주소는 저장하지 않습니다.
 
-Engrove stores only share-token and unlock-token digests. Public responses use `no-store`, the web
-application sends no referrer, HTTP logs redact the public token path segment, unlock and submission
-attempts are independently rate-limited per link and privacy-preserving client fingerprint, and
-share lifecycle changes are included in the organization audit log.
+익명 제출은 링크 소유자를 작성자로 가장하지 않고 `created_by`, `updated_by`를 비워 둡니다. 별도
+제출 이력이 공유 링크, 생성 레코드, 요청 해시, idempotency digest와 시간을 보존합니다.
+
+## 보안 운영
+
+- 비밀번호를 설정했더라도 URL 자체를 bearer credential로 취급합니다.
+- 공급사 검토나 설계 게이트처럼 기간이 있는 협업에는 만료일을 사용합니다.
+- 의도하지 않은 사람에게 전달됐을 가능성이 있으면 URL을 교체합니다.
+- 외부 검토가 끝나면 링크를 폐기합니다.
+- 분석, 지원 스크린샷, 프록시 로그와 브라우저 텔레메트리에 공유 URL을 수집하지 않습니다.
+- 실시간 조회로 충분하다면 CSV를 끈 상태로 유지합니다.
+
+Engrove는 공유 토큰과 잠금 해제 토큰의 digest만 저장합니다. 공개 응답은 `no-store`를 사용하고,
+Referrer를 보내지 않으며, HTTP 로그에서 공개 토큰 경로를 가립니다. 공유 수명주기의 모든 변경은 조직
+감사 로그에 남습니다.

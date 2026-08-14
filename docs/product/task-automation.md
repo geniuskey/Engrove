@@ -1,76 +1,66 @@
-# Task automation
+---
+description: 감사 가능한 프로젝트 작업 자동화와 실행 안전 규칙을 설명합니다.
+title: 작업 자동화
+---
 
-Automation status triggers, conditions, and actions use the active project workflow described in [Project task workflows](./task-workflow.md). Status actions must follow an allowed directed transition at execution time.
+# 작업 자동화
 
-Engrove task automation provides a small, auditable subset of event-driven workflow automation for
-project work. Project engineers and administrators can combine one task trigger, optional current
-state conditions, and one or more field actions. Rules live in project settings, can be paused, and
-can be archived without deleting their execution history.
+자동화의 상태 트리거, 조건과 동작은 [프로젝트 작업 워크플로](/product/task-workflow)의 활성 정의를
+사용합니다. 상태를 바꾸는 동작은 실행 시점에도 허용된 방향성 전환을 따라야 합니다.
 
-## Supported rules
+Engrove는 프로젝트 작업을 위해 작고 감사 가능한 이벤트 기반 자동화를 제공합니다. Engineer와
+Administrator는 하나의 작업 트리거, 선택적 현재 상태 조건, 하나 이상의 필드 동작을 조합할 수
+있습니다. 규칙은 프로젝트 설정에서 일시 중지하거나 실행 이력을 지우지 않고 보관할 수 있습니다.
 
-Triggers:
+## 지원 규칙
 
-- task created;
-- status changed, optionally limited by source and destination status;
-- priority changed, optionally limited by source and destination priority;
-- assignee changed, assigned, or unassigned.
+트리거:
 
-Conditions can require the task's current status, priority, and assignment state. Actions can set
-status, priority, and assignee (including unassigning). Rule names are case-insensitively unique
-within a project, and an action assignee must remain an active organization member.
+- 작업 생성
+- 상태 변경, 선택적으로 이전·다음 상태 제한
+- 우선순위 변경, 선택적으로 이전·다음 우선순위 제한
+- 담당자 변경, 배정 또는 배정 해제
 
-## Transaction and loop safety
+조건은 작업의 현재 상태, 우선순위와 담당자 배정 여부를 검사할 수 있습니다. 동작은 상태,
+우선순위와 담당자를 변경하거나 담당자를 해제할 수 있습니다. 규칙 이름은 프로젝트 안에서 대소문자와
+무관하게 고유하며, 담당자로 지정할 사용자는 활성 조직 멤버여야 합니다.
 
-Automation runs inside the same PostgreSQL transaction as the initiating task mutation. A
-successful response therefore includes the final automated task state; clients never observe a
-committed trigger without its corresponding automation actions. Automation field changes increment
-the task row version, write status history when relevant, notify watchers and newly assigned
-members, and append a `task.automated` audit event with the rule and trace identifiers.
+### 예제
 
-Every initiating task mutation receives a unique automation trace. A rule may execute at most once
-per trace, even when its action produces another matching event, and chained actions stop after ten
-levels. Each attempted rule writes an execution row with `succeeded`, `no_change`, or `failed`.
-That row snapshots the rule name, trigger type, and triggering event at execution time, so later
-rule edits do not rewrite historical meaning. It also records duration, trace ID, chain depth,
-applied field changes, and a stable failure code. An assignee that became unavailable records a
-failed execution instead of preventing the user's unrelated task change. Applying a value already
-present records `no_change` without incrementing the task row version or sending activity
-notifications.
+`우선순위가 긴급으로 변경됨`을 트리거로 하고 `담당자 없음`을 조건으로 설정한 뒤, 프로젝트 리드에게
+배정하는 동작을 만들 수 있습니다. 규칙이 상태도 변경한다면 현재 워크플로에 해당 전환이 있어야
+합니다.
 
-The rule list exposes cumulative failed execution count plus the latest outcome and error code.
-Operators can open history already scoped to a rule, filter by outcome, expand a run to inspect its
-trigger and changes, and follow the task link. Field actions are deliberately not retried
-automatically: because they execute synchronously against mutable task state, replaying a failed
-action later could overwrite a newer human decision. Operators diagnose the stable failure,
-pause or repair the rule, and cause a fresh task event when another execution is appropriate.
+## 트랜잭션과 반복 실행 안전성
 
-## Authorization and API
+자동화는 작업 변경을 시작한 것과 같은 PostgreSQL 트랜잭션에서 실행됩니다. 성공 응답에는 자동화가
+적용된 최종 상태가 포함되며, 트리거만 저장되고 동작은 빠지는 중간 상태가 노출되지 않습니다.
 
-The `task.automation.manage` permission is granted to owners, administrators, and engineers. It is
-not available to personal API tokens because automation changes project-wide behavior. Browser
-mutations require CSRF protection.
+- 각 작업 변경은 고유한 자동화 추적 ID를 받습니다.
+- 같은 규칙은 한 추적 안에서 최대 한 번만 실행됩니다.
+- 연쇄 동작은 최대 10단계에서 멈춥니다.
+- 모든 시도는 `succeeded`, `no_change`, `failed` 중 하나로 기록됩니다.
+- 실행 이력은 당시의 규칙 이름, 트리거, 변경 값, 소요 시간과 오류 코드를 보존합니다.
+- 이미 같은 값이면 행 버전과 알림을 바꾸지 않고 `no_change`를 기록합니다.
 
-Project-scoped endpoints:
+실패한 필드 동작은 자동 재시도하지 않습니다. 시간이 지난 뒤 재생하면 더 새로운 사람의 결정을
+덮어쓸 수 있기 때문입니다. 운영자는 오류 코드를 확인하고 규칙을 중지하거나 수정한 뒤 새로운 작업
+이벤트로 다시 실행합니다.
 
-- `GET/POST /api/v1/workspaces/{workspaceId}/projects/{projectId}/task-automations`
-- `PATCH /api/v1/workspaces/{workspaceId}/projects/{projectId}/task-automations/{ruleId}`
-- `POST /api/v1/workspaces/{workspaceId}/projects/{projectId}/task-automations/{ruleId}/archive`
-- `GET /api/v1/workspaces/{workspaceId}/projects/{projectId}/task-automations/executions`
+## 이력과 운영
 
-The rule collection accepts a `limit` from 1–100 (default 50) and a zero-based `offset`.
-`pageInfo.total` is the exact active-rule count and `pageInfo.hasNext` indicates whether another page
-remains. The project settings screen uses the same contract and appends additional pages on demand.
+규칙 목록은 누적 실패 수, 최근 결과와 오류 코드를 표시합니다. 실행 이력은 규칙과 결과로 필터링하고,
+각 실행의 트리거와 적용 변경을 펼쳐 볼 수 있으며 대상 작업으로 이동할 수 있습니다.
 
-Execution history is newest-first and accepts an optional `ruleId`,
-`outcome=all|succeeded|no_change|failed`, a `limit` from 1–100 (default 50), and a zero-based
-`offset`. `pageInfo` exposes the exact count for the selected rule and outcome and whether older
-executions remain. `summary` always reports exact succeeded, no-change, and failed totals across
-the selected rule's complete history (or the complete project history without `ruleId`),
-independent of the selected outcome or current page. Rows expose `ruleName`, `triggerType`,
-`triggerEvent`, `durationMs`, `traceId`, `depth`, `changes`, and `errorCode`; the first three are
-immutable execution-time snapshots.
+## 권한과 API
 
-The first release intentionally excludes scheduled triggers and outbound actions. Those require a
-durable scheduler, retry semantics, and delivery-specific security controls rather than being
-silently approximated by request-time execution.
+`task.automation.manage` 권한은 Owner, Administrator와 Engineer에게 부여됩니다. 프로젝트 전체 동작을
+바꾸므로 개인 API 토큰에는 제공하지 않으며, 브라우저 변경에는 CSRF 보호가 필요합니다.
+
+- `GET/POST .../task-automations`
+- `PATCH .../task-automations/{ruleId}`
+- `POST .../task-automations/{ruleId}/archive`
+- `GET .../task-automations/executions`
+
+첫 릴리스는 예약 트리거와 외부 전송 동작을 포함하지 않습니다. 이 기능에는 내구성 있는 스케줄러,
+재시도 의미와 전송별 보안 통제가 별도로 필요합니다.
